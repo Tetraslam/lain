@@ -50,6 +50,10 @@ export async function run(args: ParsedArgs): Promise<void> {
       return runPrune(args);
     case "extend":
       return runExtend(args);
+    case "link":
+      return runLink(args);
+    case "conflicts":
+      return runConflicts(args);
     case "sync":
       return runSync(args);
     case "export":
@@ -228,6 +232,7 @@ async function runExplore(args: ParsedArgs): Promise<void> {
   const planDetail = (getFlag(args.flags, "plan") ?? config.defaultPlanDetail) as PlanDetail;
   const ext = getFlag(args.flags, "ext", "extension") ?? config.defaultExtension;
   const outputDb = getFlag(args.flags, "output", "o", "db");
+  const concurrency = getNumFlag(args.flags, "concurrency", "c") ?? 5;
 
   // Generate a name from the seed
   const name = seed.length > 60 ? seed.slice(0, 57) + "..." : seed;
@@ -243,7 +248,7 @@ async function runExplore(args: ParsedArgs): Promise<void> {
   console.log(
     `Creating exploration: ${n} branches x ${m} depth = ${totalNodes} nodes to generate`
   );
-  console.log(`Strategy: ${strategy} | Plan detail: ${planDetail} | DB: ${dbFileName}`);
+  console.log(`Strategy: ${strategy} | Plan detail: ${planDetail} | Concurrency: ${concurrency} | DB: ${dbFileName}`);
 
   // Create provider
   const provider = config.defaultProvider;
@@ -253,6 +258,7 @@ async function runExplore(args: ParsedArgs): Promise<void> {
   const orchestrator = new Orchestrator({
     dbPath,
     agent,
+    concurrency,
     onEvent: (event) => {
       switch (event.type) {
         case "node:generating":
@@ -503,6 +509,92 @@ async function runExtend(args: ParsedArgs): Promise<void> {
   );
   console.log(`Created ${newNodes.length} new children under ${nodeId}.`);
   orchestrator.close();
+}
+
+// ============================================================================
+// Link (add cross-link between nodes)
+// ============================================================================
+
+async function runLink(args: ParsedArgs): Promise<void> {
+  const nodeA = args.positional[0];
+  const nodeB = args.positional[1];
+  if (!nodeA || !nodeB)
+    throw new Error("Usage: lain link <node-a> <node-b> [--label 'description'] [--db file.db]");
+
+  const dbFile = getFlag(args.flags, "db") || findDb();
+  const label = getFlag(args.flags, "label");
+  const storage = new Storage(dbFile);
+  const graph = new Graph(storage);
+
+  const a = graph.getNode(nodeA);
+  const b = graph.getNode(nodeB);
+  if (!a) { storage.close(); throw new Error(`Node not found: ${nodeA}`); }
+  if (!b) { storage.close(); throw new Error(`Node not found: ${nodeB}`); }
+
+  graph.addCrosslink(nodeA, nodeB, label);
+  console.log(`Linked ${nodeA} ↔ ${nodeB}${label ? ` — "${label}"` : ""}`);
+  storage.close();
+}
+
+// ============================================================================
+// Conflicts
+// ============================================================================
+
+async function runConflicts(args: ParsedArgs): Promise<void> {
+  const dbFile = args.positional[0] || getFlag(args.flags, "db") || findDb();
+  const resolve = getFlag(args.flags, "resolve"); // "theirs" or "ours"
+
+  const storage = new Storage(dbFile);
+  const graph = new Graph(storage);
+
+  const explorations = graph.getAllExplorations();
+  if (explorations.length === 0) {
+    storage.close();
+    throw new Error("No explorations in this database.");
+  }
+
+  const conflicts = graph.getConflicts(explorations[0].id);
+
+  if (conflicts.length === 0) {
+    console.log("No conflicts.");
+    storage.close();
+    return;
+  }
+
+  if (resolve) {
+    // Batch resolve all conflicts
+    for (const node of conflicts) {
+      if (resolve === "theirs") {
+        // Keep current content (file version), discard conflict
+        storage.clearNodeConflict(node.id);
+      } else if (resolve === "ours") {
+        // Restore db version from conflict field, discard file version
+        if (node.contentConflict) {
+          storage.updateNodeFromSync(node.id, { content: node.contentConflict });
+        }
+        storage.clearNodeConflict(node.id);
+      }
+    }
+    console.log(`Resolved ${conflicts.length} conflict(s) using "${resolve}" strategy.`);
+    storage.close();
+    return;
+  }
+
+  // List conflicts
+  console.log(`${conflicts.length} conflict(s):\n`);
+  for (const node of conflicts) {
+    console.log(`  ${node.id} — "${node.title}"`);
+    console.log(`    Current (from file): ${truncateStr(node.content || "", 100)}`);
+    console.log(`    Conflict (from db):  ${truncateStr(node.contentConflict || "", 100)}`);
+    console.log("");
+  }
+  console.log(`Resolve with: lain conflicts ${dbFile} --resolve theirs|ours`);
+  storage.close();
+}
+
+function truncateStr(s: string, max: number): string {
+  const oneLine = s.replace(/\n/g, " ").trim();
+  return oneLine.length > max ? oneLine.slice(0, max) + "..." : oneLine;
 }
 
 // ============================================================================
@@ -767,6 +859,7 @@ Options:
   --ext <name>           Extension to use (default: freeform)
   --db <file>            Database file to use
   -o, --output <file>    Output database filename
+  -c, --concurrency <n>  Max parallel agent calls (default: 5)
 
 Commands:
   init                   Set up global config (--workspace for local, --non-interactive for agents)
@@ -775,6 +868,8 @@ Commands:
   tree [exploration-id]  Print tree structure
   prune <node-id>        Prune a node and descendants
   extend <node-id>       Generate more children (--n <count>)
+  link <node-a> <node-b> Add a cross-link (--label 'description')
+  conflicts [file.db]    List/resolve sync conflicts (--resolve theirs|ours)
   sync <file.db>         Bidirectional sync (--push, --pull, --status)
   export <file.db>       One-shot export to markdown (--out <dir>)
   config set <k> <v>     Set config value (--local for workspace)

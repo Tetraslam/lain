@@ -13,23 +13,26 @@ import { nowISO } from "@lain/shared";
 export interface OrchestratorOptions {
   dbPath: string;
   agent: AgentProvider;
+  concurrency?: number; // max parallel agent calls, default 5
   onEvent?: LainEventHandler;
 }
 
 /**
  * Manages the expansion loop: creates pending nodes, generates content via agents,
- * respects BF/DF strategy.
+ * respects BF/DF strategy, supports concurrent generation.
  */
 export class Orchestrator {
   private storage: Storage;
   private graph: Graph;
   private agent: AgentProvider;
+  private concurrency: number;
   private onEvent: LainEventHandler;
 
   constructor(options: OrchestratorOptions) {
     this.storage = new Storage(options.dbPath);
     this.graph = new Graph(this.storage);
     this.agent = options.agent;
+    this.concurrency = options.concurrency ?? 5;
     this.onEvent = options.onEvent ?? (() => {});
   }
 
@@ -65,8 +68,11 @@ export class Orchestrator {
       explorationId: exploration.id,
     });
 
-    // Generate the tree
-    await this.expandTree(exploration);
+    if (exploration.strategy === "df") {
+      await this.expandTreeDF(exploration);
+    } else {
+      await this.expandTreeBF(exploration);
+    }
 
     this.emit({
       type: "exploration:complete",
@@ -77,7 +83,7 @@ export class Orchestrator {
   }
 
   /**
-   * Expand a single node with n new children.
+   * Expand a single node with n new children (concurrently).
    */
   async extendNode(
     explorationId: string,
@@ -105,16 +111,17 @@ export class Orchestrator {
       planSummaries
     );
 
-    // Generate each child
-    for (const child of children) {
-      await this.generateNode(child, exploration);
-    }
+    // Generate children concurrently
+    await this.generateNodesBatch(children, exploration);
 
     return children.map((c) => this.graph.getNode(c.id)!);
   }
 
-  private async expandTree(exploration: Exploration): Promise<void> {
-    // Start from root, expand to depth m
+  // ========================================================================
+  // Breadth-First expansion
+  // ========================================================================
+
+  private async expandTreeBF(exploration: Exploration): Promise<void> {
     for (let depth = 0; depth < exploration.m; depth++) {
       const nodesAtDepth =
         depth === 0
@@ -125,38 +132,103 @@ export class Orchestrator {
         (n) => n.status === "complete"
       );
 
-      for (const node of activeNodes) {
-        // Plan phase
-        const planSummaries = await this.planBranches(
-          node,
-          exploration,
-          exploration.n
-        );
+      // Plan all parents at this depth concurrently
+      const planResults = await this.runConcurrent(
+        activeNodes,
+        async (node) => {
+          const summaries = await this.planBranches(
+            node,
+            exploration,
+            exploration.n
+          );
+          return { node, summaries };
+        },
+        this.concurrency
+      );
 
-        // Create pending children
+      // Create all pending children
+      const allChildren: LainNode[] = [];
+      for (const { node, summaries } of planResults) {
         const children = this.graph.createChildNodes(
           exploration.id,
           node.id,
           exploration.n,
-          planSummaries
+          summaries
         );
-
-        if (exploration.strategy === "df") {
-          // DF: generate first child, then recurse into it before siblings
-          // For v0.1 sequential, just generate in order — true DF ordering
-          // is handled by generating depth-first
-          for (const child of children) {
-            await this.generateNode(child, exploration);
-          }
-        } else {
-          // BF: generate all children at this depth before going deeper
-          for (const child of children) {
-            await this.generateNode(child, exploration);
-          }
-        }
+        allChildren.push(...children);
       }
+
+      // Generate all children at this depth concurrently
+      await this.generateNodesBatch(allChildren, exploration);
     }
   }
+
+  // ========================================================================
+  // Depth-First expansion
+  // ========================================================================
+
+  private async expandTreeDF(exploration: Exploration): Promise<void> {
+    // DF: for each child of root, go as deep as possible before moving to siblings
+    // At each node, plan + create children, generate first child, recurse into it,
+    // then generate remaining siblings concurrently
+
+    const root = this.graph.getNode("root")!;
+    await this.expandNodeDF(root, exploration, 0);
+  }
+
+  private async expandNodeDF(
+    node: LainNode,
+    exploration: Exploration,
+    currentDepth: number
+  ): Promise<void> {
+    if (currentDepth >= exploration.m) return;
+
+    // Plan phase
+    const planSummaries = await this.planBranches(
+      node,
+      exploration,
+      exploration.n
+    );
+
+    // Create pending children
+    const children = this.graph.createChildNodes(
+      exploration.id,
+      node.id,
+      exploration.n,
+      planSummaries
+    );
+
+    // Generate first child and recurse deep
+    if (children.length > 0) {
+      await this.generateNode(children[0], exploration);
+      await this.expandNodeDF(
+        this.graph.getNode(children[0].id)!,
+        exploration,
+        currentDepth + 1
+      );
+    }
+
+    // Generate remaining siblings concurrently
+    if (children.length > 1) {
+      const remaining = children.slice(1);
+      await this.generateNodesBatch(remaining, exploration);
+
+      // Recurse into remaining siblings concurrently
+      // (each sibling's subtree is independent)
+      await this.runConcurrent(
+        remaining,
+        async (child) => {
+          const updated = this.graph.getNode(child.id)!;
+          await this.expandNodeDF(updated, exploration, currentDepth + 1);
+        },
+        this.concurrency
+      );
+    }
+  }
+
+  // ========================================================================
+  // Planning
+  // ========================================================================
 
   private async planBranches(
     parentNode: LainNode,
@@ -190,6 +262,10 @@ export class Orchestrator {
 
     return planResponse.directions;
   }
+
+  // ========================================================================
+  // Generation
+  // ========================================================================
 
   private async generateNode(
     node: LainNode,
@@ -238,6 +314,55 @@ export class Orchestrator {
       throw error;
     }
   }
+
+  /**
+   * Generate a batch of nodes with concurrency limit.
+   */
+  private async generateNodesBatch(
+    nodes: LainNode[],
+    exploration: Exploration
+  ): Promise<void> {
+    await this.runConcurrent(
+      nodes,
+      (node) => this.generateNode(node, exploration),
+      this.concurrency
+    );
+  }
+
+  // ========================================================================
+  // Concurrency helper
+  // ========================================================================
+
+  /**
+   * Run async tasks with a concurrency limit.
+   * Like Promise.all but at most `limit` tasks run simultaneously.
+   */
+  private async runConcurrent<T, R>(
+    items: T[],
+    fn: (item: T) => Promise<R>,
+    limit: number
+  ): Promise<R[]> {
+    const results: R[] = new Array(items.length);
+    let nextIndex = 0;
+
+    async function worker(): Promise<void> {
+      while (nextIndex < items.length) {
+        const i = nextIndex++;
+        results[i] = await fn(items[i]);
+      }
+    }
+
+    const workers = Array.from(
+      { length: Math.min(limit, items.length) },
+      () => worker()
+    );
+    await Promise.all(workers);
+    return results;
+  }
+
+  // ========================================================================
+  // Events
+  // ========================================================================
 
   private emit(event: Omit<LainEvent, "timestamp">): void {
     this.onEvent({ ...event, timestamp: nowISO() } as LainEvent);
