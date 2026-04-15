@@ -117,6 +117,29 @@ export class Orchestrator {
     return children.map((c) => this.graph.getNode(c.id)!);
   }
 
+  /**
+   * Regenerate a node — reset it and run the agent again.
+   * Keeps the same ID, position, and plan summary. Gets new content.
+   */
+  async redirectNode(
+    explorationId: string,
+    nodeId: string
+  ): Promise<LainNode> {
+    const exploration = this.graph.getExploration(explorationId);
+    if (!exploration) throw new Error(`Exploration not found: ${explorationId}`);
+
+    const node = this.graph.getNode(nodeId);
+    if (!node) throw new Error(`Node not found: ${nodeId}`);
+    if (node.id === "root") throw new Error("Cannot redirect the root node.");
+
+    // Reset to pending then regenerate
+    this.storage.updateNodeStatus(nodeId, "pending");
+    const freshNode = this.graph.getNode(nodeId)!;
+    await this.generateNode(freshNode, exploration);
+
+    return this.graph.getNode(nodeId)!;
+  }
+
   // ========================================================================
   // Breadth-First expansion
   // ========================================================================

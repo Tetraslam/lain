@@ -7,6 +7,7 @@ import { createProvider } from "@lain/agents";
 import {
   generateId,
   nowISO,
+  estimateCost,
   type Strategy,
   type PlanDetail,
   type Provider,
@@ -48,6 +49,8 @@ export async function run(args: ParsedArgs): Promise<void> {
       return runTree(args);
     case "prune":
       return runPrune(args);
+    case "redirect":
+      return runRedirect(args);
     case "extend":
       return runExtend(args);
     case "link":
@@ -241,12 +244,18 @@ async function runExplore(args: ParsedArgs): Promise<void> {
   const dbPath = path.resolve(dbFileName);
 
   // Estimate cost
-  let totalNodes = 0;
-  for (let d = 1; d <= m; d++) {
-    totalNodes += Math.pow(n, d);
-  }
+  const estimate = estimateCost(n, m, config.defaultModel, planDetail);
   console.log(
-    `Creating exploration: ${n} branches x ${m} depth = ${totalNodes} nodes to generate`
+    `Creating exploration: ${n} branches x ${m} depth = ${estimate.totalNodes} nodes`
+  );
+  console.log(
+    `  API calls: ${estimate.planCalls} plan + ${estimate.generateCalls} generate = ${estimate.planCalls + estimate.generateCalls} total`
+  );
+  console.log(
+    `  Est. tokens: ~${(estimate.estimatedInputTokens / 1000).toFixed(0)}k input + ~${(estimate.estimatedOutputTokens / 1000).toFixed(0)}k output`
+  );
+  console.log(
+    `  Est. cost: ~$${estimate.estimatedCostUsd.toFixed(3)} (${estimate.model})`
   );
   console.log(`Strategy: ${strategy} | Plan detail: ${planDetail} | Concurrency: ${concurrency} | DB: ${dbFileName}`);
 
@@ -508,6 +517,48 @@ async function runExtend(args: ParsedArgs): Promise<void> {
     n
   );
   console.log(`Created ${newNodes.length} new children under ${nodeId}.`);
+  orchestrator.close();
+}
+
+// ============================================================================
+// Redirect (regenerate a node)
+// ============================================================================
+
+async function runRedirect(args: ParsedArgs): Promise<void> {
+  const nodeId = args.positional[0];
+  if (!nodeId)
+    throw new Error("Usage: lain redirect <node-id> [--db file.db]");
+
+  const config = loadConfig();
+  const credentials = loadCredentials();
+  const dbFile = getFlag(args.flags, "db") || findDb();
+
+  const provider = config.defaultProvider;
+  const agent = createProviderFromCredentials(provider, config, credentials);
+
+  const orchestrator = new Orchestrator({
+    dbPath: dbFile,
+    agent,
+    onEvent: (event) => {
+      if (event.type === "node:generating") {
+        process.stdout.write(`  Regenerating ${event.nodeId}...`);
+      } else if (event.type === "node:complete") {
+        const data = event.data as { title?: string } | undefined;
+        console.log(` done — "${data?.title || "untitled"}"`);
+      }
+    },
+  });
+
+  const graph = orchestrator.getGraph();
+  const node = graph.getNode(nodeId);
+  if (!node) {
+    orchestrator.close();
+    throw new Error(`Node not found: ${nodeId}`);
+  }
+
+  const oldTitle = node.title;
+  const updated = await orchestrator.redirectNode(node.explorationId, nodeId);
+  console.log(`Redirected ${nodeId}: "${oldTitle}" → "${updated.title}"`);
   orchestrator.close();
 }
 
@@ -867,6 +918,7 @@ Commands:
   show <node-id>         Display a node
   tree [exploration-id]  Print tree structure
   prune <node-id>        Prune a node and descendants
+  redirect <node-id>     Regenerate a node with fresh content
   extend <node-id>       Generate more children (--n <count>)
   link <node-a> <node-b> Add a cross-link (--label 'description')
   conflicts [file.db]    List/resolve sync conflicts (--resolve theirs|ours)

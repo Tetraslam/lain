@@ -231,3 +231,97 @@ export function buildNodeId(
   if (parentId === null) return "root";
   return `${parentId}-${branchIndex}`;
 }
+
+// ============================================================================
+// Cost Estimation
+// ============================================================================
+
+/** Per-million-token pricing. */
+interface ModelPricing {
+  inputPerMillion: number;
+  outputPerMillion: number;
+}
+
+const MODEL_PRICING: Record<string, ModelPricing> = {
+  // Sonnet 4.6
+  "claude-sonnet-4-6": { inputPerMillion: 3, outputPerMillion: 15 },
+  "us.anthropic.claude-sonnet-4-6": { inputPerMillion: 3, outputPerMillion: 15 },
+  "anthropic.claude-sonnet-4-6": { inputPerMillion: 3, outputPerMillion: 15 },
+  // Opus 4.6
+  "claude-opus-4-6": { inputPerMillion: 15, outputPerMillion: 75 },
+  "us.anthropic.claude-opus-4-6-v1": { inputPerMillion: 15, outputPerMillion: 75 },
+  // Sonnet 4
+  "claude-sonnet-4-20250514": { inputPerMillion: 3, outputPerMillion: 15 },
+  // Haiku 4
+  "claude-haiku-4-20250414": { inputPerMillion: 0.8, outputPerMillion: 4 },
+  // 3.5 Sonnet
+  "claude-3-5-sonnet-20241022": { inputPerMillion: 3, outputPerMillion: 15 },
+  // 3.5 Haiku
+  "claude-3-5-haiku-20241022": { inputPerMillion: 0.8, outputPerMillion: 4 },
+};
+
+export interface CostEstimate {
+  totalNodes: number;
+  planCalls: number;
+  generateCalls: number;
+  estimatedInputTokens: number;
+  estimatedOutputTokens: number;
+  estimatedCostUsd: number;
+  model: string;
+}
+
+/**
+ * Estimate the cost of an exploration before running it.
+ * Uses rough averages: ~1500 input tokens per call, ~800 output tokens per generation,
+ * ~300 output tokens per plan call.
+ */
+export function estimateCost(
+  n: number,
+  m: number,
+  model: string,
+  planDetail: PlanDetail
+): CostEstimate {
+  // Count nodes at each depth
+  let totalNodes = 0;
+  for (let d = 1; d <= m; d++) {
+    totalNodes += Math.pow(n, d);
+  }
+
+  // Plan calls: one per parent that gets expanded.
+  // Parents = 1 (root) + n + n^2 + ... + n^(m-1) = (n^m - 1) / (n - 1) for n>1, else m
+  let planParents: number;
+  if (n <= 1) {
+    planParents = m;
+  } else {
+    planParents = (Math.pow(n, m) - 1) / (n - 1);
+  }
+  const planCalls = planDetail === "none" ? 0 : planParents;
+  const generateCalls = totalNodes;
+
+  // Token estimates (rough averages based on typical prompts)
+  const avgInputPerPlan = 1200;
+  const avgOutputPerPlan = planDetail === "brief" ? 100 : planDetail === "sentence" ? 200 : 400;
+  const avgInputPerGenerate = 1500; // ancestor chain + sibling context + system prompt
+  const avgOutputPerGenerate = 800; // ~400-500 words of content
+
+  const estimatedInputTokens =
+    planCalls * avgInputPerPlan + generateCalls * avgInputPerGenerate;
+  const estimatedOutputTokens =
+    planCalls * avgOutputPerPlan + generateCalls * avgOutputPerGenerate;
+
+  // Look up pricing
+  const pricing = MODEL_PRICING[model] ?? { inputPerMillion: 3, outputPerMillion: 15 };
+  const estimatedCostUsd =
+    (estimatedInputTokens / 1_000_000) * pricing.inputPerMillion +
+    (estimatedOutputTokens / 1_000_000) * pricing.outputPerMillion;
+
+  return {
+    totalNodes,
+    planCalls,
+    generateCalls,
+    estimatedInputTokens,
+    estimatedOutputTokens,
+    estimatedCostUsd,
+    model,
+  };
+}

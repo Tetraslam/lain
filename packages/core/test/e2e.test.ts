@@ -131,12 +131,34 @@ describe("End-to-end exploration", () => {
     orchestrator.close();
   });
 
-  it("generates with depth-first strategy", async () => {
-    const agent = new MockAgent();
+  it("generates with depth-first strategy — first child goes deep before siblings", async () => {
+    const generationOrder: string[] = [];
+
+    // Track-order agent
+    const agent: AgentProvider = {
+      async generate(request) {
+        generationOrder.push(request.node.id);
+        return {
+          title: `Node ${request.node.id}`,
+          content: `Content for ${request.node.id}`,
+          model: "mock",
+          provider: "anthropic",
+        };
+      },
+      async generateStream(request, onChunk) {
+        return this.generate(request);
+      },
+      async plan(request) {
+        return {
+          directions: Array.from({ length: request.n }, (_, i) => `Dir ${i + 1}`),
+        };
+      },
+    };
 
     const orchestrator = new Orchestrator({
       dbPath,
       agent,
+      concurrency: 1, // serialize to make order deterministic
     });
 
     await orchestrator.explore({
@@ -153,6 +175,16 @@ describe("End-to-end exploration", () => {
     const graph = orchestrator.getGraph();
     const nodes = graph.getAllNodes("df-test");
     expect(nodes).toHaveLength(7);
+
+    // DF should generate root-1 first, then go deep to root-1-1, root-1-2
+    // before generating root-2 and its children
+    // With concurrency=1: root-1, root-1-1, root-1-2, root-2, root-2-1, root-2-2
+    expect(generationOrder[0]).toBe("root-1");
+    expect(generationOrder[1]).toBe("root-1-1");
+    // root-1-2 comes before root-2 (deep-first)
+    const idxRoot12 = generationOrder.indexOf("root-1-2");
+    const idxRoot2 = generationOrder.indexOf("root-2");
+    expect(idxRoot12).toBeLessThan(idxRoot2);
 
     orchestrator.close();
   });
