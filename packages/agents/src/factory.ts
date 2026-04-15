@@ -1,13 +1,13 @@
 import type { AgentProvider, Provider } from "@lain/shared";
 import { AnthropicProvider } from "./anthropic.js";
-import type { AnthropicProviderOptions } from "./anthropic.js";
+import { BedrockProvider } from "./bedrock.js";
 
 export interface CreateProviderOptions {
   provider: Provider;
   model?: string;
   apiKey?: string;
   baseUrl?: string;
-  region?: string;
+  region?: string;     // for bedrock
   maxTokens?: number;
 }
 
@@ -24,16 +24,19 @@ export function createProvider(options: CreateProviderOptions): AgentProvider {
       });
 
     case "bedrock":
-      // Bedrock uses the Anthropic SDK with bedrock-specific config
-      // The @anthropic-ai/sdk supports bedrock natively via AnthropicBedrock
-      return new AnthropicProvider({
+      if (!options.apiKey) {
+        throw new Error(
+          "Bedrock requires an API key. Run `lain init` or set --api-key."
+        );
+      }
+      return new BedrockProvider({
         apiKey: options.apiKey,
-        model: options.model ?? "claude-sonnet-4-20250514",
+        region: options.region ?? "us-west-2",
+        model: options.model,
         maxTokens: options.maxTokens,
       });
 
     case "openai":
-      // For v0.1, throw — openai support comes in v0.2
       throw new Error(
         "OpenAI provider not yet implemented. Use 'anthropic' or 'bedrock'."
       );

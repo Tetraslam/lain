@@ -79,7 +79,7 @@ async function runInit(args: ParsedArgs): Promise<void> {
     const provider = (getFlag(args.flags, "provider") || "anthropic") as Provider;
     const model = getFlag(args.flags, "model") || "claude-sonnet-4-20250514";
     const apiKey = getFlag(args.flags, "api-key");
-    const region = getFlag(args.flags, "region");
+    const region = getFlag(args.flags, "region") || "us-west-2";
 
     if (isWorkspace) {
       saveWorkspaceConfig(process.cwd(), {
@@ -89,12 +89,12 @@ async function runInit(args: ParsedArgs): Promise<void> {
       console.log(`Workspace config created at .lain/config.json`);
     } else {
       saveConfig({ defaultProvider: provider, defaultModel: model });
-      if (apiKey) {
-        if (provider === "anthropic") {
-          saveCredentials({ anthropic: { apiKey } });
-        } else if (provider === "bedrock") {
-          saveCredentials({ bedrock: { region: region || "us-east-1" } });
-        }
+      if (provider === "anthropic" && apiKey) {
+        saveCredentials({ anthropic: { apiKey } });
+      } else if (provider === "bedrock" && apiKey) {
+        saveCredentials({ bedrock: { apiKey, region } });
+      } else if (provider === "openai" && apiKey) {
+        saveCredentials({ openai: { apiKey } });
       }
       console.log(`Global config saved to ~/.config/lain/`);
     }
@@ -154,18 +154,22 @@ async function runInit(args: ParsedArgs): Promise<void> {
         message: "Default model?",
         initialValue: "claude-sonnet-4-20250514",
       }),
-    apiKey: ({ results }) => {
-      if (results.provider === "bedrock") return Promise.resolve(undefined);
-      return p.text({
-        message: `API key for ${results.provider as string}?`,
-        placeholder: "sk-... (or press enter to use env var)",
-      });
-    },
+    apiKey: ({ results }) =>
+      p.text({
+        message:
+          results.provider === "bedrock"
+            ? "Bedrock API key?"
+            : `API key for ${results.provider as string}?`,
+        placeholder:
+          results.provider === "bedrock"
+            ? "ABSK... (or press enter to use AWS_BEARER_TOKEN_BEDROCK env var)"
+            : "sk-... (or press enter to use env var)",
+      }),
     region: ({ results }) => {
       if (results.provider !== "bedrock") return Promise.resolve(undefined);
       return p.text({
         message: "AWS region for Bedrock?",
-        initialValue: "us-east-1",
+        initialValue: "us-west-2",
       });
     },
   });
@@ -183,8 +187,8 @@ async function runInit(args: ParsedArgs): Promise<void> {
   const creds: Record<string, unknown> = {};
   if (result.provider === "anthropic" && result.apiKey) {
     creds.anthropic = { apiKey: result.apiKey };
-  } else if (result.provider === "bedrock") {
-    creds.bedrock = { region: result.region || "us-east-1" };
+  } else if (result.provider === "bedrock" && result.apiKey) {
+    creds.bedrock = { apiKey: result.apiKey, region: result.region || "us-west-2" };
   } else if (result.provider === "openai" && result.apiKey) {
     creds.openai = { apiKey: result.apiKey };
   }
@@ -243,13 +247,7 @@ async function runExplore(args: ParsedArgs): Promise<void> {
 
   // Create provider
   const provider = config.defaultProvider;
-  const apiKey = getProviderApiKey(provider, credentials);
-
-  const agent = createProvider({
-    provider,
-    model: config.defaultModel,
-    apiKey,
-  });
+  const agent = createProviderFromCredentials(provider, config, credentials);
 
   // Create orchestrator
   const orchestrator = new Orchestrator({
@@ -474,12 +472,7 @@ async function runExtend(args: ParsedArgs): Promise<void> {
   const n = getNumFlag(args.flags, "n", "branches") ?? config.defaultN;
 
   const provider = config.defaultProvider;
-  const apiKey = getProviderApiKey(provider, credentials);
-  const agent = createProvider({
-    provider,
-    model: config.defaultModel,
-    apiKey,
-  });
+  const agent = createProviderFromCredentials(provider, config, credentials);
 
   const orchestrator = new Orchestrator({
     dbPath: dbFile,
@@ -790,6 +783,7 @@ Commands:
 
 Non-interactive mode (for agents):
   lain init --non-interactive --provider anthropic --api-key sk-...
+  lain init --non-interactive --provider bedrock --api-key ABSK... --region us-west-2
   lain "idea" -n 3 -m 2 --db output.db
   lain export output.db --out ./my-exploration
   lain sync output.db --push
@@ -821,18 +815,40 @@ function slugify(text: string): string {
     .slice(0, 50);
 }
 
-function getProviderApiKey(
+function createProviderFromCredentials(
   provider: Provider,
+  config: LainConfig,
   credentials: ReturnType<typeof loadCredentials>
-): string | undefined {
+) {
   switch (provider) {
     case "anthropic":
-      return credentials.anthropic?.apiKey || process.env.ANTHROPIC_API_KEY;
-    case "bedrock":
-      return undefined; // Bedrock uses AWS credentials
+      return createProvider({
+        provider: "anthropic",
+        model: config.defaultModel,
+        apiKey: credentials.anthropic?.apiKey || process.env.ANTHROPIC_API_KEY,
+      });
+
+    case "bedrock": {
+      const bc = credentials.bedrock;
+      return createProvider({
+        provider: "bedrock",
+        model: config.defaultModel,
+        apiKey: bc?.apiKey || process.env.AWS_BEARER_TOKEN_BEDROCK,
+        region: bc?.region || process.env.AWS_REGION || "us-west-2",
+      });
+    }
+
     case "openai":
-      return credentials.openai?.apiKey || process.env.OPENAI_API_KEY;
+      return createProvider({
+        provider: "openai",
+        model: config.defaultModel,
+        apiKey: credentials.openai?.apiKey || process.env.OPENAI_API_KEY,
+      });
+
     default:
-      return undefined;
+      return createProvider({
+        provider,
+        model: config.defaultModel,
+      });
   }
 }

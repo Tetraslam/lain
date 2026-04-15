@@ -17,7 +17,7 @@ const GLOBAL_CREDENTIALS_FILE = path.join(
 
 export interface Credentials {
   anthropic?: { apiKey: string };
-  bedrock?: { region: string; accessKeyId?: string; secretAccessKey?: string };
+  bedrock?: { apiKey: string; region: string };
   openai?: { apiKey: string; baseUrl?: string };
 }
 
