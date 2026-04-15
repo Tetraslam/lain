@@ -1,0 +1,22 @@
+{
+  "name": "@lain/cli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "lain": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsup src/index.ts --format esm --dts",
+    "dev": "tsup src/index.ts --format esm --watch --onSuccess 'echo build done'",
+    "test": "vitest run",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@clack/prompts": "^1.2.0",
+    "@lain/agents": "workspace:*",
+    "@lain/core": "workspace:*",
+    "@lain/shared": "workspace:*",
+    "gray-matter": "^4.0.3"
+  }
+}
