@@ -16,6 +16,7 @@
     "@clack/prompts": "^1.2.0",
     "@lain/agents": "workspace:*",
     "@lain/core": "workspace:*",
+    "@lain/extensions": "workspace:*",
     "@lain/shared": "workspace:*",
     "gray-matter": "^4.0.3"
   }

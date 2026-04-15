@@ -5,6 +5,13 @@ import { Orchestrator } from "@lain/core";
 import { Storage, Graph, Sync, Exporter, Watcher } from "@lain/core";
 import { createProvider } from "@lain/agents";
 import {
+  ExtensionRegistry,
+  freeformExtension,
+  worldbuildingExtension,
+  debateExtension,
+  researchExtension,
+} from "@lain/extensions";
+import {
   generateId,
   nowISO,
   estimateCost,
@@ -65,6 +72,8 @@ export async function run(args: ParsedArgs): Promise<void> {
       return runConfig(args);
     case "watch":
       return runWatch(args);
+    case "extensions":
+      return runExtensions(args);
     case "help":
       return runHelp();
     default:
@@ -263,11 +272,13 @@ async function runExplore(args: ParsedArgs): Promise<void> {
   const provider = config.defaultProvider;
   const agent = createProviderFromCredentials(provider, config, credentials);
 
-  // Create orchestrator
+  // Create orchestrator with extensions
+  const extensions = buildExtensionRegistry();
   const orchestrator = new Orchestrator({
     dbPath,
     agent,
     concurrency,
+    extensions,
     onEvent: (event) => {
       switch (event.type) {
         case "node:generating":
@@ -493,6 +504,7 @@ async function runExtend(args: ParsedArgs): Promise<void> {
   const orchestrator = new Orchestrator({
     dbPath: dbFile,
     agent,
+    extensions: buildExtensionRegistry(),
     onEvent: (event) => {
       if (event.type === "node:generating") {
         process.stdout.write(`  Generating ${event.nodeId}...`);
@@ -539,6 +551,7 @@ async function runRedirect(args: ParsedArgs): Promise<void> {
   const orchestrator = new Orchestrator({
     dbPath: dbFile,
     agent,
+    extensions: buildExtensionRegistry(),
     onEvent: (event) => {
       if (event.type === "node:generating") {
         process.stdout.write(`  Regenerating ${event.nodeId}...`);
@@ -892,6 +905,46 @@ async function runWatch(args: ParsedArgs): Promise<void> {
 }
 
 // ============================================================================
+// Extensions
+// ============================================================================
+
+async function runExtensions(args: ParsedArgs): Promise<void> {
+  const subcommand = args.positional[0]; // "list", "add", "remove", "auth", "config"
+
+  if (!subcommand || subcommand === "list") {
+    const registry = buildExtensionRegistry();
+    console.log("Built-in extensions:");
+    for (const ext of registry.getAll()) {
+      const ops = ext.operations?.map((o) => o.name).join(", ") || "none";
+      const hasPrompt = ext.systemPrompt ? "yes" : "no";
+      console.log(`  ${ext.name} v${ext.version} — prompts: ${hasPrompt}, custom ops: ${ops}`);
+      if (ext.configSchema && ext.configSchema.length > 0) {
+        console.log(`    config: ${ext.configSchema.map((f) => f.key).join(", ")}`);
+      }
+    }
+    return;
+  }
+
+  // Placeholder for add/remove/auth/config — will be implemented when npm-based extensions are needed
+  switch (subcommand) {
+    case "add":
+      console.log("Extension installation from npm is not yet implemented. Built-in extensions are available: freeform, worldbuilding, debate, research");
+      break;
+    case "remove":
+      console.log("Extension removal is not yet implemented.");
+      break;
+    case "auth":
+      console.log("Extension auth is not yet implemented.");
+      break;
+    case "config":
+      console.log("Extension config is not yet implemented.");
+      break;
+    default:
+      throw new Error(`Unknown extensions subcommand: ${subcommand}. Use: list, add, remove, auth, config`);
+  }
+}
+
+// ============================================================================
 // Help
 // ============================================================================
 
@@ -927,7 +980,14 @@ Commands:
   config set <k> <v>     Set config value (--local for workspace)
   config list            Show effective config (--global, --local)
   watch <file.db>        Auto-sync on file changes (--stop, --status)
+  extensions [list]      List available extensions
   help                   Show this help
+
+Extensions (use with --ext <name>):
+  freeform               No constraints, pure divergent thinking (default)
+  worldbuilding          Structured worldbuilding (geography, cultures, history, magic)
+  debate                 Adversarial argumentation (pro/con/steelman/critique)
+  research               Academic exploration with citations and methodology
 
 Non-interactive mode (for agents):
   lain init --non-interactive --provider anthropic --api-key sk-...
@@ -999,4 +1059,16 @@ function createProviderFromCredentials(
         model: config.defaultModel,
       });
   }
+}
+
+/**
+ * Build the extension registry with all built-in extensions loaded.
+ */
+function buildExtensionRegistry(): ExtensionRegistry {
+  const registry = new ExtensionRegistry();
+  registry.register(freeformExtension);
+  registry.register(worldbuildingExtension);
+  registry.register(debateExtension);
+  registry.register(researchExtension);
+  return registry;
 }

@@ -44,6 +44,9 @@ importers:
       '@lain/core':
         specifier: workspace:*
         version: link:../core
+      '@lain/extensions':
+        specifier: workspace:*
+        version: link:../extensions
       '@lain/shared':
         specifier: workspace:*
         version: link:../shared
@@ -69,6 +72,12 @@ importers:
       '@types/better-sqlite3':
         specifier: ^7.6.13
         version: 7.6.13
+
+  packages/extensions:
+    dependencies:
+      '@lain/shared':
+        specifier: workspace:*
+        version: link:../shared
 
   packages/shared: {}
 

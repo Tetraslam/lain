@@ -209,6 +209,122 @@ export interface AgentProvider {
 }
 
 // ============================================================================
+// Extension Types
+// ============================================================================
+
+/** Context passed to extension hooks during node generation. */
+export interface NodeContext {
+  node: LainNode;
+  ancestors: LainNode[];
+  siblings: LainNode[];
+  exploration: Exploration;
+  depth: number;
+}
+
+/** Context passed to extension hooks during plan phase. */
+export interface PlanContext {
+  parentNode: LainNode;
+  ancestors: LainNode[];
+  exploration: Exploration;
+  n: number;
+  detail: PlanDetail;
+}
+
+/** Lifecycle hook signatures. */
+export interface LifecycleHooks {
+  "before:plan": (context: PlanContext) => Promise<void> | void;
+  "after:plan": (context: PlanContext, directions: string[]) => Promise<string[]> | string[];
+  "before:generate": (context: NodeContext) => Promise<void> | void;
+  "after:generate": (context: NodeContext, response: GenerateResponse) => Promise<GenerateResponse> | GenerateResponse;
+  "before:prune": (nodeId: string) => Promise<void> | void;
+  "after:prune": (nodeId: string) => Promise<void> | void;
+  "before:link": (sourceId: string, targetId: string) => Promise<void> | void;
+  "after:link": (sourceId: string, targetId: string) => Promise<void> | void;
+  "before:export": (explorationId: string) => Promise<void> | void;
+  "after:export": (explorationId: string, outputDir: string) => Promise<void> | void;
+  "before:sync": (explorationId: string) => Promise<void> | void;
+  "after:sync": (explorationId: string) => Promise<void> | void;
+  "on:error": (error: Error, context?: { nodeId?: string; explorationId?: string }) => Promise<void> | void;
+}
+
+/** Custom CLI operation registered by an extension. */
+export interface OperationDefinition {
+  name: string;
+  description: string;
+  args?: { name: string; description: string; required?: boolean }[];
+  flags?: { name: string; description: string; type: "string" | "boolean" | "number" }[];
+  run: (args: { positional: string[]; flags: Record<string, string | boolean> }, context: ExtensionOperationContext) => Promise<void>;
+}
+
+/** Context provided to custom extension operations. */
+export interface ExtensionOperationContext {
+  storage: unknown; // Storage instance — typed as unknown to avoid circular dep, cast in extensions package
+  graph: unknown;   // Graph instance
+  agent: AgentProvider;
+  config: LainConfig;
+}
+
+/** Config field definition for extension-specific settings. */
+export interface ConfigFieldDefinition {
+  key: string;
+  type: "string" | "number" | "boolean" | "select";
+  description: string;
+  default?: unknown;
+  options?: { value: string; label: string }[]; // for select type
+}
+
+/** Custom node type with additional required/optional fields. */
+export interface NodeTypeDefinition {
+  name: string;
+  fields: {
+    key: string;
+    type: "string" | "number" | "boolean";
+    required?: boolean;
+    description: string;
+  }[];
+}
+
+/** Validator that runs before/after generation. */
+export interface ValidatorDefinition {
+  name: string;
+  phase: "before:generate" | "after:generate";
+  validate: (context: NodeContext, response?: GenerateResponse) => { valid: boolean; message?: string };
+}
+
+/** The full extension interface. */
+export interface LainExtension {
+  name: string;
+  version: string;
+
+  /** Credentials this extension needs (user provides via `lain extensions auth`). */
+  requiredAuth?: { key: string; description: string; required: boolean }[];
+
+  /** Extension-specific config schema. */
+  configSchema?: ConfigFieldDefinition[];
+
+  /** System prompt fragment injected for every node. */
+  systemPrompt?: (context: NodeContext) => string;
+
+  /** Prompt fragment injected during plan phase. */
+  planPrompt?: (context: PlanContext) => string;
+
+  /** Lifecycle hooks. */
+  hooks?: Partial<LifecycleHooks>;
+
+  /** Custom node types with additional fields. */
+  nodeTypes?: NodeTypeDefinition[];
+
+  /** Custom CLI operations (become subcommands). */
+  operations?: OperationDefinition[];
+
+  /** Custom obsidian renderer for this extension's nodes. */
+  renderer?: (node: LainNode) => string | undefined;
+
+  /** Validators that run before/after generation. */
+  validators?: ValidatorDefinition[];
+}
+
+// ============================================================================
 // Utilities
 // ============================================================================
 

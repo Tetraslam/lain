@@ -6,26 +6,42 @@ import type {
   LainEvent,
   LainEventHandler,
   LainNode,
+  LainExtension,
+  NodeContext,
+  PlanContext,
+  GenerateResponse,
   Strategy,
 } from "@lain/shared";
 import { nowISO } from "@lain/shared";
 
+/** Minimal extension registry interface to avoid circular dep on @lain/extensions. */
+export interface ExtensionRegistryLike {
+  getSystemPrompt(context: NodeContext, activeExtensions?: string[]): string;
+  getPlanPrompt(context: PlanContext, activeExtensions?: string[]): string;
+  runHook(hook: string, ...args: unknown[]): Promise<void>;
+  runAfterPlan(context: PlanContext, directions: string[], activeExtensions?: string[]): Promise<string[]>;
+  runAfterGenerate(context: NodeContext, response: GenerateResponse, activeExtensions?: string[]): Promise<GenerateResponse>;
+  runValidators(phase: "before:generate" | "after:generate", context: NodeContext, response?: GenerateResponse, activeExtensions?: string[]): { valid: boolean; errors: string[] };
+}
+
 export interface OrchestratorOptions {
   dbPath: string;
   agent: AgentProvider;
-  concurrency?: number; // max parallel agent calls, default 5
+  concurrency?: number;
+  extensions?: ExtensionRegistryLike;
   onEvent?: LainEventHandler;
 }
 
 /**
  * Manages the expansion loop: creates pending nodes, generates content via agents,
- * respects BF/DF strategy, supports concurrent generation.
+ * respects BF/DF strategy, supports concurrent generation and extensions.
  */
 export class Orchestrator {
   private storage: Storage;
   private graph: Graph;
   private agent: AgentProvider;
   private concurrency: number;
+  private extensions: ExtensionRegistryLike | null;
   private onEvent: LainEventHandler;
 
   constructor(options: OrchestratorOptions) {
@@ -33,6 +49,7 @@ export class Orchestrator {
     this.graph = new Graph(this.storage);
     this.agent = options.agent;
     this.concurrency = options.concurrency ?? 5;
+    this.extensions = options.extensions ?? null;
     this.onEvent = options.onEvent ?? (() => {});
   }
 
@@ -262,11 +279,29 @@ export class Orchestrator {
 
     const ancestors = this.graph.getAncestorChain(parentNode.id);
 
+    const planContext: PlanContext = {
+      parentNode,
+      ancestors,
+      exploration,
+      n,
+      detail: exploration.planDetail,
+    };
+
+    // Run before:plan hook
+    if (this.extensions) {
+      await this.extensions.runHook("before:plan", planContext);
+    }
+
     this.emit({
       type: "plan:created",
       explorationId: exploration.id,
       nodeId: parentNode.id,
     });
+
+    // Get extension plan prompt
+    const extensionPlanPrompt = this.extensions
+      ? this.extensions.getPlanPrompt(planContext, [exploration.extension])
+      : undefined;
 
     const planResponse = await this.agent.plan({
       parentNode,
@@ -274,16 +309,23 @@ export class Orchestrator {
       exploration,
       n,
       detail: exploration.planDetail,
+      extensionPlanPrompt: extensionPlanPrompt || undefined,
     });
+
+    // Run after:plan hook — extensions can modify directions
+    let directions = planResponse.directions;
+    if (this.extensions) {
+      directions = await this.extensions.runAfterPlan(planContext, directions, [exploration.extension]);
+    }
 
     this.emit({
       type: "plan:complete",
       explorationId: exploration.id,
       nodeId: parentNode.id,
-      data: { directions: planResponse.directions },
+      data: { directions },
     });
 
-    return planResponse.directions;
+    return directions;
   }
 
   // ========================================================================
@@ -304,13 +346,61 @@ export class Orchestrator {
     const ancestors = this.graph.getAncestorChain(node.id);
     const siblings = this.graph.getSiblings(node.id);
 
+    const nodeContext: NodeContext = {
+      node,
+      ancestors,
+      siblings,
+      exploration,
+      depth: node.depth,
+    };
+
+    // Run before:generate hook
+    if (this.extensions) {
+      await this.extensions.runHook("before:generate", nodeContext);
+
+      // Run before:generate validators
+      const validation = this.extensions.runValidators("before:generate", nodeContext, undefined, [exploration.extension]);
+      if (!validation.valid) {
+        this.emit({
+          type: "error",
+          explorationId: exploration.id,
+          nodeId: node.id,
+          data: { error: `Validation failed: ${validation.errors.join("; ")}` },
+        });
+      }
+    }
+
+    // Get extension system prompt
+    const extensionSystemPrompt = this.extensions
+      ? this.extensions.getSystemPrompt(nodeContext, [exploration.extension])
+      : undefined;
+
     try {
-      const response = await this.agent.generate({
+      let response = await this.agent.generate({
         node,
         ancestors,
         siblings: siblings.filter((s) => s.status === "complete"),
         exploration,
+        extensionSystemPrompt: extensionSystemPrompt || undefined,
       });
+
+      // Run after:generate hook — extensions can modify response
+      if (this.extensions) {
+        response = await this.extensions.runAfterGenerate(nodeContext, response, [exploration.extension]);
+
+        // Run after:generate validators
+        const validation = this.extensions.runValidators("after:generate", nodeContext, response, [exploration.extension]);
+        if (!validation.valid) {
+          for (const err of validation.errors) {
+            this.emit({
+              type: "error",
+              explorationId: exploration.id,
+              nodeId: node.id,
+              data: { error: `Post-generation validation: ${err}` },
+            });
+          }
+        }
+      }
 
       this.storage.updateNodeContent(
         node.id,
@@ -328,6 +418,12 @@ export class Orchestrator {
       });
     } catch (error) {
       this.storage.updateNodeStatus(node.id, "pending");
+
+      // Run on:error hook
+      if (this.extensions) {
+        await this.extensions.runHook("on:error", error, { nodeId: node.id, explorationId: exploration.id });
+      }
+
       this.emit({
         type: "error",
         explorationId: exploration.id,
