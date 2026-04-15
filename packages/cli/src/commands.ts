@@ -406,7 +406,7 @@ async function runTree(args: ParsedArgs): Promise<void> {
   console.log("");
 
   if (root) {
-    printTree(root, nodes, "");
+    printTree(root, nodes, "", true, true);
   }
 
   storage.close();
@@ -416,9 +416,10 @@ function printTree(
   node: ReturnType<Graph["getNode"]> & {},
   allNodes: ReturnType<Graph["getAllNodes"]>,
   prefix: string,
-  isLast = true
+  isLast = true,
+  isRoot = false
 ): void {
-  const connector = prefix === "" ? "" : isLast ? "└── " : "├── ";
+  const connector = isRoot ? "" : isLast ? "└── " : "├── ";
   const status =
     node.status === "pruned"
       ? " [pruned]"
@@ -433,7 +434,7 @@ function printTree(
     .filter((n) => n.parentId === node.id)
     .sort((a, b) => a.branchIndex - b.branchIndex);
 
-  const childPrefix = prefix === "" ? "" : prefix + (isLast ? "    " : "│   ");
+  const childPrefix = isRoot ? "" : prefix + (isLast ? "    " : "│   ");
 
   children.forEach((child, i) => {
     printTree(child, allNodes, childPrefix, i === children.length - 1);
