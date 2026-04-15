@@ -23,7 +23,7 @@ export class AnthropicProvider implements AgentProvider {
     this.client = new Anthropic({
       apiKey: options.apiKey, // falls back to ANTHROPIC_API_KEY env var
     });
-    this.model = options.model ?? "claude-sonnet-4-20250514";
+    this.model = options.model ?? "claude-sonnet-4-6";
     this.maxTokens = options.maxTokens ?? 2048;
   }
 
@@ -105,6 +105,6 @@ export class AnthropicProvider implements AgentProvider {
     const title = titleLine.replace(/^#+\s*/, "");
     const content = lines.slice(1).join("\n").trim();
 
-    return { title, content };
+    return { title, content, model: this.model, provider: "anthropic" };
   }
 }

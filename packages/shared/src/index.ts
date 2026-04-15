@@ -120,7 +120,7 @@ export interface LainConfig {
 }
 
 export const DEFAULT_CONFIG: LainConfig = {
-  defaultModel: "claude-sonnet-4-20250514",
+  defaultModel: "claude-sonnet-4-6",
   defaultProvider: "anthropic",
   providers: {},
   defaultN: 3,
@@ -182,6 +182,8 @@ export interface GenerateRequest {
 export interface GenerateResponse {
   title: string;
   content: string;
+  model: string;
+  provider: Provider;
 }
 
 export interface PlanRequest {

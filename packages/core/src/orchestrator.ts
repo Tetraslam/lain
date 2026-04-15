@@ -217,8 +217,8 @@ export class Orchestrator {
         node.id,
         response.title,
         response.content,
-        exploration.planDetail, // placeholder — real model comes from agent
-        "anthropic" // placeholder — real provider comes from agent
+        response.model,
+        response.provider
       );
 
       this.emit({

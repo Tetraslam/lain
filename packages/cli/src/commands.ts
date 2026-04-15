@@ -77,7 +77,7 @@ async function runInit(args: ParsedArgs): Promise<void> {
   if (nonInteractive) {
     // Non-interactive init — use flags directly
     const provider = (getFlag(args.flags, "provider") || "anthropic") as Provider;
-    const model = getFlag(args.flags, "model") || "claude-sonnet-4-20250514";
+    const model = getFlag(args.flags, "model") || "claude-sonnet-4-6";
     const apiKey = getFlag(args.flags, "api-key");
     const region = getFlag(args.flags, "region") || "us-west-2";
 
@@ -109,7 +109,7 @@ async function runInit(args: ParsedArgs): Promise<void> {
       defaultModel: () =>
         p.text({
           message: "Default model for this workspace?",
-          initialValue: "claude-sonnet-4-20250514",
+          initialValue: "claude-sonnet-4-6",
         }),
       defaultN: () =>
         p.text({
@@ -152,7 +152,7 @@ async function runInit(args: ParsedArgs): Promise<void> {
     model: () =>
       p.text({
         message: "Default model?",
-        initialValue: "claude-sonnet-4-20250514",
+        initialValue: "claude-sonnet-4-6",
       }),
     apiKey: ({ results }) =>
       p.text({

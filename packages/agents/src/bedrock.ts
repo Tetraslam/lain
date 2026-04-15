@@ -23,6 +23,8 @@ function toBedrockModelId(model: string): string {
   }
 
   const map: Record<string, string> = {
+    "claude-sonnet-4-6": "us.anthropic.claude-sonnet-4-6",
+    "claude-opus-4-6": "us.anthropic.claude-opus-4-6-v1",
     "claude-sonnet-4-20250514": "us.anthropic.claude-sonnet-4-20250514-v1:0",
     "claude-haiku-4-20250414": "us.anthropic.claude-haiku-4-20250414-v1:0",
     "claude-opus-4-20250514": "us.anthropic.claude-opus-4-20250514-v1:0",
@@ -48,7 +50,7 @@ export class BedrockProvider implements AgentProvider {
   constructor(options: BedrockProviderOptions) {
     this.apiKey = options.apiKey;
     this.region = options.region ?? "us-west-2";
-    this.model = toBedrockModelId(options.model ?? "claude-sonnet-4-20250514");
+    this.model = toBedrockModelId(options.model ?? "claude-sonnet-4-6");
     this.maxTokens = options.maxTokens ?? 2048;
     this.baseUrl = `https://bedrock-runtime.${this.region}.amazonaws.com`;
   }
@@ -152,6 +154,6 @@ export class BedrockProvider implements AgentProvider {
     const titleLine = lines[0]?.trim() || "Untitled";
     const title = titleLine.replace(/^#+\s*/, "");
     const content = lines.slice(1).join("\n").trim();
-    return { title, content };
+    return { title, content, model: this.model, provider: "bedrock" };
   }
 }

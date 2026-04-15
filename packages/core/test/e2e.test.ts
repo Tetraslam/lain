@@ -27,6 +27,8 @@ class MockAgent implements AgentProvider {
     return {
       title: `Node ${request.node.id}: ${direction.slice(0, 30)}`,
       content: `This explores "${direction}" branching from "${request.ancestors.at(-1)?.title || "root"}".\n\nDepth: ${request.node.depth}, Branch: ${request.node.branchIndex}.\n\nSiblings already exploring: ${request.siblings.map((s) => s.title).join(", ") || "none"}.`,
+      model: "mock-model",
+      provider: "anthropic",
     };
   }
 
