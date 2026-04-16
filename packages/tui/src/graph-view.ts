@@ -49,8 +49,8 @@ const NODE_FG = RGBA.fromHex("#a9b1d6");
 const SELECTED_FG = RGBA.fromHex("#1a1b26");
 const SELECTED_BG = RGBA.fromHex("#bb9af7");
 const ROOT_FG = RGBA.fromHex("#7aa2f7");
-const EDGE_COLOR = RGBA.fromHex("#32344a");
-const CROSSLINK_COLOR = RGBA.fromHex("#7c6ea3");
+const EDGE_COLOR = RGBA.fromHex("#565f89");
+const CROSSLINK_COLOR = RGBA.fromHex("#bb9af7");
 const PRUNED_FG = RGBA.fromHex("#f7768e");
 
 // ============================================================================
@@ -216,7 +216,8 @@ function renderGraph(
     const a = map.get(edge.source), b = map.get(edge.target);
     if (!a || !b) continue;
     const color = edge.isCrosslink ? CROSSLINK_COLOR : EDGE_COLOR;
-    drawDottedLine(buf, Math.round(a.x), Math.round(a.y), Math.round(b.x), Math.round(b.y), "·", color, BG);
+    const ch = edge.isCrosslink ? ":" : "·";
+    drawDottedLine(buf, Math.round(a.x), Math.round(a.y), Math.round(b.x), Math.round(b.y), ch, color, BG, edge.isCrosslink ? 1 : 2);
   }
 
   // Draw nodes — selected last for z-order
@@ -241,13 +242,13 @@ function renderGraph(
 
 function drawDottedLine(
   buf: any, x0: number, y0: number, x1: number, y1: number,
-  ch: string, color: RGBA, bg: RGBA
+  ch: string, color: RGBA, bg: RGBA, spacing = 2
 ): void {
   const dx = Math.abs(x1 - x0), dy = Math.abs(y1 - y0);
   const sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1;
   let err = dx - dy, steps = 0;
   while (true) {
-    if (steps % 3 === 0) buf.setCell(x0, y0, ch, color, bg);
+    if (steps % spacing === 0) buf.setCell(x0, y0, ch, color, bg);
     if (x0 === x1 && y0 === y1) break;
     const e2 = 2 * err;
     if (e2 > -dy) { err -= dy; x0 += sx; }
