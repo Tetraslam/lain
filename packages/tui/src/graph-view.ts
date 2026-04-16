@@ -174,47 +174,50 @@ function computeRadialLayout(lainNodes: LainNode[]): GNode[] {
   const startAngle = -Math.PI / 2;
   layout(root, startAngle, startAngle + Math.PI * 2, 0);
 
-  // Post-layout: enforce minimum angular separation between same-depth nodes.
-  // If two nodes at the same depth are too close (their labels would overlap),
-  // spread them apart along the ring.
+  // Post-layout: enforce that no two same-depth nodes share the same Y row.
+  // Also enforce minimum angular separation for label overlap.
   for (let d = 1; d <= maxDepth; d++) {
     const ring = result.filter((n) => n.depth === d);
     if (ring.length < 2) continue;
 
     const radius = ringRadius[d] || 1;
 
-    // Sort by angle
-    ring.sort((a, b) => Math.atan2(a.y, a.x) - Math.atan2(b.y, b.x));
+    // Sort by angle (recover angle from Y-corrected coords)
+    ring.sort((a, b) => Math.atan2(a.y / 0.45, a.x) - Math.atan2(b.y / 0.45, b.x));
 
-    for (let i = 0; i < ring.length; i++) {
-      const a = ring[i];
-      const b = ring[(i + 1) % ring.length];
+    // Multiple passes to resolve all conflicts
+    for (let pass = 0; pass < 5; pass++) {
+      for (let i = 0; i < ring.length; i++) {
+        const a = ring[i];
+        const b = ring[(i + 1) % ring.length];
 
-      const dx = b.x - a.x;
-      const dy = b.y - a.y;
-      const dist = Math.sqrt(dx * dx + (dy * 2) * (dy * 2)); // Aspect-corrected
-
-      const minDist = (a.labelWidth + b.labelWidth) / 2 + 2;
-
-      if (dist < minDist) {
-        // Push apart along the ring (tangentially)
         const aAngle = Math.atan2(a.y / 0.45, a.x);
         const bAngle = Math.atan2(b.y / 0.45, b.x);
 
-        // Minimum angular separation needed
-        const minAngularSep = minDist / radius;
-        let angleDiff = bAngle - aAngle;
-        if (angleDiff < 0) angleDiff += Math.PI * 2;
+        // Check 1: Y-row overlap (most important for readability)
+        const yOverlap = Math.abs(Math.round(a.y) - Math.round(b.y)) < 2;
+        // Check 2: Label X overlap
+        const xOverlap = Math.abs(a.x - b.x) < (a.labelWidth + b.labelWidth) / 2 + 2;
 
-        if (angleDiff < minAngularSep) {
-          const push = (minAngularSep - angleDiff) / 2;
-          const newAAngle = aAngle - push;
-          const newBAngle = bAngle + push;
+        if (yOverlap && xOverlap) {
+          // Push apart angularly — ensure at least 2 rows of Y separation
+          const minAngularSep = Math.max(
+            (a.labelWidth + b.labelWidth) / 2 / radius + 0.05,
+            4 / (radius * 0.45) // At least ~4 Y-units apart (2 rows accounting for 0.45 aspect)
+          );
 
-          a.x = Math.cos(newAAngle) * radius;
-          a.y = Math.sin(newAAngle) * radius * 0.45;
-          b.x = Math.cos(newBAngle) * radius;
-          b.y = Math.sin(newBAngle) * radius * 0.45;
+          let angleDiff = bAngle - aAngle;
+          if (angleDiff < 0) angleDiff += Math.PI * 2;
+
+          if (angleDiff < minAngularSep) {
+            const push = (minAngularSep - angleDiff) / 2 + 0.02;
+            const newAAngle = aAngle - push;
+            const newBAngle = bAngle + push;
+            a.x = Math.cos(newAAngle) * radius;
+            a.y = Math.sin(newAAngle) * radius * 0.45;
+            b.x = Math.cos(newBAngle) * radius;
+            b.y = Math.sin(newBAngle) * radius * 0.45;
+          }
         }
       }
     }
