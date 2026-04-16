@@ -1,4 +1,4 @@
-import Database from "better-sqlite3";
+import { Database } from "bun:sqlite";
 import type {
   Exploration,
   LainNode,
@@ -90,12 +90,12 @@ CREATE INDEX IF NOT EXISTS idx_crosslink_target ON crosslink(target_id);
 `;
 
 export class Storage {
-  private db: Database.Database;
+  private db: Database;
 
   constructor(dbPath: string) {
-    this.db = new Database(dbPath);
-    this.db.pragma("journal_mode = WAL");
-    this.db.pragma("foreign_keys = ON");
+    this.db = new Database(dbPath, { create: true });
+    this.db.run("PRAGMA journal_mode = WAL");
+    this.db.run("PRAGMA foreign_keys = ON");
     this.db.exec(SCHEMA);
   }
 
@@ -272,7 +272,7 @@ export class Storage {
 
     this.db
       .prepare(`UPDATE node SET ${parts.join(", ")} WHERE id = ?`)
-      .run(...values);
+      .run(...(values as any[]));
   }
 
   setNodeConflict(id: string, conflictContent: string): void {

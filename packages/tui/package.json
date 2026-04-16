@@ -1,0 +1,21 @@
+{
+  "name": "@lain/tui",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "lain-tui": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsup src/index.ts --format esm --no-splitting --external @opentui/core --external bun:sqlite --external chokidar --external gray-matter",
+    "dev": "bun run src/index.ts",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@lain/agents": "workspace:*",
+    "@lain/core": "workspace:*",
+    "@lain/extensions": "workspace:*",
+    "@lain/shared": "workspace:*",
+    "@opentui/core": "^0.1.99"
+  }
+}
