@@ -45,7 +45,7 @@ interface TreeItem {
   nodeId: string; prefix: string; title: string; depth: number; status: string; node: LainNode;
 }
 
-type AppMode = "home" | "exploring" | "reading" | "help" | "palette" | "creating";
+type AppMode = "home" | "exploring" | "reading" | "editing" | "graph" | "help" | "palette" | "creating";
 
 // ============================================================================
 // DB Discovery
@@ -155,6 +155,7 @@ ${bold(fg(c.accent)("tree panel"))}
   ${fg(c.yellow)("j/k  ↑/↓")}     navigate nodes
   ${fg(c.yellow)("enter  →")}     open in content panel
   ${fg(c.yellow)("tab")}          switch to content panel
+  ${fg(c.yellow)("g")}            graph view
   ${fg(c.yellow)("p")}            prune selected node
   ${fg(c.yellow)("e")}            extend (add children)
   ${fg(c.yellow)("r")}            redirect (regenerate)
@@ -166,12 +167,22 @@ ${bold(fg(c.accent)("content panel"))}
   ${fg(c.yellow)("j/k  ↑/↓")}     scroll content
   ${fg(c.yellow)("d/u")}          half page down/up
   ${fg(c.yellow)("g")}            scroll to top
+  ${fg(c.yellow)("i")}            edit mode
   ${fg(c.yellow)("esc  ←  h")}    back to tree
   ${fg(c.yellow)("ctrl+p")}       command palette
 
+${bold(fg(c.accent)("edit mode"))}
+  ${fg(c.yellow)("esc")}          save and exit
+  ${fg(c.yellow)("ctrl+s")}       save and exit
+
+${bold(fg(c.accent)("graph view"))}
+  ${fg(c.yellow)("j/k")}          select next/prev node
+  ${fg(c.yellow)("enter")}        open node in tree view
+  ${fg(c.yellow)("esc  q")}       back to tree
+
 ${bold(fg(c.accent)("general"))}
   ${fg(c.yellow)("?")}            this help
-  ${fg(c.yellow)("q")}            quit (from tree) / back (from content)
+  ${fg(c.yellow)("q")}            back / quit
   ${fg(c.yellow)("ctrl+p")}       command palette (from anywhere)
 `;
 }
@@ -361,6 +372,44 @@ export async function createApp(dbPathArg?: string): Promise<void> {
   expFooter.add(expFooterText);
 
   // ===========================================================================
+  // GRAPH VIEW
+  // ===========================================================================
+
+  const graphContainer = new BoxRenderable(renderer, {
+    id: "graph-container", width: "100%", height: "100%", flexDirection: "column",
+  });
+
+  const graphHeader = new BoxRenderable(renderer, { id: "graph-header", width: "100%", height: 1, marginTop: 1, marginBottom: 1 });
+  graphContainer.add(graphHeader);
+  const graphHeaderText = new TextRenderable(renderer, { id: "graph-header-text", content: "" });
+  graphHeader.add(graphHeaderText);
+
+  const graphBody = new BoxRenderable(renderer, {
+    id: "graph-body", width: "100%", flexGrow: 1, flexDirection: "row", overflow: "hidden",
+  });
+  graphContainer.add(graphBody);
+
+  const graphFooter = new BoxRenderable(renderer, { id: "graph-footer", width: "100%", height: 1, marginTop: 1, marginBottom: 1, paddingLeft: 2 });
+  graphContainer.add(graphFooter);
+  const graphFooterText = new TextRenderable(renderer, {
+    id: "graph-footer-text",
+    content: t`  ${dim("j/k")} select node  ${fg(c.muted)("·")}  ${dim("enter")} open  ${fg(c.muted)("·")}  ${dim("esc")} back  ${fg(c.muted)("·")}  ${dim("ctrl+p")} palette`,
+  });
+  graphFooter.add(graphFooterText);
+
+  let graphView: GraphView | null = null;
+
+  // ===========================================================================
+  // EDIT MODE (textarea overlay in node panel)
+  // ===========================================================================
+
+  const editTextarea = new TextareaRenderable(renderer, {
+    id: "edit-textarea", width: "100%", height: "100%",
+    textColor: c.fg, backgroundColor: "transparent",
+  });
+  let editingNodeId: string | null = null;
+
+  // ===========================================================================
   // COMMAND PALETTE (overlay)
   // ===========================================================================
 
@@ -475,9 +524,10 @@ export async function createApp(dbPathArg?: string): Promise<void> {
   // Screen management
   // ===========================================================================
 
-  function showScreen(screen: "home" | "exploration" | "palette" | "create") {
+  function showScreen(screen: "home" | "exploration" | "palette" | "create" | "graph") {
     try { rootBox.remove("home-container"); } catch {}
     try { rootBox.remove("exp-container"); } catch {}
+    try { rootBox.remove("graph-container"); } catch {}
     try { rootBox.remove("palette-overlay"); } catch {}
     try { rootBox.remove("create-box"); } catch {}
 
@@ -496,8 +546,15 @@ export async function createApp(dbPathArg?: string): Promise<void> {
         treeSelect.focusable = true;
         treeSelect.focus();
       }
+    } else if (screen === "graph") {
+      rootBox.add(graphContainer);
+      homeSelect.focusable = false;
+      homeSelect.blur();
+      treeSelect.focusable = false;
+      treeSelect.blur();
     } else if (screen === "palette") {
       if (previousMode === "home") rootBox.add(homeContainer);
+      else if (previousMode === "graph") rootBox.add(graphContainer);
       else rootBox.add(explorationContainer);
       rootBox.add(paletteOverlay);
       paletteInput.value = "";
@@ -505,6 +562,7 @@ export async function createApp(dbPathArg?: string): Promise<void> {
       updatePaletteOptions("");
     } else if (screen === "create") {
       if (previousMode === "home") rootBox.add(homeContainer);
+      else if (previousMode === "graph") rootBox.add(graphContainer);
       else rootBox.add(explorationContainer);
       rootBox.add(createBox);
       createSeedInput.value = "";
@@ -548,6 +606,27 @@ export async function createApp(dbPathArg?: string): Promise<void> {
     nodePanel.borderColor = c.muted;
   }
 
+  function refreshHomeScreen() {
+    const freshDbs = discoverDbs(process.cwd());
+    const newOpts: SelectOption[] = [];
+    for (const db of freshDbs) {
+      for (const exp of db.explorations) {
+        const truncName = exp.name.length > 50 ? exp.name.slice(0, 47) + "…" : exp.name;
+        newOpts.push({
+          name: truncName,
+          description: `${exp.nodeCount} nodes · n=${exp.n} m=${exp.m} · ${exp.ext} · ${db.name}`,
+          value: { dbPath: db.path, expId: exp.id },
+        });
+      }
+    }
+    newOpts.push({
+      name: "✦  Create new exploration",
+      description: "Start a new idea graph from scratch",
+      value: { action: "create" },
+    });
+    homeSelect.options = newOpts;
+  }
+
   function refreshTree() {
     if (!graph || !exploration || !storage) return;
     allNodes = graph.getAllNodes(exploration.id);
@@ -578,10 +657,10 @@ export async function createApp(dbPathArg?: string): Promise<void> {
 
   // ---- Footers ----
   function exploringFooter(): StyledText {
-    return t`  ${dim("j/k")} navigate  ${fg(c.muted)("·")}  ${dim("enter/→")} open  ${fg(c.muted)("·")}  ${dim("p")}rune ${dim("e")}xtend ${dim("r")}edirect  ${fg(c.muted)("·")}  ${dim("ctrl+p")} palette  ${fg(c.muted)("·")}  ${dim("q")} quit`;
+    return t`  ${dim("j/k")} navigate  ${fg(c.muted)("·")}  ${dim("enter/→")} open  ${fg(c.muted)("·")}  ${dim("g")}raph  ${fg(c.muted)("·")}  ${dim("p")}rune ${dim("e")}xtend ${dim("r")}edirect  ${fg(c.muted)("·")}  ${dim("ctrl+p")} palette`;
   }
   function readingFooter(): StyledText {
-    return t`  ${dim("j/k")} scroll  ${fg(c.muted)("·")}  ${dim("d/u")} page  ${fg(c.muted)("·")}  ${dim("esc/←")} back  ${fg(c.muted)("·")}  ${dim("ctrl+p")} palette  ${fg(c.muted)("·")}  ${dim("?")} help`;
+    return t`  ${dim("j/k")} scroll  ${fg(c.muted)("·")}  ${dim("d/u")} page  ${fg(c.muted)("·")}  ${dim("i")} edit  ${fg(c.muted)("·")}  ${dim("esc/←")} back  ${fg(c.muted)("·")}  ${dim("ctrl+p")} palette`;
   }
 
   // ---- Tree selection changed ----
@@ -596,6 +675,10 @@ export async function createApp(dbPathArg?: string): Promise<void> {
 
     if (mode === "exploring" || mode === "reading") {
       const node = selectedNode();
+      actions.push({ name: "Graph view", description: "Visualize exploration as a force-directed graph", key: "g", action: enterGraphMode });
+      if (mode === "reading") {
+        actions.push({ name: "Edit node", description: `Edit content of ${node?.title || "selected"}`, key: "i", action: enterEditMode });
+      }
       actions.push({ name: "Prune node", description: `Prune ${node?.title || "selected"} and descendants`, key: "p", action: doPrune });
       actions.push({ name: "Extend node", description: `Add ${exploration?.n || 3} children to ${node?.title || "selected"}`, key: "e", action: doExtend });
       actions.push({ name: "Redirect node", description: `Regenerate ${node?.title || "selected"} with fresh content`, key: "r", action: doRedirect });
@@ -694,6 +777,104 @@ export async function createApp(dbPathArg?: string): Promise<void> {
     nodeText.content = buildHelpContent();
     nodeScroll.scrollTop = 0;
     expFooterText.content = t`  ${dim("press any key to dismiss")}`;
+  }
+
+  // ---- Graph mode ----
+  function enterGraphMode() {
+    if (!graph || !exploration) return;
+    previousMode = mode;
+    mode = "graph";
+    treeSelect.blur();
+    treeSelect.focusable = false;
+
+    const gw = termW - 4;
+    const gh = (renderer.height ?? 24) - 6;
+
+    const crosslinks = graph.getCrosslinks(exploration.id);
+    graphView = new GraphView({
+      renderer,
+      nodes: allNodes,
+      crosslinks,
+      width: gw,
+      height: gh,
+      onNodeSelect: (nodeId) => {
+        exitGraphMode();
+        const treeIdx = treeItems.findIndex((t) => t.nodeId === nodeId);
+        if (treeIdx >= 0) treeSelect.setSelectedIndex(treeIdx);
+        enterReadingMode();
+      },
+    });
+
+    const { fb, peek } = graphView.getRenderables();
+    graphBody.add(fb);
+    graphBody.add(peek);
+
+    const shortName = exploration.name.length > 50 ? exploration.name.slice(0, 47) + "…" : exploration.name;
+    graphHeaderText.content = t`  ${fg(c.accent)("lain")}  ${dim(shortName)}  ${fg(c.muted)("·")}  ${fg(c.cyan)("graph view")}`;
+
+    showScreen("graph");
+    graphView.start();
+  }
+
+  function exitGraphMode() {
+    if (graphView) {
+      graphView.stop();
+      try { graphBody.remove("graph-fb"); } catch {}
+      try { graphBody.remove("graph-peek"); } catch {}
+      graphView = null;
+    }
+    enterExploringMode();
+    showScreen("exploration");
+  }
+
+  // ---- Edit mode ----
+  function enterEditMode() {
+    const node = selectedNode();
+    if (!node || !graph) return;
+    if (node.id === "root") {
+      toast.warning("Cannot edit root node (it contains the seed)");
+      return;
+    }
+
+    previousMode = mode;
+    mode = "editing";
+    editingNodeId = node.id;
+
+    // Replace nodeText with editTextarea in the scroll container
+    try { nodeScroll.content.remove("node-text"); } catch {}
+    editTextarea.initialValue = node.content || "";
+    nodeScroll.content.add(editTextarea);
+    editTextarea.focus();
+
+    treeSelect.blur();
+    treeSelect.focusable = false;
+    treePanel.borderColor = c.muted;
+    nodePanel.borderColor = c.yellow;
+
+    expFooterText.content = t`  ${fg(c.yellow)("EDITING")}  ${dim("type to edit")}  ${fg(c.muted)("·")}  ${dim("esc/ctrl+s")} save & exit`;
+  }
+
+  function saveAndExitEdit() {
+    if (editingNodeId && graph && storage) {
+      const newContent = editTextarea.plainText;
+      storage.updateNodeFromSync(editingNodeId, { content: newContent });
+      toast.success("Saved");
+    }
+
+    // Swap textarea back to text renderable
+    try { nodeScroll.content.remove("edit-textarea"); } catch {}
+    nodeScroll.content.add(nodeText);
+    editTextarea.blur();
+    editingNodeId = null;
+
+    // Refresh and go back to reading
+    const node = selectedNode();
+    if (node) showNode(node);
+    mode = "reading";
+    treePanel.borderColor = c.muted;
+    nodePanel.borderColor = c.accent;
+    treeSelect.focusable = false;
+    expFooterText.content = readingFooter();
   }
 
   // ---- Write operations ----
@@ -807,15 +988,27 @@ Using extension: ${bold(useExt)}.
     treeSelect.focusable = false;
     expFooterText.content = t`  ${fg(c.yellow)("generating...")}  ${dim("please wait")}`;
 
+    let nodesGenerated = 0;
+    let totalExpected = 0;
+    for (let d = 1; d <= useM; d++) totalExpected += Math.pow(useN, d);
+
     try {
       const orchestrator = new Orchestrator({
         dbPath: newDbPath, agent, concurrency: 5,
         onEvent: (event) => {
           if (event.type === "node:complete") {
+            nodesGenerated++;
             const data = event.data as { title?: string } | undefined;
-            if (data?.title) {
-              toast.success(data.title, { duration: 2000 });
-            }
+            const title = data?.title || "untitled";
+            const short = title.length > 30 ? title.slice(0, 29) + "…" : title;
+            // Update the generating view with progress
+            expHeaderText.content = t`  ${fg(c.accent)("lain")}  ${dim(shortName)}  ${fg(c.muted)("·")}  ${fg(c.yellow)(`generating ${nodesGenerated}/${totalExpected}`)}  ${fg(c.muted)("·")}  ${dim(`n=${useN} m=${useM}`)}`;
+            nodeText.content = t`${bold(fg(c.bright)(seed))}
+
+${fg(c.yellow)(`Generating... ${nodesGenerated}/${totalExpected} nodes complete`)}
+
+Latest: ${short}
+`;
           }
         },
       });
@@ -828,6 +1021,7 @@ Using extension: ${bold(useExt)}.
       });
       orchestrator.close();
       toast.success("Exploration complete!");
+      refreshHomeScreen();
       openExploration(newDbPath, expId);
     } catch (err: any) {
       toast.error(`Create failed: ${err.message}`);
@@ -853,20 +1047,20 @@ Using extension: ${bold(useExt)}.
       return;
     }
 
-    // ---- Palette mode — stop propagation to prevent tree/home select intercepting ----
+    // ---- Palette mode — stop propagation only for handled keys ----
     if (mode === "palette") {
-      key.stopPropagation();
-      if (key.name === "escape") { closePalette(); return; }
-      if (key.name === "return") { executePaletteAction(); return; }
-      if (key.name === "down" || (key.name === "n" && key.ctrl)) { paletteSelect.moveDown(); return; }
-      if (key.name === "up" || (key.name === "p" && key.ctrl)) { paletteSelect.moveUp(); return; }
+      if (key.name === "escape") { key.stopPropagation(); closePalette(); return; }
+      if (key.name === "return") { key.stopPropagation(); executePaletteAction(); return; }
+      if (key.name === "down" || (key.name === "n" && key.ctrl)) { key.stopPropagation(); paletteSelect.moveDown(); return; }
+      if (key.name === "up" || (key.name === "p" && key.ctrl)) { key.stopPropagation(); paletteSelect.moveUp(); return; }
+      // Don't stopPropagation for other keys — let InputRenderable handle typing
       return;
     }
 
     // ---- Creating mode ----
     if (mode === "creating") {
-      key.stopPropagation();
       if (key.name === "escape") {
+        key.stopPropagation();
         mode = previousMode;
         try { rootBox.remove("create-box"); } catch {}
         if (mode === "home") showScreen("home");
@@ -874,6 +1068,7 @@ Using extension: ${bold(useExt)}.
         return;
       }
       if (key.name === "tab") {
+        key.stopPropagation();
         // Cycle focus between seed, n, m, ext inputs
         const createFields = [createSeedInput, createNInput, createMInput, createExtInput];
         const currentFocus = createFields.findIndex((f) => (f as any)._focused);
@@ -883,6 +1078,7 @@ Using extension: ${bold(useExt)}.
         return;
       }
       if (key.name === "return") {
+        key.stopPropagation();
         const seed = createSeedInput.value;
         const n = parseInt(createNInput.value) || 3;
         const m = parseInt(createMInput.value) || 2;
@@ -934,6 +1130,7 @@ Using extension: ${bold(useExt)}.
         case "r": doRedirect(); return;
         case "x": doExport(); return;
         case "s": doSync(); return;
+        case "g": enterGraphMode(); return;
       }
       return;
     }
@@ -951,7 +1148,51 @@ Using extension: ${bold(useExt)}.
         case "tab": enterExploringMode(); return;
         case "?": showHelpMode(); return;
         case "q": enterExploringMode(); return;
+        case "i": enterEditMode(); return;
       }
+      return;
+    }
+
+    // ---- Edit mode — only intercept escape and ctrl+s, let textarea handle rest ----
+    if (mode === "editing") {
+      if (key.name === "escape") {
+        key.stopPropagation();
+        saveAndExitEdit();
+        return;
+      }
+      if (key.name === "s" && key.ctrl) {
+        key.stopPropagation();
+        saveAndExitEdit();
+        return;
+      }
+      // Let textarea handle all other keys (typing, cursor movement, etc.)
+      return;
+    }
+
+    // ---- Graph mode ----
+    if (mode === "graph") {
+      key.stopPropagation();
+      if (key.name === "escape" || key.name === "q") {
+        exitGraphMode();
+        return;
+      }
+      if (key.name === "return") {
+        // Open selected node in exploration view
+        if (graphView) {
+          const activeNodes = allNodes.filter((n) => n.status !== "pruned");
+          const idx = (graphView as any).selectedIdx || 0;
+          const node = activeNodes[idx];
+          if (node && graph) {
+            exitGraphMode();
+            // Find the node in the tree and select it
+            const treeIdx = treeItems.findIndex((t) => t.nodeId === node.id);
+            if (treeIdx >= 0) treeSelect.setSelectedIndex(treeIdx);
+            enterReadingMode();
+          }
+        }
+        return;
+      }
+      graphView?.handleKey(key);
       return;
     }
   });
