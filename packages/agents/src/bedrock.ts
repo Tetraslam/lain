@@ -183,8 +183,9 @@ export class BedrockProvider implements AgentProvider {
       throw new Error("Bedrock stream: no response body");
     }
 
-    // Parse AWS event stream format
-    // Events come as lines of JSON, each containing a type field
+    // Parse AWS Event Stream binary format
+    // Each frame contains binary headers + JSON payload
+    // We extract JSON objects containing contentBlockDelta events
     let fullText = "";
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
@@ -196,39 +197,47 @@ export class BedrockProvider implements AgentProvider {
 
       buffer += decoder.decode(value, { stream: true });
 
-      // AWS event streams use newline-delimited JSON events
-      // Each event has a :event-type header and a JSON payload
-      // The actual content comes in contentBlockDelta events with delta.text
-      const lines = buffer.split("\n");
-      buffer = lines.pop() || ""; // Keep incomplete last line
+      // Extract all JSON objects from the binary stream
+      // They appear between binary framing as {...} patterns
+      let searchFrom = 0;
+      while (searchFrom < buffer.length) {
+        const jsonStart = buffer.indexOf("{", searchFrom);
+        if (jsonStart === -1) break;
 
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed || trimmed.startsWith(":")) continue;
-
-        try {
-          const event = JSON.parse(trimmed);
-
-          if (event.contentBlockDelta?.delta?.text) {
-            const chunk = event.contentBlockDelta.delta.text;
-            fullText += chunk;
-            onChunk(chunk);
-          }
-        } catch {
-          // Not JSON — might be AWS event stream framing, skip
-          // Try to extract JSON from binary event stream frames
-          const jsonMatch = trimmed.match(/\{.*"contentBlockDelta".*\}/);
-          if (jsonMatch) {
-            try {
-              const event = JSON.parse(jsonMatch[0]);
-              if (event.contentBlockDelta?.delta?.text) {
-                const chunk = event.contentBlockDelta.delta.text;
-                fullText += chunk;
-                onChunk(chunk);
-              }
-            } catch {}
+        // Find matching closing brace (handle nested objects)
+        let depth = 0;
+        let jsonEnd = -1;
+        for (let i = jsonStart; i < buffer.length; i++) {
+          if (buffer[i] === "{") depth++;
+          else if (buffer[i] === "}") {
+            depth--;
+            if (depth === 0) { jsonEnd = i; break; }
           }
         }
+
+        if (jsonEnd === -1) break; // Incomplete JSON, wait for more data
+
+        const jsonStr = buffer.slice(jsonStart, jsonEnd + 1);
+        searchFrom = jsonEnd + 1;
+
+        try {
+          const event = JSON.parse(jsonStr);
+          if (event.delta?.text) {
+            fullText += event.delta.text;
+            onChunk(event.delta.text);
+          } else if (event.contentBlockDelta?.delta?.text) {
+            fullText += event.contentBlockDelta.delta.text;
+            onChunk(event.contentBlockDelta.delta.text);
+          }
+        } catch {
+          // Not valid JSON, skip
+        }
+      }
+
+      // Keep unprocessed tail
+      const lastBrace = buffer.lastIndexOf("}");
+      if (lastBrace >= 0) {
+        buffer = buffer.slice(lastBrace + 1);
       }
     }
 
