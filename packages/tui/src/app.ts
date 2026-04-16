@@ -149,15 +149,6 @@ function buildNodeContent(node: LainNode, graph: Graph, allNodes: LainNode[]): S
   }
 
   // Build model and direction lines
-  let metaExtra = t``;
-  if (node.model) {
-    metaExtra = t`${metaExtra}${fg(c.blue)("model")}  ${dim(`${node.model} (${node.provider})`)}\n`;
-  }
-  if (node.planSummary) {
-    metaExtra = t`${metaExtra}${fg(c.blue)("direction")}  ${italic(node.planSummary)}\n`;
-  }
-
-  // Build model and direction lines
   let metaExtraStr = "";
   if (node.model) {
     metaExtraStr += `model  ${node.model} (${node.provider})\n`;
@@ -261,7 +252,7 @@ export async function createApp(dbPathArg?: string): Promise<void> {
   // ---- Toast system ----
   const toaster = new ToasterRenderable(renderer, {
     position: "bottom-right",
-    stackMode: "stack",
+    stackingMode: "stack",
   });
   renderer.root.add(toaster);
 
@@ -285,7 +276,7 @@ export async function createApp(dbPathArg?: string): Promise<void> {
   // ---- Tree panel ----
   const treePanel = new BoxRenderable(renderer, {
     id: "tree-panel", width: treePanelWidth, height: "100%",
-    border: true, borderStyle: "round", borderColor: c.accent,
+    border: true, borderStyle: "rounded", borderColor: c.accent,
     flexDirection: "column", overflow: "hidden",
   });
   contentArea.add(treePanel);
@@ -306,7 +297,7 @@ export async function createApp(dbPathArg?: string): Promise<void> {
     focusedBackgroundColor: "transparent", focusedTextColor: c.dim,
     selectedBackgroundColor: c.surface, selectedTextColor: c.bright,
     showDescription: false, showScrollIndicator: true, wrapSelection: false,
-    focusable: true, itemSpacing: 0,
+    itemSpacing: 0,
   });
   treePanel.add(treeSelect);
   treeSelect.focus();
@@ -314,7 +305,7 @@ export async function createApp(dbPathArg?: string): Promise<void> {
   // ---- Node panel ----
   const nodePanel = new BoxRenderable(renderer, {
     id: "node-panel", flexGrow: 1, height: "100%",
-    border: true, borderStyle: "round", borderColor: c.muted,
+    border: true, borderStyle: "rounded", borderColor: c.muted,
     flexDirection: "column", overflow: "hidden",
     paddingLeft: 1, paddingRight: 1, paddingTop: 1,
   });
@@ -322,7 +313,6 @@ export async function createApp(dbPathArg?: string): Promise<void> {
 
   const nodeScroll = new ScrollBoxRenderable(renderer, {
     id: "node-scroll", scrollY: true, scrollX: false, viewportCulling: true,
-    scrollbarOptions: { trackColor: c.muted, thumbColor: c.accentDim },
   });
   nodePanel.add(nodeScroll);
 
@@ -362,7 +352,7 @@ export async function createApp(dbPathArg?: string): Promise<void> {
 
   function showNode(node: LainNode) {
     nodeText.content = buildNodeContent(node, graph, allNodes);
-    nodeScroll.scrollToTop();
+    nodeScroll.scrollTop = 0;
   }
 
   // ---- Selection change ----
@@ -378,19 +368,22 @@ export async function createApp(dbPathArg?: string): Promise<void> {
     if (newMode === "exploring") {
       treePanel.borderColor = c.accent;
       nodePanel.borderColor = c.muted;
+      treeSelect.focusable = true;
       treeSelect.focus();
       footerText.content = exploringFooter();
     } else if (newMode === "reading") {
       treePanel.borderColor = c.muted;
       nodePanel.borderColor = c.accent;
       treeSelect.blur();
+      treeSelect.focusable = false;
       footerText.content = readingFooter();
     } else if (newMode === "help") {
       treePanel.borderColor = c.muted;
       nodePanel.borderColor = c.accent;
       treeSelect.blur();
+      treeSelect.focusable = false;
       nodeText.content = buildHelpContent();
-      nodeScroll.scrollToTop();
+      nodeScroll.scrollTop = 0;
       footerText.content = t`  ${dim("press any key to dismiss")}`;
     }
   }
@@ -526,11 +519,11 @@ export async function createApp(dbPathArg?: string): Promise<void> {
     // ---- Reading mode ----
     if (state.mode === "reading") {
       switch (key.name) {
-        case "j": case "down": nodeScroll.scrollBy(0, 2); return;
-        case "k": case "up": nodeScroll.scrollBy(0, -2); return;
-        case "d": nodeScroll.scrollBy(0, 10); return;
-        case "u": nodeScroll.scrollBy(0, -10); return;
-        case "g": nodeScroll.scrollToTop(); return;
+        case "j": case "down": nodeScroll.scrollBy({ x: 0, y: 2 }); return;
+        case "k": case "up": nodeScroll.scrollBy({ x: 0, y: -2 }); return;
+        case "d": nodeScroll.scrollBy({ x: 0, y: 10 }); return;
+        case "u": nodeScroll.scrollBy({ x: 0, y: -10 }); return;
+        case "g": nodeScroll.scrollTop = 0; return;
         case "escape": case "left": case "h": updateMode("exploring"); return;
         case "tab": updateMode("exploring"); return;
         case "?": updateMode("help"); return;
