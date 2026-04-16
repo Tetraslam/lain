@@ -787,7 +787,7 @@ export async function createApp(dbPathArg?: string): Promise<void> {
     treeSelect.blur();
     treeSelect.focusable = false;
 
-    const gw = termW - 4;
+    const gw = termW - 40; // Leave room for peek panel beside it
     const gh = (renderer.height ?? 24) - 6;
 
     const crosslinks = graph.getCrosslinks(exploration.id);
@@ -795,8 +795,8 @@ export async function createApp(dbPathArg?: string): Promise<void> {
       renderer,
       nodes: allNodes,
       crosslinks,
-      width: gw,
-      height: gh,
+      graphWidth: gw,
+      graphHeight: gh,
       onNodeSelect: (nodeId) => {
         exitGraphMode();
         const treeIdx = treeItems.findIndex((t) => t.nodeId === nodeId);
