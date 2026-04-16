@@ -273,11 +273,20 @@ export async function createApp(dbPathArg?: string): Promise<void> {
     itemSpacing: 1,
   });
 
+  // Constrain home list width for aesthetics on wide screens
+  const homeMaxWidth = Math.min(termW - 8, 80);
+
   const homeBody = new BoxRenderable(renderer, {
-    id: "home-body", width: "100%", flexGrow: 1, paddingLeft: 4, paddingRight: 4, marginTop: 1,
+    id: "home-body", width: "100%", flexGrow: 1, marginTop: 1,
+    alignItems: "center",
   });
   homeContainer.add(homeBody);
-  homeBody.add(homeSelect);
+
+  const homeBodyInner = new BoxRenderable(renderer, {
+    id: "home-body-inner", width: homeMaxWidth, height: "100%",
+  });
+  homeBody.add(homeBodyInner);
+  homeBodyInner.add(homeSelect);
 
   const homeFooter = new BoxRenderable(renderer, {
     id: "home-footer", width: "100%", height: 1, marginBottom: 1, paddingLeft: 2,
@@ -382,8 +391,8 @@ export async function createApp(dbPathArg?: string): Promise<void> {
     options: [], selectedIndex: 0,
     backgroundColor: "transparent", textColor: c.fg,
     focusedBackgroundColor: "transparent", focusedTextColor: c.fg,
-    selectedBackgroundColor: c.accent, selectedTextColor: c.bright,
-    descriptionColor: c.dim, selectedDescriptionColor: c.bright,
+    selectedBackgroundColor: c.surface, selectedTextColor: c.bright,
+    descriptionColor: c.dim, selectedDescriptionColor: c.fg,
     showDescription: true, showScrollIndicator: false, wrapSelection: false,
     itemSpacing: 0,
   });
@@ -422,9 +431,40 @@ export async function createApp(dbPathArg?: string): Promise<void> {
   });
   createForm.add(createSeedInput);
 
+  const createParamsLabel = new TextRenderable(renderer, {
+    id: "create-params-label", content: "parameters (optional — enter to skip)", fg: c.dim,
+  });
+  createForm.add(createParamsLabel);
+
+  const createParamsRow = new BoxRenderable(renderer, {
+    id: "create-params-row", width: "100%", flexDirection: "row", gap: 2,
+  });
+  createForm.add(createParamsRow);
+
+  const createNLabel = new TextRenderable(renderer, { id: "create-n-label", content: "n:", fg: c.blue });
+  createParamsRow.add(createNLabel);
+  const createNInput = new InputRenderable(renderer, {
+    id: "create-n-input", width: 4, placeholder: "3", value: "3",
+  });
+  createParamsRow.add(createNInput);
+
+  const createMLabel = new TextRenderable(renderer, { id: "create-m-label", content: "m:", fg: c.blue });
+  createParamsRow.add(createMLabel);
+  const createMInput = new InputRenderable(renderer, {
+    id: "create-m-input", width: 4, placeholder: "2", value: "2",
+  });
+  createParamsRow.add(createMInput);
+
+  const createExtLabel = new TextRenderable(renderer, { id: "create-ext-label", content: "ext:", fg: c.blue });
+  createParamsRow.add(createExtLabel);
+  const createExtInput = new InputRenderable(renderer, {
+    id: "create-ext-input", width: 15, placeholder: "freeform", value: "freeform",
+  });
+  createParamsRow.add(createExtInput);
+
   const createHint = new TextRenderable(renderer, {
     id: "create-hint",
-    content: "enter to create  ·  esc to cancel  ·  defaults: n=3 m=2 freeform",
+    content: "tab to switch fields  ·  enter to create  ·  esc to cancel",
     fg: c.dim,
   });
   createForm.add(createHint);
@@ -441,11 +481,19 @@ export async function createApp(dbPathArg?: string): Promise<void> {
 
     if (screen === "home") {
       rootBox.add(homeContainer);
+      homeSelect.focusable = true;
       homeSelect.focus();
+      treeSelect.focusable = false;
+      treeSelect.blur();
       renderer.setTerminalTitle("lain");
     } else if (screen === "exploration") {
       rootBox.add(explorationContainer);
-      if (mode === "exploring") treeSelect.focus();
+      homeSelect.focusable = false;
+      homeSelect.blur();
+      if (mode === "exploring") {
+        treeSelect.focusable = true;
+        treeSelect.focus();
+      }
     } else if (screen === "palette") {
       if (previousMode === "home") rootBox.add(homeContainer);
       else rootBox.add(explorationContainer);
@@ -587,17 +635,20 @@ export async function createApp(dbPathArg?: string): Promise<void> {
   function openPalette() {
     previousMode = mode;
     mode = "palette";
-    // Blur everything
+    // Disable all select renderables so they don't intercept keys
     treeSelect.focusable = false;
     treeSelect.blur();
+    homeSelect.focusable = false;
     homeSelect.blur();
+    paletteSelect.focusable = false; // We drive it manually via moveUp/moveDown
     showScreen("palette");
   }
 
   function closePalette() {
     mode = previousMode;
-    rootBox.remove("palette-overlay");
+    try { rootBox.remove("palette-overlay"); } catch {}
     if (mode === "home") {
+      homeSelect.focusable = true;
       homeSelect.focus();
     } else if (mode === "exploring") {
       treeSelect.focusable = true;
@@ -723,30 +774,65 @@ export async function createApp(dbPathArg?: string): Promise<void> {
     } catch (err: any) { toast.error(`Sync failed: ${err.message}`); }
   }
 
-  async function doCreate(seed: string) {
+  async function doCreate(seed: string, n?: number, m?: number, ext?: string) {
     if (!seed.trim()) { toast.warning("Seed cannot be empty"); return; }
     const config = loadConfig();
     const credentials = loadCredentials();
     const agent = createProviderFromCredentials(config, credentials);
 
+    const useN = n || config.defaultN;
+    const useM = m || config.defaultM;
+    const useExt = ext || config.defaultExtension;
+
     const slugName = seed.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 50);
     const newDbPath = path.resolve(`${slugName}.db`);
     const expId = generateId();
 
-    toast.loading("Creating exploration...");
+    // Switch to exploration view immediately with a placeholder
+    const shortName = seed.length > 50 ? seed.slice(0, 47) + "…" : seed;
+    renderer.setTerminalTitle(`lain — creating: ${shortName}`);
+    expHeaderText.content = t`  ${fg(c.accent)("lain")}  ${dim(shortName)}  ${fg(c.muted)("·")}  ${fg(c.yellow)("creating...")}  ${fg(c.muted)("·")}  ${dim(`n=${useN} m=${useM}`)}  ${fg(c.muted)("·")}  ${dim(useExt)}`;
+    treeSelect.options = [{ name: "generating...", description: "", value: null }];
+    nodeText.content = t`${bold(fg(c.bright)(seed))}
+
+${fg(c.yellow)("Generating exploration...")}
+
+This will create ${bold(String(useN))} branches at each node to a depth of ${bold(String(useM))}.
+Using extension: ${bold(useExt)}.
+`;
+    mode = "exploring";
+    showScreen("exploration");
+    treeSelect.blur();
+    treeSelect.focusable = false;
+    expFooterText.content = t`  ${fg(c.yellow)("generating...")}  ${dim("please wait")}`;
+
     try {
-      const orchestrator = new Orchestrator({ dbPath: newDbPath, agent, concurrency: 5 });
+      const orchestrator = new Orchestrator({
+        dbPath: newDbPath, agent, concurrency: 5,
+        onEvent: (event) => {
+          if (event.type === "node:complete") {
+            const data = event.data as { title?: string } | undefined;
+            if (data?.title) {
+              toast.success(data.title, { duration: 2000 });
+            }
+          }
+        },
+      });
       await orchestrator.explore({
         id: expId, name: seed, seed,
-        n: config.defaultN, m: config.defaultM,
-        strategy: config.defaultStrategy as Strategy,
-        planDetail: config.defaultPlanDetail as PlanDetail,
-        extension: config.defaultExtension,
+        n: useN, m: useM,
+        strategy: (config.defaultStrategy || "bf") as Strategy,
+        planDetail: (config.defaultPlanDetail || "sentence") as PlanDetail,
+        extension: useExt,
       });
       orchestrator.close();
-      toast.success("Exploration created!");
+      toast.success("Exploration complete!");
       openExploration(newDbPath, expId);
-    } catch (err: any) { toast.error(`Create failed: ${err.message}`); }
+    } catch (err: any) {
+      toast.error(`Create failed: ${err.message}`);
+      mode = "home";
+      showScreen("home");
+    }
   }
 
   // ===========================================================================
@@ -785,11 +871,23 @@ export async function createApp(dbPathArg?: string): Promise<void> {
         else showScreen("exploration");
         return;
       }
+      if (key.name === "tab") {
+        // Cycle focus between seed, n, m, ext inputs
+        const createFields = [createSeedInput, createNInput, createMInput, createExtInput];
+        const currentFocus = createFields.findIndex((f) => (f as any)._focused);
+        const next = (currentFocus + 1) % createFields.length;
+        createFields.forEach((f) => f.blur());
+        createFields[next].focus();
+        return;
+      }
       if (key.name === "return") {
         const seed = createSeedInput.value;
+        const n = parseInt(createNInput.value) || 3;
+        const m = parseInt(createMInput.value) || 2;
+        const ext = createExtInput.value || "freeform";
         mode = previousMode;
         try { rootBox.remove("create-box"); } catch {}
-        doCreate(seed);
+        doCreate(seed, n, m, ext);
         return;
       }
       return;
