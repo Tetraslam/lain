@@ -170,6 +170,53 @@ function computeRadialLayout(lainNodes: LainNode[]): GNode[] {
   }
 
   layout(root, 0, Math.PI * 2, 0);
+
+  // Post-layout: enforce minimum angular separation between same-depth nodes.
+  // If two nodes at the same depth are too close (their labels would overlap),
+  // spread them apart along the ring.
+  for (let d = 1; d <= maxDepth; d++) {
+    const ring = result.filter((n) => n.depth === d);
+    if (ring.length < 2) continue;
+
+    const radius = ringRadius[d] || 1;
+
+    // Sort by angle
+    ring.sort((a, b) => Math.atan2(a.y, a.x) - Math.atan2(b.y, b.x));
+
+    for (let i = 0; i < ring.length; i++) {
+      const a = ring[i];
+      const b = ring[(i + 1) % ring.length];
+
+      const dx = b.x - a.x;
+      const dy = b.y - a.y;
+      const dist = Math.sqrt(dx * dx + (dy * 2) * (dy * 2)); // Aspect-corrected
+
+      const minDist = (a.labelWidth + b.labelWidth) / 2 + 2;
+
+      if (dist < minDist) {
+        // Push apart along the ring (tangentially)
+        const aAngle = Math.atan2(a.y / 0.45, a.x);
+        const bAngle = Math.atan2(b.y / 0.45, b.x);
+
+        // Minimum angular separation needed
+        const minAngularSep = minDist / radius;
+        let angleDiff = bAngle - aAngle;
+        if (angleDiff < 0) angleDiff += Math.PI * 2;
+
+        if (angleDiff < minAngularSep) {
+          const push = (minAngularSep - angleDiff) / 2;
+          const newAAngle = aAngle - push;
+          const newBAngle = bAngle + push;
+
+          a.x = Math.cos(newAAngle) * radius;
+          a.y = Math.sin(newAAngle) * radius * 0.45;
+          b.x = Math.cos(newBAngle) * radius;
+          b.y = Math.sin(newBAngle) * radius * 0.45;
+        }
+      }
+    }
+  }
+
   return result;
 }
 
