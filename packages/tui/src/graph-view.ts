@@ -78,7 +78,7 @@ function makeLabel(title: string, depth: number): string {
 }
 
 // ============================================================================
-// Radial Tree Layout with no-overlap guarantee
+// Radial Tree Layout — guaranteed non-overlapping concentric rings
 // ============================================================================
 
 function computeRadialLayout(lainNodes: LainNode[]): GNode[] {
@@ -98,72 +98,78 @@ function computeRadialLayout(lainNodes: LainNode[]): GNode[] {
   }
   for (const [, ch] of childrenOf) ch.sort((a, b) => a.branchIndex - b.branchIndex);
 
-  const maxDepth = Math.max(...active.map((n) => n.depth), 0);
-
-  // Ring spacing scales with how many nodes exist — more nodes need more room
-  const ringSpacing = Math.max(10, Math.min(22, 50 / (maxDepth + 1)));
-
   const result: GNode[] = [];
 
+  // First pass: compute subtree leaf counts for proportional arc allocation
+  const leafCount = new Map<string, number>();
+  function countLeaves(nodeId: string): number {
+    const children = childrenOf.get(nodeId) || [];
+    if (children.length === 0) { leafCount.set(nodeId, 1); return 1; }
+    let total = 0;
+    for (const c of children) total += countLeaves(c.id);
+    leafCount.set(nodeId, total);
+    return total;
+  }
+  countLeaves(root.id);
+
+  // Second pass: compute ring radii.
+  // For each depth, figure out how much circumference is needed for all nodes
+  // at that depth (based on label widths), then set the radius so they fit.
+  const maxDepth = Math.max(...active.map((n) => n.depth), 0);
+  const nodesByDepth = new Map<number, LainNode[]>();
+  for (const n of active) {
+    const list = nodesByDepth.get(n.depth) || [];
+    list.push(n);
+    nodesByDepth.set(n.depth, list);
+  }
+
+  const ringRadius: number[] = [0]; // depth 0 = center
+  for (let d = 1; d <= maxDepth; d++) {
+    const nodesAtD = nodesByDepth.get(d) || [];
+    // Total character width needed around the ring
+    const totalWidth = nodesAtD.reduce((sum, n) => {
+      const label = makeLabel(n.title || n.id, d);
+      return sum + label.length + 4; // +4 for padding and gap
+    }, 0);
+    // Circumference = 2 * PI * r, but X chars ~ 1 unit, Y chars ~ 2 units
+    // So effective circumference for horizontal text = 2 * PI * r
+    // We need: 2 * PI * r >= totalWidth
+    const minRadius = Math.max(totalWidth / (2 * Math.PI), (ringRadius[d - 1] || 0) + 12);
+    ringRadius[d] = minRadius;
+  }
+
+  // Third pass: lay out nodes using proportional arc allocation
   function layout(node: LainNode, angleStart: number, angleEnd: number, depth: number) {
     const angle = (angleStart + angleEnd) / 2;
-    const radius = depth * ringSpacing;
+    const radius = ringRadius[depth] || 0;
     const x = Math.cos(angle) * radius;
-    const y = Math.sin(angle) * radius * 0.45;
+    const y = Math.sin(angle) * radius * 0.45; // Terminal aspect correction
     const label = makeLabel(node.title || node.id, depth);
 
     result.push({
       id: node.id, title: node.title || node.id, label,
-      labelWidth: label.length + 2, // +2 for padding spaces
+      labelWidth: label.length + 2,
       depth: node.depth, status: node.status,
       x, y, parentId: node.parentId,
     });
 
     const children = childrenOf.get(node.id) || [];
     if (children.length === 0) return;
+
+    // Allocate arc proportional to each child's subtree size
+    const parentLeaves = leafCount.get(node.id) || 1;
     const arcSpan = angleEnd - angleStart;
-    const childArc = arcSpan / children.length;
-    children.forEach((child, i) => {
-      layout(child, angleStart + childArc * i, angleStart + childArc * (i + 1), depth + 1);
-    });
-  }
+    let currentAngle = angleStart;
 
-  layout(root, 0, Math.PI * 2, 0);
-
-  // No-overlap pass: push overlapping nodes RADIALLY outward to preserve circular structure.
-  // Never move the root node.
-  for (let pass = 0; pass < 10; pass++) {
-    for (let i = 0; i < result.length; i++) {
-      for (let j = i + 1; j < result.length; j++) {
-        const a = result[i], b = result[j];
-        const dx = b.x - a.x;
-        const dy = b.y - a.y;
-        const minSepX = (a.labelWidth + b.labelWidth) / 2 + 2;
-        const minSepY = 2;
-
-        if (Math.abs(dx) < minSepX && Math.abs(dy) < minSepY) {
-          // Push the deeper node outward along its angle from origin
-          // If same depth, push both along their respective angles
-          const aIsRoot = a.depth === 0;
-          const bIsRoot = b.depth === 0;
-
-          if (!bIsRoot) {
-            const angle = Math.atan2(b.y, b.x);
-            const push = Math.max(minSepX - Math.abs(dx), minSepY - Math.abs(dy)) * 0.6;
-            b.x += Math.cos(angle) * push;
-            b.y += Math.sin(angle) * push * 0.45;
-          }
-          if (!aIsRoot && !bIsRoot) {
-            const angle = Math.atan2(a.y, a.x);
-            const push = Math.max(minSepX - Math.abs(dx), minSepY - Math.abs(dy)) * 0.3;
-            a.x += Math.cos(angle + Math.PI) * push; // Push slightly inward / sideways
-            a.y += Math.sin(angle + Math.PI) * push * 0.45;
-          }
-        }
-      }
+    for (const child of children) {
+      const childLeaves = leafCount.get(child.id) || 1;
+      const childArc = arcSpan * (childLeaves / parentLeaves);
+      layout(child, currentAngle, currentAngle + childArc, depth + 1);
+      currentAngle += childArc;
     }
   }
 
+  layout(root, 0, Math.PI * 2, 0);
   return result;
 }
 
