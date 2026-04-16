@@ -169,7 +169,10 @@ function computeRadialLayout(lainNodes: LainNode[]): GNode[] {
     }
   }
 
-  layout(root, 0, Math.PI * 2, 0);
+  // Start layout from top (-π/2) so no node lands directly left of root
+  // (labels extend rightward, so a node at angle π would overlap the root)
+  const startAngle = -Math.PI / 2;
+  layout(root, startAngle, startAngle + Math.PI * 2, 0);
 
   // Post-layout: enforce minimum angular separation between same-depth nodes.
   // If two nodes at the same depth are too close (their labels would overlap),
