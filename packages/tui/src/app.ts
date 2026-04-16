@@ -637,9 +637,10 @@ export async function createApp(dbPathArg?: string): Promise<void> {
   function openPalette() {
     previousMode = mode;
     mode = "palette";
-    // Remove all select renderables from DOM to prevent them intercepting keys
-    try { treePanel.remove("tree-select"); } catch {}
-    try { homeBodyInner.remove("home-select"); } catch {}
+    treeSelect.focusable = false;
+    treeSelect.blur();
+    homeSelect.focusable = false;
+    homeSelect.blur();
     paletteSelect.focusable = false;
     showScreen("palette");
   }
@@ -648,18 +649,15 @@ export async function createApp(dbPathArg?: string): Promise<void> {
     mode = previousMode;
     try { rootBox.remove("palette-overlay"); } catch {}
     if (mode === "home") {
-      homeBodyInner.add(homeSelect);
       homeSelect.focusable = true;
       homeSelect.focus();
     } else if (mode === "exploring") {
-      treePanel.add(treeSelect);
       treeSelect.focusable = true;
       treeSelect.focus();
       treePanel.borderColor = c.accent;
       nodePanel.borderColor = c.muted;
       expFooterText.content = exploringFooter();
     } else if (mode === "reading") {
-      treePanel.add(treeSelect);
       treeSelect.focusable = false;
       treePanel.borderColor = c.muted;
       nodePanel.borderColor = c.accent;
@@ -855,11 +853,11 @@ Using extension: ${bold(useExt)}.
       return;
     }
 
-    // ---- Palette mode ----
+    // ---- Palette mode — stop propagation to prevent tree/home select intercepting ----
     if (mode === "palette") {
+      key.stopPropagation();
       if (key.name === "escape") { closePalette(); return; }
       if (key.name === "return") { executePaletteAction(); return; }
-      // Let input handle typing, but intercept j/k for select navigation
       if (key.name === "down" || (key.name === "n" && key.ctrl)) { paletteSelect.moveDown(); return; }
       if (key.name === "up" || (key.name === "p" && key.ctrl)) { paletteSelect.moveUp(); return; }
       return;
@@ -867,6 +865,7 @@ Using extension: ${bold(useExt)}.
 
     // ---- Creating mode ----
     if (mode === "creating") {
+      key.stopPropagation();
       if (key.name === "escape") {
         mode = previousMode;
         try { rootBox.remove("create-box"); } catch {}
@@ -939,8 +938,9 @@ Using extension: ${bold(useExt)}.
       return;
     }
 
-    // ---- Reading mode ----
+    // ---- Reading mode — stop propagation to prevent tree select intercepting ----
     if (mode === "reading") {
+      key.stopPropagation();
       switch (key.name) {
         case "j": case "down": nodeScroll.scrollBy({ x: 0, y: 2 }); return;
         case "k": case "up": nodeScroll.scrollBy({ x: 0, y: -2 }); return;
