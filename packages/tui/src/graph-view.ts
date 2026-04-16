@@ -131,28 +131,32 @@ function computeRadialLayout(lainNodes: LainNode[]): GNode[] {
   layout(root, 0, Math.PI * 2, 0);
 
   // No-overlap pass: push apart nodes whose labels would collide
-  for (let pass = 0; pass < 5; pass++) {
+  // Root (index 0) is anchored at origin — never moved
+  for (let pass = 0; pass < 8; pass++) {
     for (let i = 0; i < result.length; i++) {
       for (let j = i + 1; j < result.length; j++) {
         const a = result[i], b = result[j];
         const dx = b.x - a.x;
-        const dy = (b.y - a.y) * 2; // Aspect correction
-        const minSepX = (a.labelWidth + b.labelWidth) / 2 + 1;
-        const minSepY = 2; // At least 1 row apart
+        const minSepX = (a.labelWidth + b.labelWidth) / 2 + 2;
+        const minSepY = 2;
 
         if (Math.abs(dx) < minSepX && Math.abs(b.y - a.y) < minSepY) {
-          // Overlap detected — push apart along the axis with less overlap
+          const aIsRoot = a.depth === 0;
+          const bIsRoot = b.depth === 0;
+
           if (Math.abs(dx) < minSepX) {
             const push = (minSepX - Math.abs(dx)) / 2 + 0.5;
             const sign = dx >= 0 ? 1 : -1;
-            a.x -= push * sign;
-            b.x += push * sign;
+            if (aIsRoot) { b.x += push * sign * 2; }
+            else if (bIsRoot) { a.x -= push * sign * 2; }
+            else { a.x -= push * sign; b.x += push * sign; }
           }
           if (Math.abs(b.y - a.y) < minSepY) {
             const push = (minSepY - Math.abs(b.y - a.y)) / 2 + 0.3;
             const sign = (b.y - a.y) >= 0 ? 1 : -1;
-            a.y -= push * sign;
-            b.y += push * sign;
+            if (aIsRoot) { b.y += push * sign * 2; }
+            else if (bIsRoot) { a.y -= push * sign * 2; }
+            else { a.y -= push * sign; b.y += push * sign; }
           }
         }
       }
@@ -201,7 +205,10 @@ function renderGraph(
     const sy = Math.round(node.y + oy);
     if (sy < 0 || sy >= vh) continue;
     const padded = ` ${node.label} `;
-    if (sx + padded.length < 0 || sx >= vw) continue;
+
+    // Only render if the label is fully on screen
+    // (nodes smoothly appear/disappear at viewport edges instead of squishing)
+    if (sx < 0 || sx + padded.length > vw) continue;
 
     const isSelected = node.id === selectedId;
     const depthStyle = DEPTH_COLORS[Math.min(node.depth, DEPTH_COLORS.length - 1)];
