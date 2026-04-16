@@ -425,10 +425,12 @@ export async function createApp(dbPathArg?: string): Promise<void> {
     } else if (newMode === "reading") {
       treePanel.borderColor = c.muted;
       nodePanel.borderColor = c.accent;
+      treeSelect.blur();
       footerText.content = t`  ${dim("j/k")} scroll  ${fg(c.muted)("·")}  ${dim("esc/←")} back  ${fg(c.muted)("·")}  ${dim("g")} top  ${fg(c.muted)("·")}  ${dim("G")} bottom  ${fg(c.muted)("·")}  ${dim("?")} help`;
     } else if (newMode === "help") {
       nodePanel.borderColor = c.accent;
       treePanel.borderColor = c.muted;
+      treeSelect.blur();
       nodeMarkdown.content = HELP_TEXT;
       nodeScroll.scrollToTop();
       footerText.content = t`  ${dim("press any key to dismiss")}`;
