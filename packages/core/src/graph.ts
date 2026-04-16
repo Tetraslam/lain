@@ -178,6 +178,10 @@ export class Graph {
     return this.storage.getCrosslinksForExploration(explorationId);
   }
 
+  getCrosslinksForNode(nodeId: string): Crosslink[] {
+    return this.storage.getCrosslinksForNode(nodeId);
+  }
+
   getConflicts(explorationId: string): LainNode[] {
     return this.storage
       .getNodesByExploration(explorationId)
