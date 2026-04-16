@@ -182,16 +182,27 @@ function renderGraph(
 
   buf.fillRect(0, 0, vw, vh, BG);
 
-  // Edges
+  // Edges — connect at top-center or bottom-center of node labels
   for (const edge of edges) {
     const a = map.get(edge.source), b = map.get(edge.target);
     if (!a || !b) continue;
-    const ax = Math.round(a.x + ox), ay = Math.round(a.y + oy);
-    const bx = Math.round(b.x + ox), by = Math.round(b.y + oy);
-    if ((ax < -40 && bx < -40) || (ax > vw + 40 && bx > vw + 40)) continue;
+
+    // Center X of each label
+    const aCenterX = Math.round(a.x + ox + a.labelWidth / 2);
+    const bCenterX = Math.round(b.x + ox + b.labelWidth / 2);
+    const aScreenY = Math.round(a.y + oy);
+    const bScreenY = Math.round(b.y + oy);
+
+    // Connect from bottom of higher node to top of lower node
+    // (or top-to-bottom if they're at the same Y)
+    const ay = aScreenY < bScreenY ? aScreenY + 1 : aScreenY - 1;
+    const by = bScreenY < aScreenY ? bScreenY + 1 : bScreenY - 1;
+
+    if ((aCenterX < -40 && bCenterX < -40) || (aCenterX > vw + 40 && bCenterX > vw + 40)) continue;
     if ((ay < -15 && by < -15) || (ay > vh + 15 && by > vh + 15)) continue;
+
     const color = edge.isCrosslink ? CROSSLINK_COLOR : EDGE_COLOR;
-    drawLine(buf, ax, ay, bx, by, "·", color, BG, edge.isCrosslink ? 1 : 2, vw, vh);
+    drawLine(buf, aCenterX, ay, bCenterX, by, "·", color, BG, edge.isCrosslink ? 1 : 2, vw, vh);
   }
 
   // Nodes — selected last for z-order
