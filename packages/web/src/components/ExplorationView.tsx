@@ -94,25 +94,59 @@ function buildLayout(data: ExplorationData): { nodes: Node[]; edges: Edge[] } {
 
   layout(root, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2, 0);
 
-  // Edges
+  // Build position lookup for handle selection
+  const posMap = new Map<string, { x: number; y: number }>();
+  for (const fn of flowNodes) posMap.set(fn.id, fn.position);
+
+  // Pick the best handle pair based on relative position
+  function pickHandles(sourceId: string, targetId: string): { sourceHandle: string; targetHandle: string } {
+    const s = posMap.get(sourceId);
+    const t = posMap.get(targetId);
+    if (!s || !t) return { sourceHandle: "bottom", targetHandle: "top" };
+
+    const dx = t.x - s.x;
+    const dy = t.y - s.y;
+
+    // Use the axis with greater distance
+    if (Math.abs(dy) > Math.abs(dx)) {
+      // Primarily vertical
+      return dy > 0
+        ? { sourceHandle: "bottom", targetHandle: "top" }
+        : { sourceHandle: "top-s", targetHandle: "bottom-t" };
+    } else {
+      // Primarily horizontal
+      return dx > 0
+        ? { sourceHandle: "right", targetHandle: "left-t" }
+        : { sourceHandle: "left", targetHandle: "right-t" };
+    }
+  }
+
+  // Edges with positional handles
   const flowEdges: Edge[] = [];
   for (const n of lainNodes) {
     if (n.parentId) {
+      const handles = pickHandles(n.parentId, n.id);
       flowEdges.push({
         id: `${n.parentId}-${n.id}`,
         source: n.parentId,
         target: n.id,
-        type: "default",
+        sourceHandle: handles.sourceHandle,
+        targetHandle: handles.targetHandle,
+        type: "straight",
         animated: false,
-        style: { stroke: "#3b3f5c", strokeWidth: 1.5 },
+        style: { stroke: "#444b6a", strokeWidth: 1.5 },
       });
     }
   }
   for (const cl of crosslinks) {
+    const handles = pickHandles(cl.sourceId, cl.targetId);
     flowEdges.push({
       id: `cl-${cl.sourceId}-${cl.targetId}`,
       source: cl.sourceId,
       target: cl.targetId,
+      sourceHandle: handles.sourceHandle,
+      targetHandle: handles.targetHandle,
+      type: "straight",
       className: "crosslink",
       animated: true,
       style: { stroke: "#7c6ea3", strokeWidth: 1, strokeDasharray: "6 4" },
@@ -143,6 +177,52 @@ export function ExplorationView({ dbFile, onBack }: { dbFile: string; onBack: ()
   const onNodeClick = useCallback((_event: React.MouseEvent, node: Node) => {
     setSelectedNodeId(node.id);
   }, []);
+
+  // Arrow key navigation between nodes
+  useEffect(() => {
+    if (!data || !selectedNodeId) return;
+
+    function handleKeyDown(e: KeyboardEvent) {
+      if (!data || !selectedNodeId) return;
+      const currentNode = data.nodes.find((n: any) => n.id === selectedNodeId);
+      if (!currentNode) return;
+
+      // Find the current node's position in the flow
+      const currentFlow = nodes.find((n) => n.id === selectedNodeId);
+      if (!currentFlow) return;
+
+      let targetId: string | null = null;
+
+      if (e.key === "ArrowUp") {
+        // Go to parent
+        if (currentNode.parentId) targetId = currentNode.parentId;
+      } else if (e.key === "ArrowDown") {
+        // Go to first child
+        const children = data.nodes.filter((n: any) => n.parentId === selectedNodeId && n.status !== "pruned");
+        if (children.length > 0) targetId = children[0].id;
+      } else if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+        // Go to sibling
+        if (currentNode.parentId) {
+          const siblings = data.nodes
+            .filter((n: any) => n.parentId === currentNode.parentId && n.status !== "pruned")
+            .sort((a: any, b: any) => a.branchIndex - b.branchIndex);
+          const idx = siblings.findIndex((s: any) => s.id === selectedNodeId);
+          if (e.key === "ArrowRight" && idx < siblings.length - 1) targetId = siblings[idx + 1].id;
+          if (e.key === "ArrowLeft" && idx > 0) targetId = siblings[idx - 1].id;
+        }
+      } else {
+        return; // Don't prevent default for other keys
+      }
+
+      if (targetId) {
+        e.preventDefault();
+        setSelectedNodeId(targetId);
+      }
+    }
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [data, selectedNodeId, nodes]);
 
   const selectedLainNode = useMemo(() => {
     if (!data || !selectedNodeId) return null;
@@ -218,11 +298,14 @@ export function ExplorationView({ dbFile, onBack }: { dbFile: string; onBack: ()
             onEdgesChange={onEdgesChange}
             onNodeClick={onNodeClick}
             nodeTypes={nodeTypes}
+            nodesDraggable={false}
+            nodesConnectable={false}
             fitView
             fitViewOptions={{ padding: 0.3 }}
             minZoom={0.1}
             maxZoom={2}
-            defaultEdgeOptions={{ type: "default" }}
+            defaultEdgeOptions={{ type: "straight" }}
+            proOptions={{ hideAttribution: true }}
           >
             <Background variant={BackgroundVariant.Dots} gap={20} size={1} color="#292e42" />
             <Controls position="bottom-left" style={{ background: "#1f2335", borderColor: "#32344a" }} />
