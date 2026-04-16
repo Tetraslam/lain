@@ -7,7 +7,7 @@
     "lain-tui": "./dist/index.js"
   },
   "scripts": {
-    "build": "tsup src/index.ts --format esm --no-splitting --external @opentui/core --external bun:sqlite --external chokidar --external gray-matter",
+    "build": "tsup src/index.ts --format esm --no-splitting --external @opentui/core --external @opentui-ui/toast --external @opentui-ui/dialog --external bun:sqlite --external chokidar --external gray-matter",
     "dev": "bun run src/index.ts",
     "clean": "rm -rf dist"
   },
