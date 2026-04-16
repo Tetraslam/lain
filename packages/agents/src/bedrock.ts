@@ -65,12 +65,8 @@ export class BedrockProvider implements AgentProvider {
     request: GenerateRequest,
     onChunk: (chunk: string) => void
   ): Promise<GenerateResponse> {
-    // For now, use non-streaming and emit the full text as one chunk.
-    // Bedrock streaming with bearer token uses ConverseStream which returns
-    // event-stream format — we can add true streaming later.
     const { system, user } = buildGeneratePrompt(request);
-    const text = await this.converse(system, user, this.maxTokens);
-    onChunk(text);
+    const text = await this.converseStream(system, user, this.maxTokens, onChunk);
     return this.parseGenerateResponse(text);
   }
 
@@ -147,6 +143,100 @@ export class BedrockProvider implements AgentProvider {
     }
 
     return text;
+  }
+
+  /**
+   * Call the Bedrock ConverseStream API for streaming responses.
+   * Parses the AWS event stream format and emits text chunks.
+   */
+  private async converseStream(
+    system: string,
+    userMessage: string,
+    maxTokens: number,
+    onChunk: (chunk: string) => void
+  ): Promise<string> {
+    const url = `${this.baseUrl}/model/${encodeURIComponent(this.model)}/converse-stream`;
+
+    const body = {
+      messages: [
+        { role: "user", content: [{ text: userMessage }] },
+      ],
+      system: [{ text: system }],
+      inferenceConfig: { maxTokens },
+    };
+
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${this.apiKey}`,
+      },
+      body: JSON.stringify(body),
+    });
+
+    if (!response.ok) {
+      const errorBody = await response.text();
+      throw new Error(`Bedrock stream error (${response.status}): ${errorBody}`);
+    }
+
+    if (!response.body) {
+      throw new Error("Bedrock stream: no response body");
+    }
+
+    // Parse AWS event stream format
+    // Events come as lines of JSON, each containing a type field
+    let fullText = "";
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+
+      // AWS event streams use newline-delimited JSON events
+      // Each event has a :event-type header and a JSON payload
+      // The actual content comes in contentBlockDelta events with delta.text
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || ""; // Keep incomplete last line
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith(":")) continue;
+
+        try {
+          const event = JSON.parse(trimmed);
+
+          if (event.contentBlockDelta?.delta?.text) {
+            const chunk = event.contentBlockDelta.delta.text;
+            fullText += chunk;
+            onChunk(chunk);
+          }
+        } catch {
+          // Not JSON — might be AWS event stream framing, skip
+          // Try to extract JSON from binary event stream frames
+          const jsonMatch = trimmed.match(/\{.*"contentBlockDelta".*\}/);
+          if (jsonMatch) {
+            try {
+              const event = JSON.parse(jsonMatch[0]);
+              if (event.contentBlockDelta?.delta?.text) {
+                const chunk = event.contentBlockDelta.delta.text;
+                fullText += chunk;
+                onChunk(chunk);
+              }
+            } catch {}
+          }
+        }
+      }
+    }
+
+    if (!fullText) {
+      throw new Error("Bedrock stream returned empty response");
+    }
+
+    return fullText;
   }
 
   private parseGenerateResponse(text: string): GenerateResponse {

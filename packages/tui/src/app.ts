@@ -993,14 +993,28 @@ Using extension: ${bold(useExt)}.
 
     let nodesGenerated = 0;
     let totalExpected = 0;
+    let streamingContent = "";
     for (let d = 1; d <= useM; d++) totalExpected += Math.pow(useN, d);
 
     try {
       const orchestrator = new Orchestrator({
-        dbPath: newDbPath, agent, concurrency: 5,
+        dbPath: newDbPath, agent, concurrency: 5, streaming: true,
         onEvent: (event) => {
+          if (event.type === "node:content-chunk") {
+            // Live streaming: append chunk to the content display
+            const chunkData = event.data as { chunk?: string } | undefined;
+            if (chunkData?.chunk) {
+              streamingContent += chunkData.chunk;
+              nodeText.content = t`${bold(fg(c.bright)(seed))}
+
+${fg(c.yellow)(`Generating... ${nodesGenerated}/${totalExpected} nodes complete`)}
+
+${streamingContent.slice(-500)}`;
+            }
+          }
           if (event.type === "node:complete") {
             nodesGenerated++;
+            streamingContent = ""; // Reset for next node
             const data = event.data as { title?: string } | undefined;
             const title = data?.title || "untitled";
             const short = title.length > 30 ? title.slice(0, 29) + "…" : title;

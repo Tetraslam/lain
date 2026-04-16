@@ -245,6 +245,7 @@ async function runExplore(args: ParsedArgs): Promise<void> {
   const ext = getFlag(args.flags, "ext", "extension") ?? config.defaultExtension;
   const outputDb = getFlag(args.flags, "output", "o", "db");
   const concurrency = getNumFlag(args.flags, "concurrency", "c") ?? 5;
+  const streaming = getBoolFlag(args.flags, "stream");
 
   // Generate a name from the seed
   const name = seed.length > 60 ? seed.slice(0, 57) + "..." : seed;
@@ -278,6 +279,7 @@ async function runExplore(args: ParsedArgs): Promise<void> {
     dbPath,
     agent,
     concurrency,
+    streaming,
     extensions,
     onEvent: (event) => {
       switch (event.type) {
@@ -290,6 +292,13 @@ async function runExplore(args: ParsedArgs): Promise<void> {
           const data = event.data as { title?: string } | undefined;
           console.log(` done — "${data?.title || "untitled"}"`);
           break;
+        case "node:content-chunk": {
+          if (streaming) {
+            const chunkData = event.data as { chunk?: string } | undefined;
+            if (chunkData?.chunk) process.stdout.write(chunkData.chunk);
+          }
+          break;
+        }
         case "plan:complete": {
           const planData = event.data as { directions?: string[] } | undefined;
           if (planData?.directions) {

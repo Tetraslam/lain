@@ -28,6 +28,7 @@ export interface OrchestratorOptions {
   dbPath: string;
   agent: AgentProvider;
   concurrency?: number;
+  streaming?: boolean; // Use streaming generation for real-time chunk events
   extensions?: ExtensionRegistryLike;
   onEvent?: LainEventHandler;
 }
@@ -41,6 +42,7 @@ export class Orchestrator {
   private graph: Graph;
   private agent: AgentProvider;
   private concurrency: number;
+  private streaming: boolean;
   private extensions: ExtensionRegistryLike | null;
   private onEvent: LainEventHandler;
 
@@ -49,6 +51,7 @@ export class Orchestrator {
     this.graph = new Graph(this.storage);
     this.agent = options.agent;
     this.concurrency = options.concurrency ?? 5;
+    this.streaming = options.streaming ?? false;
     this.extensions = options.extensions ?? null;
     this.onEvent = options.onEvent ?? (() => {});
   }
@@ -376,13 +379,29 @@ export class Orchestrator {
       : undefined;
 
     try {
-      let response = await this.agent.generate({
+      const generateRequest = {
         node,
         ancestors,
         siblings: siblings.filter((s) => s.status === "complete"),
         exploration,
         extensionSystemPrompt: extensionSystemPrompt || undefined,
-      });
+      };
+
+      let response: GenerateResponse;
+
+      if (this.streaming) {
+        // Stream mode: emit content chunks in real-time
+        response = await this.agent.generateStream(generateRequest, (chunk) => {
+          this.emit({
+            type: "node:content-chunk",
+            explorationId: exploration.id,
+            nodeId: node.id,
+            data: { chunk },
+          });
+        });
+      } else {
+        response = await this.agent.generate(generateRequest);
+      }
 
       // Run after:generate hook — extensions can modify response
       if (this.extensions) {
