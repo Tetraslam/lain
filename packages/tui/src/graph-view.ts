@@ -408,15 +408,16 @@ export class GraphView {
 
     (this.renderer as any).requestLive?.();
     this.interval = setInterval(() => {
-      // Smooth camera pan only (no node movement)
+      // Smooth camera pan
       const dx = this.targetCamX - this.camX;
       const dy = this.targetCamY - this.camY;
       if (Math.abs(dx) > 0.1 || Math.abs(dy) > 0.1) {
         this.camX += dx * 0.25;
         this.camY += dy * 0.25;
-        this.renderFrame();
       }
-    }, 33); // 30fps for smooth camera panning
+      // Always re-render (ensures recovery after tab switch / focus loss)
+      this.renderFrame();
+    }, 33);
   }
 
   stop() {
