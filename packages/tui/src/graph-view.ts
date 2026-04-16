@@ -102,13 +102,20 @@ function simulate(nodes: GNode[], edges: GEdge[], w: number, h: number): void {
     n.vy += (cy - n.y) * CENTER_GRAVITY;
   }
 
-  // Apply + damp + clamp
+  // Apply + damp + clamp velocity
+  const MAX_VELOCITY = 2.0;
   for (const n of nodes) {
     n.vx *= DAMPING;
     n.vy *= DAMPING;
+    // Cap velocity so nothing flies off
+    const speed = Math.sqrt(n.vx * n.vx + n.vy * n.vy);
+    if (speed > MAX_VELOCITY) {
+      n.vx = (n.vx / speed) * MAX_VELOCITY;
+      n.vy = (n.vy / speed) * MAX_VELOCITY;
+    }
     n.x += n.vx;
     n.y += n.vy;
-    n.x = Math.max(1, Math.min(w - 14, n.x)); // Leave room for label
+    n.x = Math.max(1, Math.min(w - 14, n.x));
     n.y = Math.max(1, Math.min(h - 2, n.y));
   }
 }
@@ -315,11 +322,19 @@ export class GraphView {
   }
 
   start() {
+    // Pre-settle: run simulation silently so the graph starts calm
+    for (let i = 0; i < 200; i++) {
+      simulate(this.nodes, this.edges, this.width, this.height);
+    }
+    // Render first frame immediately
+    render(this.fb, this.nodes, this.edges, this.getSelectedId(), this.width, this.height);
+
+    // Then animate gently (nodes will only drift slightly from here)
     (this.renderer as any).requestLive?.();
     this.interval = setInterval(() => {
       simulate(this.nodes, this.edges, this.width, this.height);
       render(this.fb, this.nodes, this.edges, this.getSelectedId(), this.width, this.height);
-    }, 60); // ~16fps
+    }, 80); // ~12fps, gentle
   }
 
   stop() {
