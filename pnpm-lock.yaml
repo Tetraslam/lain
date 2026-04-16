@@ -92,6 +92,12 @@ importers:
       '@lain/shared':
         specifier: workspace:*
         version: link:../shared
+      '@opentui-ui/dialog':
+        specifier: ^0.1.2
+        version: 0.1.2(@opentui/core@0.1.99(stage-js@1.0.2)(typescript@6.0.2)(web-tree-sitter@0.25.10))
+      '@opentui-ui/toast':
+        specifier: ^0.0.5
+        version: 0.0.5(@opentui/core@0.1.99(stage-js@1.0.2)(typescript@6.0.2)(web-tree-sitter@0.25.10))
       '@opentui/core':
         specifier: ^0.1.99
         version: 0.1.99(stage-js@1.0.2)(typescript@6.0.2)(web-tree-sitter@0.25.10)
@@ -415,6 +421,30 @@ packages:
     peerDependencies:
       '@emnapi/core': ^1.7.1
       '@emnapi/runtime': ^1.7.1
+
+  '@opentui-ui/dialog@0.1.2':
+    resolution: {integrity: sha512-EZ4FG5u5sxU75+6pcsJsLzsD5JqO05So/1ceZUKUu7nxZ9IF7gcZEi+MU4HnYC9cb2Q7w6hM9y3/iW+jE1C53w==}
+    peerDependencies:
+      '@opentui/core': ^0.1.69
+      '@opentui/react': ^0.1.69
+      '@opentui/solid': ^0.1.69
+    peerDependenciesMeta:
+      '@opentui/react':
+        optional: true
+      '@opentui/solid':
+        optional: true
+
+  '@opentui-ui/toast@0.0.5':
+    resolution: {integrity: sha512-LOT5Bw0F5AEyhjSqpKgS7aSe7M7v+ahaAa4t3/K2dtWiT0CJ711UHXqM31KKN6yuHoUKRNs+g+643ety/a3lEw==}
+    peerDependencies:
+      '@opentui/core': ^0.1.63
+      '@opentui/react': ^0.1.63
+      '@opentui/solid': ^0.1.63
+    peerDependenciesMeta:
+      '@opentui/react':
+        optional: true
+      '@opentui/solid':
+        optional: true
 
   '@opentui/core-darwin-arm64@0.1.99':
     resolution: {integrity: sha512-bzVrqeX2vb5iWrc/ftOUOqeUY8XO+qSgoTwj5TXHuwagavgwD3Hpeyjx8+icnTTeM4pao0som1WR9xfye6/X5Q==}
@@ -1814,6 +1844,14 @@ snapshots:
       '@emnapi/runtime': 1.9.2
       '@tybys/wasm-util': 0.10.1
     optional: true
+
+  '@opentui-ui/dialog@0.1.2(@opentui/core@0.1.99(stage-js@1.0.2)(typescript@6.0.2)(web-tree-sitter@0.25.10))':
+    dependencies:
+      '@opentui/core': 0.1.99(stage-js@1.0.2)(typescript@6.0.2)(web-tree-sitter@0.25.10)
+
+  '@opentui-ui/toast@0.0.5(@opentui/core@0.1.99(stage-js@1.0.2)(typescript@6.0.2)(web-tree-sitter@0.25.10))':
+    dependencies:
+      '@opentui/core': 0.1.99(stage-js@1.0.2)(typescript@6.0.2)(web-tree-sitter@0.25.10)
 
   '@opentui/core-darwin-arm64@0.1.99':
     optional: true

@@ -3,446 +3,119 @@ import {
   BoxRenderable,
   TextRenderable,
   ScrollBoxRenderable,
+  SelectRenderable,
+  SelectRenderableEvents,
+  MarkdownRenderable,
 } from "@opentui/core";
-import type { KeyEvent } from "@opentui/core";
+import { t, fg, dim, bold, italic, underline } from "@opentui/core";
+import type { KeyEvent, SelectOption } from "@opentui/core";
 import { Storage, Graph } from "@lain/core";
 import type { LainNode, Exploration, Crosslink } from "@lain/shared";
 import * as fs from "fs";
 import * as path from "path";
 
 // ============================================================================
-// Theme — inherits terminal bg/fg, accents from Tokyo Night purple family
+// Theme — Tokyo Night palette, no forced backgrounds
 // ============================================================================
 
-const theme = {
-  // We don't set background — let the terminal's own bg show through.
-  // This makes lain look native in any Tokyo Night / dark terminal.
-  accent: "#bb9af7",        // purple — primary accent (borders, highlights)
-  accentDim: "#7c6ea3",     // muted purple — inactive accents
-  secondary: "#7aa2f7",     // blue — secondary accent (links, metadata keys)
-  tertiary: "#0db9d7",      // cyan — tertiary (breadcrumbs, node IDs)
-
-  fg: "#a9b1d6",            // terminal fg — main text
-  fgBright: "#c0caf5",      // brighter fg — titles, selected text
-  fgDim: "#565f89",         // dim fg — metadata values, hints
-  fgMuted: "#3b3f5c",       // very dim — separators, tree connectors
-
-  selected: "#292e42",      // subtle highlight bg for selected row
-  panelBorder: "#32344a",   // inactive panel border (from palette[0])
-
-  red: "#f7768e",
-  green: "#9ece6a",
-  yellow: "#e0af68",
-  orange: "#ff9e64",
+const c = {
+  accent:     "#bb9af7",   // purple — active borders, selection marker
+  accentDim:  "#7c6ea3",   // muted purple
+  blue:       "#7aa2f7",   // metadata keys, links
+  cyan:       "#0db9d7",   // IDs, breadcrumb separators
+  bright:     "#c0caf5",   // titles, selected text
+  fg:         "#a9b1d6",   // body text
+  dim:        "#565f89",   // metadata values, footer, connectors
+  muted:      "#3b3f5c",   // borders, separators
+  surface:    "#292e42",   // selected row bg
+  red:        "#f7768e",
+  green:      "#9ece6a",
+  yellow:     "#e0af68",
+  orange:     "#ff9e64",
 };
 
 // ============================================================================
 // State
 // ============================================================================
 
+type AppMode = "picker" | "exploring" | "reading" | "help";
+
 interface AppState {
-  exploration: Exploration;
+  mode: AppMode;
+  previousMode: AppMode;
+  exploration: Exploration | null;
   nodes: LainNode[];
-  selectedNodeId: string;
-  treeLines: TreeLine[];
-  activePanel: "tree" | "content";
-  showHelp: boolean;
+  treeOptions: TreeItem[];
+  selectedIdx: number;
+  termWidth: number;
+  termHeight: number;
 }
 
-interface TreeLine {
+interface TreeItem {
   nodeId: string;
-  display: string; // pre-rendered line
+  prefix: string;  // tree connectors
+  title: string;   // node title
   depth: number;
-  isPruned: boolean;
-  isPending: boolean;
+  status: string;
+  node: LainNode;
 }
 
 // ============================================================================
-// Smart DB discovery
+// DB Discovery
 // ============================================================================
 
-function findDbFile(arg?: string): string {
-  if (arg && fs.existsSync(arg)) return arg;
+function discoverDbFiles(startDir: string): string[] {
+  const results: string[] = [];
+  const search = (dir: string, depth: number) => {
+    if (depth > 3) return;
+    try {
+      const entries = fs.readdirSync(dir);
+      for (const entry of entries) {
+        if (entry.endsWith(".db")) {
+          const full = path.join(dir, entry);
+          try {
+            // Verify it's a lain db
+            const s = new Storage(full);
+            const exps = new Graph(s).getAllExplorations();
+            s.close();
+            if (exps.length > 0) results.push(full);
+          } catch {}
+        }
+      }
+    } catch {}
+  };
 
-  // Search current directory for .db files
-  const cwd = process.cwd();
-  const dbFiles = fs.readdirSync(cwd).filter((f) => f.endsWith(".db"));
-
-  if (dbFiles.length === 1) return path.resolve(dbFiles[0]);
-  if (dbFiles.length > 1) {
-    // Pick the most recently modified
-    const sorted = dbFiles
-      .map((f) => ({ name: f, mtime: fs.statSync(path.join(cwd, f)).mtimeMs }))
-      .sort((a, b) => b.mtime - a.mtime);
-    return path.resolve(sorted[0].name);
-  }
-
-  // Search parent directories
-  let dir = cwd;
-  for (let i = 0; i < 5; i++) {
+  let dir = startDir;
+  for (let i = 0; i < 4; i++) {
+    search(dir, i);
     const parent = path.dirname(dir);
     if (parent === dir) break;
     dir = parent;
-    const files = fs.readdirSync(dir).filter((f) => f.endsWith(".db"));
-    if (files.length > 0) {
-      const sorted = files
-        .map((f) => ({ name: f, mtime: fs.statSync(path.join(dir, f)).mtimeMs }))
-        .sort((a, b) => b.mtime - a.mtime);
-      return path.join(dir, sorted[0].name);
-    }
   }
-
-  throw new Error(
-    "No .db file found. Usage: lain-tui [file.db] or run from a directory containing one."
-  );
+  return results;
 }
 
 // ============================================================================
-// Main App
+// Tree Builder
 // ============================================================================
 
-export async function createApp(dbPathArg?: string): Promise<void> {
-  const dbPath = findDbFile(dbPathArg);
-  const storage = new Storage(dbPath);
-  const graph = new Graph(storage);
-
-  const explorations = graph.getAllExplorations();
-  if (explorations.length === 0) {
-    storage.close();
-    throw new Error("No explorations in this database.");
-  }
-
-  const exploration = explorations[0];
-  const allNodes = graph.getAllNodes(exploration.id);
-  const root = allNodes.find((n) => n.parentId === null);
-  if (!root) {
-    storage.close();
-    throw new Error("No root node found.");
-  }
-
-  const treeLines = buildTreeLines(root, allNodes);
-  const nodeCount = allNodes.filter((n) => n.status !== "pruned").length;
-
-  const state: AppState = {
-    exploration,
-    nodes: allNodes,
-    selectedNodeId: root.id,
-    treeLines,
-    activePanel: "tree",
-    showHelp: false,
-  };
-
-  const renderer = await createCliRenderer();
-
-  // Set terminal title
-  const shortName = exploration.name.length > 40
-    ? exploration.name.slice(0, 37) + "..."
-    : exploration.name;
-  renderer.setTerminalTitle(`lain — ${shortName}`);
-
-  // ---- Root container ----
-  const container = new BoxRenderable(renderer, {
-    id: "container",
-    width: "100%",
-    height: "100%",
-    flexDirection: "column",
-    paddingLeft: 1,
-    paddingRight: 1,
-  });
-  renderer.root.add(container);
-
-  // ---- Header ----
-  const header = new BoxRenderable(renderer, {
-    id: "header",
-    width: "100%",
-    height: 1,
-    flexDirection: "row",
-    marginTop: 1,
-    marginBottom: 1,
-  });
-  container.add(header);
-
-  const headerText = new TextRenderable(renderer, {
-    id: "header-text",
-    content: `  lain  ${shortName}  ·  ${nodeCount} nodes  ·  n=${exploration.n} m=${exploration.m}  ·  ${exploration.extension}`,
-    fg: theme.fgDim,
-  });
-  header.add(headerText);
-
-  // ---- Content area ----
-  const contentArea = new BoxRenderable(renderer, {
-    id: "content-area",
-    width: "100%",
-    flexGrow: 1,
-    flexDirection: "row",
-    gap: 2,
-  });
-  container.add(contentArea);
-
-  // ---- Tree panel ----
-  const treePanel = new BoxRenderable(renderer, {
-    id: "tree-panel",
-    width: "35%",
-    height: "100%",
-    border: true,
-    borderStyle: "round",
-    borderColor: theme.accent,
-    title: " tree ",
-    titleAlignment: "left",
-    flexDirection: "column",
-    overflow: "hidden",
-    paddingLeft: 1,
-  });
-  contentArea.add(treePanel);
-
-  const treeScroll = new ScrollBoxRenderable(renderer, {
-    id: "tree-scroll",
-    scrollY: true,
-    scrollX: false,
-    viewportCulling: true,
-    scrollbarOptions: {
-      trackColor: theme.panelBorder,
-      thumbColor: theme.accentDim,
-    },
-  });
-  treePanel.add(treeScroll);
-
-  const treeText = new TextRenderable(renderer, {
-    id: "tree-text",
-    content: renderTree(state),
-    fg: theme.fg,
-    width: "100%",
-  });
-  treeScroll.content.add(treeText);
-
-  // ---- Node panel ----
-  const nodePanel = new BoxRenderable(renderer, {
-    id: "node-panel",
-    flexGrow: 1,
-    height: "100%",
-    border: true,
-    borderStyle: "round",
-    borderColor: theme.panelBorder,
-    title: " node ",
-    titleAlignment: "left",
-    flexDirection: "column",
-    overflow: "hidden",
-    paddingLeft: 1,
-    paddingRight: 1,
-  });
-  contentArea.add(nodePanel);
-
-  const nodeScroll = new ScrollBoxRenderable(renderer, {
-    id: "node-scroll",
-    scrollY: true,
-    scrollX: false,
-    viewportCulling: true,
-    scrollbarOptions: {
-      trackColor: theme.panelBorder,
-      thumbColor: theme.accentDim,
-    },
-  });
-  nodePanel.add(nodeScroll);
-
-  const nodeContent = new TextRenderable(renderer, {
-    id: "node-content",
-    content: "",
-    fg: theme.fg,
-    width: "100%",
-  });
-  nodeScroll.content.add(nodeContent);
-
-  // ---- Footer ----
-  const footer = new BoxRenderable(renderer, {
-    id: "footer",
-    width: "100%",
-    height: 1,
-    marginTop: 1,
-    marginBottom: 1,
-    paddingLeft: 2,
-  });
-  container.add(footer);
-
-  const footerText = new TextRenderable(renderer, {
-    id: "footer-text",
-    content: buildFooter(state),
-    fg: theme.fgMuted,
-  });
-  footer.add(footerText);
-
-  // ---- Initial render ----
-  updateNodePanel(state, nodeContent, graph);
-  updatePanelBorders(state, treePanel, nodePanel);
-
-  // ---- Keyboard ----
-  renderer.keyInput.on("keypress", (key: KeyEvent) => {
-    if (state.showHelp) {
-      state.showHelp = false;
-      treeText.content = renderTree(state);
-      updateNodePanel(state, nodeContent, graph);
-      updatePanelBorders(state, treePanel, nodePanel);
-      footerText.content = buildFooter(state);
-      return;
-    }
-
-    const currentIdx = state.treeLines.findIndex(
-      (l) => l.nodeId === state.selectedNodeId
-    );
-
-    switch (key.name) {
-      // ---- Vertical navigation ----
-      case "up":
-      case "k": {
-        if (state.activePanel === "tree" && currentIdx > 0) {
-          state.selectedNodeId = state.treeLines[currentIdx - 1].nodeId;
-          treeText.content = renderTree(state);
-          updateNodePanel(state, nodeContent, graph);
-          nodeScroll.scrollToTop();
-          ensureLineVisible(treeScroll, currentIdx - 1);
-        } else if (state.activePanel === "content") {
-          nodeScroll.scrollBy(0, -2);
-        }
-        break;
-      }
-      case "down":
-      case "j": {
-        if (state.activePanel === "tree" && currentIdx < state.treeLines.length - 1) {
-          state.selectedNodeId = state.treeLines[currentIdx + 1].nodeId;
-          treeText.content = renderTree(state);
-          updateNodePanel(state, nodeContent, graph);
-          nodeScroll.scrollToTop();
-          ensureLineVisible(treeScroll, currentIdx + 1);
-        } else if (state.activePanel === "content") {
-          nodeScroll.scrollBy(0, 2);
-        }
-        break;
-      }
-
-      // ---- Panel switching ----
-      case "tab": {
-        state.activePanel = state.activePanel === "tree" ? "content" : "tree";
-        updatePanelBorders(state, treePanel, nodePanel);
-        footerText.content = buildFooter(state);
-        break;
-      }
-      case "left": {
-        if (state.activePanel === "content") {
-          state.activePanel = "tree";
-          updatePanelBorders(state, treePanel, nodePanel);
-          footerText.content = buildFooter(state);
-        }
-        break;
-      }
-      case "right": {
-        if (state.activePanel === "tree") {
-          state.activePanel = "content";
-          updatePanelBorders(state, treePanel, nodePanel);
-          footerText.content = buildFooter(state);
-        }
-        break;
-      }
-
-      // ---- Enter: open content panel ----
-      case "return": {
-        state.activePanel = "content";
-        updatePanelBorders(state, treePanel, nodePanel);
-        nodeScroll.scrollToTop();
-        footerText.content = buildFooter(state);
-        break;
-      }
-
-      // ---- Jump to top/bottom ----
-      case "g": {
-        if (state.activePanel === "tree" && state.treeLines.length > 0) {
-          state.selectedNodeId = state.treeLines[0].nodeId;
-          treeText.content = renderTree(state);
-          updateNodePanel(state, nodeContent, graph);
-          treeScroll.scrollToTop();
-          nodeScroll.scrollToTop();
-        } else if (state.activePanel === "content") {
-          nodeScroll.scrollToTop();
-        }
-        break;
-      }
-
-      // ---- Help ----
-      case "?": {
-        state.showHelp = true;
-        nodeContent.content = buildHelpContent();
-        nodePanel.title = " help ";
-        nodePanel.borderColor = theme.accent;
-        treePanel.borderColor = theme.panelBorder;
-        footerText.content = "  press any key to dismiss";
-        nodeScroll.scrollToTop();
-        break;
-      }
-
-      // ---- Quit ----
-      case "q": {
-        storage.close();
-        renderer.setTerminalTitle("");
-        renderer.destroy();
-        process.exit(0);
-        break;
-      }
-      case "escape": {
-        if (state.activePanel === "content") {
-          // Escape in content panel goes back to tree
-          state.activePanel = "tree";
-          updatePanelBorders(state, treePanel, nodePanel);
-          footerText.content = buildFooter(state);
-        } else {
-          storage.close();
-          renderer.setTerminalTitle("");
-          renderer.destroy();
-          process.exit(0);
-        }
-        break;
-      }
-    }
-  });
-}
-
-// ============================================================================
-// Panel border management
-// ============================================================================
-
-function updatePanelBorders(
-  state: AppState,
-  treePanel: BoxRenderable,
-  nodePanel: BoxRenderable
-): void {
-  treePanel.borderColor = state.activePanel === "tree" ? theme.accent : theme.panelBorder;
-  nodePanel.borderColor = state.activePanel === "content" ? theme.accent : theme.panelBorder;
-  nodePanel.title = " node ";
-}
-
-// ============================================================================
-// Tree rendering
-// ============================================================================
-
-function buildTreeLines(
+function buildTreeItems(
   node: LainNode,
   allNodes: LainNode[],
   prefix = "",
   isLast = true,
   isRoot = true
-): TreeLine[] {
-  const lines: TreeLine[] = [];
+): TreeItem[] {
+  const items: TreeItem[] = [];
   const connector = isRoot ? "" : isLast ? "└─ " : "├─ ";
 
-  const maxTitle = 30;
-  let title = node.title || node.id;
-  if (title.length > maxTitle) {
-    title = title.slice(0, maxTitle - 1) + "…";
-  }
-
-  lines.push({
+  items.push({
     nodeId: node.id,
-    display: `${prefix}${connector}${title}`,
+    prefix: prefix + connector,
+    title: node.title || node.id,
     depth: node.depth,
-    isPruned: node.status === "pruned",
-    isPending: node.status === "pending",
+    status: node.status,
+    node,
   });
 
   const children = allNodes
@@ -452,143 +125,433 @@ function buildTreeLines(
   const childPrefix = isRoot ? "" : prefix + (isLast ? "   " : "│  ");
 
   children.forEach((child, i) => {
-    lines.push(
-      ...buildTreeLines(child, allNodes, childPrefix, i === children.length - 1, false)
+    items.push(
+      ...buildTreeItems(child, allNodes, childPrefix, i === children.length - 1, false)
     );
   });
 
-  return lines;
-}
-
-function renderTree(state: AppState): string {
-  return state.treeLines
-    .map((line) => {
-      const selected = line.nodeId === state.selectedNodeId;
-      const marker = selected ? "▸ " : "  ";
-      return `${marker}${line.display}`;
-    })
-    .join("\n");
-}
-
-function ensureLineVisible(
-  scrollBox: ScrollBoxRenderable,
-  lineIdx: number
-): void {
-  const targetScroll = Math.max(0, lineIdx - 8);
-  scrollBox.scrollTo(0, targetScroll);
+  return items;
 }
 
 // ============================================================================
-// Node content rendering
+// Content Builder
 // ============================================================================
 
-function updateNodePanel(
-  state: AppState,
-  contentEl: TextRenderable,
-  graph: Graph
-): void {
-  const node = graph.getNode(state.selectedNodeId);
-  if (!node) return;
-
+function buildNodeContent(node: LainNode, graph: Graph, allNodes: LainNode[]): string {
   const parts: string[] = [];
 
   // Breadcrumb
-  const ancestors = graph.getAncestorChain(state.selectedNodeId);
+  const ancestors = graph.getAncestorChain(node.id);
   if (ancestors.length > 0) {
-    const crumbs = [...ancestors, node]
-      .map((n) => {
-        const name = n.title || n.id;
-        return name.length > 18 ? name.slice(0, 17) + "…" : name;
-      });
-    parts.push(crumbs.join("  >  "));
+    const crumbs = [...ancestors, node].map((n) => {
+      const name = n.title || n.id;
+      return name.length > 25 ? name.slice(0, 24) + "…" : name;
+    });
+    parts.push(crumbs.join("  ›  "));
     parts.push("");
   }
 
   // Title
-  parts.push(node.title || node.id);
-  parts.push("─".repeat(Math.min(50, (node.title || node.id).length)));
+  parts.push(`# ${node.title || node.id}`);
   parts.push("");
 
-  // Metadata block
-  const meta: string[] = [];
-  meta.push(`id       ${node.id}`);
-  meta.push(`depth    ${node.depth}  ·  branch ${node.branchIndex}  ·  ${node.status}`);
-  if (node.model) meta.push(`model    ${node.model} (${node.provider})`);
-  if (node.planSummary) meta.push(`direction  ${node.planSummary}`);
-  parts.push(meta.join("\n"));
+  // Metadata
+  parts.push(`**id** ${node.id}  ·  **depth** ${node.depth}  ·  **branch** ${node.branchIndex}  ·  ${node.status}`);
+  if (node.model) parts.push(`**model** ${node.model} (${node.provider})`);
+  if (node.planSummary) parts.push(`**direction** ${node.planSummary}`);
   parts.push("");
 
   // Content
   if (node.content) {
     parts.push(node.content);
   } else {
-    parts.push("(no content)");
+    parts.push("*no content*");
   }
 
   // Cross-links
   const crosslinks = graph.getCrosslinksForNode(node.id);
   if (crosslinks.length > 0) {
     parts.push("");
-    parts.push("cross-links");
+    parts.push("---");
+    parts.push("**cross-links**");
     for (const cl of crosslinks) {
       const otherId = cl.sourceId === node.id ? cl.targetId : cl.sourceId;
       const otherNode = graph.getNode(otherId);
       const otherName = otherNode?.title || otherId;
-      parts.push(`  → ${otherName}${cl.label ? ` — ${cl.label}` : ""}`);
+      parts.push(`- → ${otherName}${cl.label ? ` — *${cl.label}*` : ""}`);
     }
   }
 
   // Children
-  const children = state.nodes.filter(
+  const children = allNodes.filter(
     (n) => n.parentId === node.id && n.status !== "pruned"
   );
   if (children.length > 0) {
     parts.push("");
-    parts.push(`children (${children.length})`);
+    parts.push("---");
+    parts.push(`**children** (${children.length})`);
     for (const child of children) {
-      parts.push(`  ${child.branchIndex}. ${child.title || child.id}`);
+      parts.push(`${child.branchIndex}. ${child.title || child.id}`);
     }
   }
 
-  contentEl.content = parts.join("\n");
+  return parts.join("\n");
 }
 
 // ============================================================================
-// Footer
+// Main App
 // ============================================================================
 
-function buildFooter(state: AppState): string {
-  if (state.activePanel === "tree") {
-    return "  j/k navigate  ·  enter/→ view  ·  tab switch  ·  ? help  ·  q quit";
+export async function createApp(dbPathArg?: string): Promise<void> {
+  // ---- Discover and load ----
+  let dbPath: string;
+  let storage: Storage;
+  let graph: Graph;
+  let exploration: Exploration;
+  let allNodes: LainNode[];
+
+  if (dbPathArg && fs.existsSync(dbPathArg)) {
+    dbPath = dbPathArg;
+  } else {
+    const found = discoverDbFiles(process.cwd());
+    if (found.length === 0) {
+      throw new Error("No lain .db files found. Run from a directory with explorations, or pass a path.");
+    }
+    dbPath = found[0]; // We'll add a picker later if multiple
   }
-  return "  j/k scroll  ·  esc/← back  ·  tab switch  ·  g top  ·  ? help  ·  q quit";
+
+  storage = new Storage(dbPath);
+  graph = new Graph(storage);
+  const explorations = graph.getAllExplorations();
+  if (explorations.length === 0) {
+    storage.close();
+    throw new Error("No explorations in this database.");
+  }
+  exploration = explorations[0];
+  allNodes = graph.getAllNodes(exploration.id);
+
+  const root = allNodes.find((n) => n.parentId === null);
+  if (!root) { storage.close(); throw new Error("No root node."); }
+
+  const treeItems = buildTreeItems(root, allNodes);
+  const nodeCount = allNodes.filter((n) => n.status !== "pruned").length;
+
+  // ---- Renderer ----
+  const renderer = await createCliRenderer();
+  const termW = renderer.width ?? 80;
+  const termH = renderer.height ?? 24;
+
+  const shortName = exploration.name.length > 50
+    ? exploration.name.slice(0, 47) + "…"
+    : exploration.name;
+  renderer.setTerminalTitle(`lain — ${shortName}`);
+
+  const state: AppState = {
+    mode: "exploring",
+    previousMode: "exploring",
+    exploration,
+    nodes: allNodes,
+    treeOptions: treeItems,
+    selectedIdx: 0,
+    termWidth: termW,
+    termHeight: termH,
+  };
+
+  // ---- Adaptive layout ----
+  const treePanelWidth = termW < 100 ? Math.floor(termW * 0.4) : termW < 160 ? 44 : 54;
+
+  // ---- Root ----
+  const rootBox = new BoxRenderable(renderer, {
+    id: "root",
+    width: "100%",
+    height: "100%",
+    flexDirection: "column",
+    paddingLeft: 1,
+    paddingRight: 1,
+  });
+  renderer.root.add(rootBox);
+
+  // ---- Header ----
+  const headerBox = new BoxRenderable(renderer, {
+    id: "header",
+    width: "100%",
+    height: 1,
+    marginTop: 1,
+    marginBottom: 1,
+  });
+  rootBox.add(headerBox);
+
+  const headerText = new TextRenderable(renderer, {
+    id: "header-text",
+    content: t`  ${fg(c.accent)("lain")}  ${dim(shortName)}  ${fg(c.muted)("·")}  ${dim(`${nodeCount} nodes`)}  ${fg(c.muted)("·")}  ${dim(`n=${exploration.n} m=${exploration.m}`)}  ${fg(c.muted)("·")}  ${dim(exploration.extension)}`,
+  });
+  headerBox.add(headerText);
+
+  // ---- Content area (tree + node) ----
+  const contentArea = new BoxRenderable(renderer, {
+    id: "content-area",
+    width: "100%",
+    flexGrow: 1,
+    flexDirection: "row",
+    gap: 1,
+  });
+  rootBox.add(contentArea);
+
+  // ---- Tree panel ----
+  const treePanel = new BoxRenderable(renderer, {
+    id: "tree-panel",
+    width: treePanelWidth,
+    height: "100%",
+    border: true,
+    borderStyle: "round",
+    borderColor: c.accent,
+    flexDirection: "column",
+    overflow: "hidden",
+  });
+  contentArea.add(treePanel);
+
+  // Build Select options from tree items
+  const selectOpts: SelectOption[] = treeItems.map((item) => {
+    const maxTitle = treePanelWidth - item.prefix.length - 6;
+    let title = item.title;
+    if (title.length > maxTitle && maxTitle > 5) {
+      title = title.slice(0, maxTitle - 1) + "…";
+    }
+    return {
+      name: `${item.prefix}${title}`,
+      description: "",
+      value: item.nodeId,
+    };
+  });
+
+  const treeSelect = new SelectRenderable(renderer, {
+    id: "tree-select",
+    options: selectOpts,
+    selectedIndex: 0,
+    backgroundColor: "transparent",
+    textColor: c.dim,
+    focusedBackgroundColor: "transparent",
+    focusedTextColor: c.dim,
+    selectedBackgroundColor: c.surface,
+    selectedTextColor: c.bright,
+    showDescription: false,
+    showScrollIndicator: true,
+    wrapSelection: false,
+    focusable: true,
+    itemSpacing: 0,
+  });
+  treePanel.add(treeSelect);
+  treeSelect.focus();
+
+  // ---- Node panel ----
+  const nodePanel = new BoxRenderable(renderer, {
+    id: "node-panel",
+    flexGrow: 1,
+    height: "100%",
+    border: true,
+    borderStyle: "round",
+    borderColor: c.muted,
+    flexDirection: "column",
+    overflow: "hidden",
+    paddingLeft: 1,
+    paddingRight: 1,
+    paddingTop: 1,
+  });
+  contentArea.add(nodePanel);
+
+  const nodeScroll = new ScrollBoxRenderable(renderer, {
+    id: "node-scroll",
+    scrollY: true,
+    scrollX: false,
+    viewportCulling: true,
+    scrollbarOptions: {
+      trackColor: c.muted,
+      thumbColor: c.accentDim,
+    },
+  });
+  nodePanel.add(nodeScroll);
+
+  const nodeMarkdown = new MarkdownRenderable(renderer, {
+    id: "node-md",
+    content: buildNodeContent(root, graph, allNodes),
+  });
+  nodeScroll.content.add(nodeMarkdown);
+
+  // ---- Footer ----
+  const footerBox = new BoxRenderable(renderer, {
+    id: "footer",
+    width: "100%",
+    height: 1,
+    marginTop: 1,
+    marginBottom: 1,
+    paddingLeft: 2,
+  });
+  rootBox.add(footerBox);
+
+  const footerText = new TextRenderable(renderer, {
+    id: "footer-text",
+    content: t`  ${dim("j/k")} navigate  ${fg(c.muted)("·")}  ${dim("enter/→")} open  ${fg(c.muted)("·")}  ${dim("?")} help  ${fg(c.muted)("·")}  ${dim("q")} quit`,
+  });
+  footerBox.add(footerText);
+
+  // ---- Update content when selection changes ----
+  function onSelectionChanged() {
+    const idx = treeSelect.getSelectedIndex();
+    const item = treeItems[idx];
+    if (!item) return;
+    state.selectedIdx = idx;
+
+    const node = graph.getNode(item.nodeId);
+    if (!node) return;
+
+    nodeMarkdown.content = buildNodeContent(node, graph, allNodes);
+    nodeScroll.scrollToTop();
+  }
+
+  treeSelect.on(SelectRenderableEvents.SELECTION_CHANGED, onSelectionChanged);
+
+  // ---- Update footer and borders for mode changes ----
+  function updateMode(newMode: AppMode) {
+    state.previousMode = state.mode;
+    state.mode = newMode;
+
+    if (newMode === "exploring") {
+      treePanel.borderColor = c.accent;
+      nodePanel.borderColor = c.muted;
+      treeSelect.focus();
+      footerText.content = t`  ${dim("j/k")} navigate  ${fg(c.muted)("·")}  ${dim("enter/→")} open  ${fg(c.muted)("·")}  ${dim("?")} help  ${fg(c.muted)("·")}  ${dim("q")} quit`;
+    } else if (newMode === "reading") {
+      treePanel.borderColor = c.muted;
+      nodePanel.borderColor = c.accent;
+      footerText.content = t`  ${dim("j/k")} scroll  ${fg(c.muted)("·")}  ${dim("esc/←")} back  ${fg(c.muted)("·")}  ${dim("g")} top  ${fg(c.muted)("·")}  ${dim("G")} bottom  ${fg(c.muted)("·")}  ${dim("?")} help`;
+    } else if (newMode === "help") {
+      nodePanel.borderColor = c.accent;
+      treePanel.borderColor = c.muted;
+      nodeMarkdown.content = HELP_TEXT;
+      nodeScroll.scrollToTop();
+      footerText.content = t`  ${dim("press any key to dismiss")}`;
+    }
+  }
+
+  // ---- Keyboard ----
+  renderer.keyInput.on("keypress", (key: KeyEvent) => {
+    // Help dismissal
+    if (state.mode === "help") {
+      const item = treeItems[state.selectedIdx];
+      const node = item ? graph.getNode(item.nodeId) : null;
+      if (node) nodeMarkdown.content = buildNodeContent(node, graph, allNodes);
+      updateMode(state.previousMode);
+      return;
+    }
+
+    // ---- Exploring mode (tree focused) ----
+    if (state.mode === "exploring") {
+      switch (key.name) {
+        case "return":
+        case "right":
+          updateMode("reading");
+          return;
+        case "tab":
+          updateMode("reading");
+          return;
+        case "?":
+          updateMode("help");
+          return;
+        case "q":
+          cleanup();
+          return;
+        case "escape":
+          cleanup();
+          return;
+        // Let SelectRenderable handle j/k/up/down internally
+      }
+      return;
+    }
+
+    // ---- Reading mode (content focused) ----
+    if (state.mode === "reading") {
+      switch (key.name) {
+        case "j":
+        case "down":
+          nodeScroll.scrollBy(0, 2);
+          return;
+        case "k":
+        case "up":
+          nodeScroll.scrollBy(0, -2);
+          return;
+        case "d":
+          nodeScroll.scrollBy(0, 10);
+          return;
+        case "u":
+          nodeScroll.scrollBy(0, -10);
+          return;
+        case "g":
+          nodeScroll.scrollToTop();
+          return;
+        case "escape":
+        case "left":
+        case "h":
+          updateMode("exploring");
+          return;
+        case "tab":
+          updateMode("exploring");
+          return;
+        case "?":
+          updateMode("help");
+          return;
+        case "q":
+          cleanup();
+          return;
+      }
+      return;
+    }
+  });
+
+  // ---- Resize handler ----
+  renderer.on("resize", (w: number, h: number) => {
+    state.termWidth = w;
+    state.termHeight = h;
+    // Could recompute tree panel width here for true adaptiveness
+  });
+
+  function cleanup() {
+    storage.close();
+    renderer.setTerminalTitle("");
+    renderer.destroy();
+    process.exit(0);
+  }
 }
 
 // ============================================================================
-// Help
+// Help text (markdown)
 // ============================================================================
 
-function buildHelpContent(): string {
-  return [
-    "lain — keyboard reference",
-    "═".repeat(30),
-    "",
-    "tree panel",
-    "  j / ↓         next node",
-    "  k / ↑         previous node",
-    "  g             jump to root",
-    "  enter / →     open node in content panel",
-    "",
-    "content panel",
-    "  j / ↓         scroll down",
-    "  k / ↑         scroll up",
-    "  g             scroll to top",
-    "  esc / ←       back to tree",
-    "",
-    "general",
-    "  tab           switch panels",
-    "  ← / →         switch panels",
-    "  ?             this help",
-    "  q             quit",
-  ].join("\n");
-}
+const HELP_TEXT = `# lain — keyboard reference
+
+## tree panel
+
+| key | action |
+|---|---|
+| **j** / **↓** | next node |
+| **k** / **↑** | previous node |
+| **enter** / **→** | open in content panel |
+| **tab** | switch to content panel |
+
+## content panel
+
+| key | action |
+|---|---|
+| **j** / **↓** | scroll down |
+| **k** / **↑** | scroll up |
+| **d** / **u** | half page down / up |
+| **g** / **G** | top / bottom |
+| **esc** / **←** / **h** | back to tree |
+| **tab** | switch to tree panel |
+
+## general
+
+| key | action |
+|---|---|
+| **?** | this help |
+| **q** | quit |
+`;
