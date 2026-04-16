@@ -1,8 +1,8 @@
 /**
- * Radial tree graph view for the TUI.
+ * Radial tree graph view with infinite canvas and viewport panning.
  *
- * Layout: root at center, children in a ring, grandchildren in arcs.
- * Gentle physics for organic drift. Peek panel beside the graph, not overlapping.
+ * Nodes live in world-space coordinates. A camera/viewport determines
+ * what's visible. Camera follows the selected node with smooth panning.
  */
 import {
   FrameBufferRenderable,
@@ -25,6 +25,7 @@ interface GNode {
   shortTitle: string;
   depth: number;
   status: string;
+  // World-space position
   x: number;
   y: number;
   anchorX: number;
@@ -54,21 +55,16 @@ const CROSSLINK_COLOR = RGBA.fromHex("#bb9af7");
 const PRUNED_FG = RGBA.fromHex("#f7768e");
 
 // ============================================================================
-// Radial Tree Layout
+// Radial Tree Layout — positions in world space, no clamping
 // ============================================================================
 
-function computeRadialLayout(
-  lainNodes: LainNode[],
-  w: number,
-  h: number
-): GNode[] {
+function computeRadialLayout(lainNodes: LainNode[]): GNode[] {
   const active = lainNodes.filter((n) => n.status !== "pruned");
   if (active.length === 0) return [];
 
   const root = active.find((n) => n.parentId === null);
   if (!root) return [];
 
-  // Build adjacency
   const childrenOf = new Map<string, LainNode[]>();
   for (const n of active) {
     if (n.parentId) {
@@ -77,35 +73,25 @@ function computeRadialLayout(
       childrenOf.set(n.parentId, siblings);
     }
   }
-  // Sort children by branch index
   for (const [, children] of childrenOf) {
     children.sort((a, b) => a.branchIndex - b.branchIndex);
   }
 
-  const cx = w / 2;
-  const cy = h / 2;
-
-  // Terminal chars are ~2x taller than wide, so scale Y by 0.5
-  const maxRadius = Math.min(w * 0.4, h * 0.8);
   const maxDepth = Math.max(...active.map((n) => n.depth), 0);
-  const ringSpacing = maxDepth > 0 ? maxRadius / (maxDepth + 0.5) : maxRadius;
+  // Generous spacing: 25 chars per ring so trees spread wide
+  const ringSpacing = Math.max(25, 20 + active.length * 0.5);
 
   const result: GNode[] = [];
 
-  function layout(
-    node: LainNode,
-    angleStart: number,
-    angleEnd: number,
-    depth: number
-  ) {
+  function layout(node: LainNode, angleStart: number, angleEnd: number, depth: number) {
     const angle = (angleStart + angleEnd) / 2;
     const radius = depth * ringSpacing;
 
-    const ax = cx + Math.cos(angle) * radius;
-    const ay = cy + Math.sin(angle) * radius * 0.45; // Squash Y for terminal aspect ratio
+    const ax = Math.cos(angle) * radius;
+    const ay = Math.sin(angle) * radius * 0.45; // Terminal aspect correction
 
     const shortTitle = node.title
-      ? (node.title.length > 14 ? node.title.slice(0, 13) + "…" : node.title)
+      ? (node.title.length > 28 ? node.title.slice(0, 27) + "…" : node.title)
       : node.id;
 
     result.push({
@@ -114,12 +100,9 @@ function computeRadialLayout(
       shortTitle,
       depth: node.depth,
       status: node.status,
-      x: ax,
-      y: ay,
-      anchorX: ax,
-      anchorY: ay,
-      vx: 0,
-      vy: 0,
+      x: ax, y: ay,
+      anchorX: ax, anchorY: ay,
+      vx: 0, vy: 0,
       parentId: node.parentId,
     });
 
@@ -130,40 +113,28 @@ function computeRadialLayout(
     const childArc = arcSpan / children.length;
 
     children.forEach((child, i) => {
-      const childStart = angleStart + childArc * i;
-      const childEnd = childStart + childArc;
-      layout(child, childStart, childEnd, depth + 1);
+      layout(child, angleStart + childArc * i, angleStart + childArc * (i + 1), depth + 1);
     });
   }
 
-  // Root gets the full circle
   layout(root, 0, Math.PI * 2, 0);
-
-  // Clamp all positions to buffer bounds
-  for (const n of result) {
-    n.x = Math.max(1, Math.min(w - 16, n.x));
-    n.y = Math.max(1, Math.min(h - 2, n.y));
-    n.anchorX = n.x;
-    n.anchorY = n.y;
-  }
-
   return result;
 }
 
 // ============================================================================
-// Gentle Physics — just organic drift, no chaos
+// Gentle Physics
 // ============================================================================
 
-function simulate(nodes: GNode[], w: number, h: number): void {
-  // Repel overlapping nodes at same depth
+function simulate(nodes: GNode[]): void {
   for (let i = 0; i < nodes.length; i++) {
     for (let j = i + 1; j < nodes.length; j++) {
       const a = nodes[i], b = nodes[j];
+      if (a.depth !== b.depth) continue;
       const dx = a.x - b.x;
       const dy = (a.y - b.y) * 2;
       const dist = Math.max(Math.sqrt(dx * dx + dy * dy), 3);
-      if (dist < 15) {
-        const force = 30 / (dist * dist);
+      if (dist < 20) {
+        const force = 40 / (dist * dist);
         a.vx += (dx / dist) * force;
         a.vy += ((dy / 2) / dist) * force;
         b.vx -= (dx / dist) * force;
@@ -172,30 +143,20 @@ function simulate(nodes: GNode[], w: number, h: number): void {
     }
   }
 
-  // Spring to anchor
   for (const n of nodes) {
     n.vx += (n.anchorX - n.x) * 0.06;
     n.vy += (n.anchorY - n.y) * 0.06;
-  }
-
-  // Apply + damp + cap
-  for (const n of nodes) {
     n.vx *= 0.7;
     n.vy *= 0.7;
     const speed = Math.sqrt(n.vx * n.vx + n.vy * n.vy);
-    if (speed > 0.4) {
-      n.vx = (n.vx / speed) * 0.4;
-      n.vy = (n.vy / speed) * 0.4;
-    }
+    if (speed > 0.4) { n.vx = (n.vx / speed) * 0.4; n.vy = (n.vy / speed) * 0.4; }
     n.x += n.vx;
     n.y += n.vy;
-    n.x = Math.max(1, Math.min(w - 16, n.x));
-    n.y = Math.max(1, Math.min(h - 2, n.y));
   }
 }
 
 // ============================================================================
-// Rendering
+// Viewport Rendering
 // ============================================================================
 
 function renderGraph(
@@ -203,58 +164,80 @@ function renderGraph(
   nodes: GNode[],
   edges: GEdge[],
   selectedId: string,
-  w: number,
-  h: number
+  vw: number, vh: number,  // viewport size (terminal cells)
+  camX: number, camY: number  // camera center in world space
 ): void {
   const buf = fb.frameBuffer;
   const map = new Map(nodes.map((n) => [n.id, n]));
 
-  buf.fillRect(0, 0, w, h, BG);
+  // World-to-screen transform: offset so camX,camY maps to viewport center
+  const offsetX = Math.round(vw / 2 - camX);
+  const offsetY = Math.round(vh / 2 - camY);
 
-  // Draw edges
+  buf.fillRect(0, 0, vw, vh, BG);
+
+  // Draw edges (only if at least one endpoint is visible)
   for (const edge of edges) {
     const a = map.get(edge.source), b = map.get(edge.target);
     if (!a || !b) continue;
+
+    const ax = Math.round(a.x + offsetX), ay = Math.round(a.y + offsetY);
+    const bx = Math.round(b.x + offsetX), by = Math.round(b.y + offsetY);
+
+    // Skip if both endpoints are way off screen
+    if (ax < -50 && bx < -50) continue;
+    if (ax > vw + 50 && bx > vw + 50) continue;
+    if (ay < -20 && by < -20) continue;
+    if (ay > vh + 20 && by > vh + 20) continue;
+
     const color = edge.isCrosslink ? CROSSLINK_COLOR : EDGE_COLOR;
     const ch = edge.isCrosslink ? ":" : "·";
-    drawDottedLine(buf, Math.round(a.x), Math.round(a.y), Math.round(b.x), Math.round(b.y), ch, color, BG, edge.isCrosslink ? 1 : 2);
+    const spacing = edge.isCrosslink ? 1 : 2;
+    drawDottedLine(buf, ax, ay, bx, by, ch, color, BG, spacing, vw, vh);
   }
 
-  // Draw nodes — selected last for z-order
+  // Draw nodes — selected last
   const sorted = [...nodes].sort((a, b) => (a.id === selectedId ? 1 : 0) - (b.id === selectedId ? 1 : 0));
   for (const node of sorted) {
-    const x = Math.round(node.x);
-    const y = Math.round(node.y);
-    const isSelected = node.id === selectedId;
+    const sx = Math.round(node.x + offsetX);
+    const sy = Math.round(node.y + offsetY);
     const label = ` ${node.shortTitle} `;
 
+    // Skip if off screen (with margin for label width)
+    if (sy < 0 || sy >= vh) continue;
+    if (sx + label.length < 0 || sx >= vw) continue;
+
+    const isSelected = node.id === selectedId;
     if (isSelected) {
-      buf.drawText(label, x, y, SELECTED_FG, SELECTED_BG);
+      buf.drawText(label, sx, sy, SELECTED_FG, SELECTED_BG);
     } else if (node.depth === 0) {
-      buf.drawText(label, x, y, ROOT_FG, BG);
+      buf.drawText(label, sx, sy, ROOT_FG, BG);
     } else if (node.status === "pruned") {
-      buf.drawText(label, x, y, PRUNED_FG, BG);
+      buf.drawText(label, sx, sy, PRUNED_FG, BG);
     } else {
-      buf.drawText(label, x, y, NODE_FG, BG);
+      buf.drawText(label, sx, sy, NODE_FG, BG);
     }
   }
 }
 
 function drawDottedLine(
   buf: any, x0: number, y0: number, x1: number, y1: number,
-  ch: string, color: RGBA, bg: RGBA, spacing = 2
+  ch: string, color: RGBA, bg: RGBA, spacing: number,
+  vw: number, vh: number
 ): void {
   const dx = Math.abs(x1 - x0), dy = Math.abs(y1 - y0);
   const sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1;
   let err = dx - dy, steps = 0;
   while (true) {
-    if (steps % spacing === 0) buf.setCell(x0, y0, ch, color, bg);
+    if (steps % spacing === 0 && x0 >= 0 && x0 < vw && y0 >= 0 && y0 < vh) {
+      buf.setCell(x0, y0, ch, color, bg);
+    }
     if (x0 === x1 && y0 === y1) break;
     const e2 = 2 * err;
     if (e2 > -dy) { err -= dy; x0 += sx; }
     if (e2 < dx) { err += dx; y0 += sy; }
     steps++;
-    if (steps > 1000) break;
+    if (steps > 2000) break;
   }
 }
 
@@ -266,7 +249,7 @@ export interface GraphViewOptions {
   renderer: RenderContext;
   nodes: LainNode[];
   crosslinks: Crosslink[];
-  graphWidth: number;   // Width of the graph canvas (not including peek)
+  graphWidth: number;
   graphHeight: number;
   onNodeSelect?: (nodeId: string) => void;
 }
@@ -278,48 +261,52 @@ export class GraphView {
   private selectedIdx = 0;
   private interval: ReturnType<typeof setInterval> | null = null;
   private renderer: RenderContext;
-  private gw: number;
-  private gh: number;
+  private vw: number;  // viewport width
+  private vh: number;  // viewport height
+  private camX = 0;    // camera center in world space
+  private camY = 0;
+  private targetCamX = 0;  // smooth camera target
+  private targetCamY = 0;
   private onNodeSelect?: (nodeId: string) => void;
   private allLainNodes: LainNode[];
 
-  // Peek panel — NOT overlapping, separate renderable
   peekBox: BoxRenderable;
   private peekScroll: ScrollBoxRenderable;
   private peekText: TextRenderable;
 
   constructor(opts: GraphViewOptions) {
     this.renderer = opts.renderer;
-    this.gw = opts.graphWidth;
-    this.gh = opts.graphHeight;
+    this.vw = opts.graphWidth;
+    this.vh = opts.graphHeight;
     this.onNodeSelect = opts.onNodeSelect;
     this.allLainNodes = opts.nodes;
 
-    // Compute layout
-    this.graphNodes = computeRadialLayout(opts.nodes, this.gw, this.gh);
+    // Compute radial layout in world space (no clamping)
+    this.graphNodes = computeRadialLayout(opts.nodes);
 
     // Build edges
     for (const gn of this.graphNodes) {
-      if (gn.parentId) {
-        this.edges.push({ source: gn.parentId, target: gn.id, isCrosslink: false });
-      }
+      if (gn.parentId) this.edges.push({ source: gn.parentId, target: gn.id, isCrosslink: false });
     }
     for (const cl of opts.crosslinks) {
       const hasS = this.graphNodes.some((n) => n.id === cl.sourceId);
       const hasT = this.graphNodes.some((n) => n.id === cl.targetId);
-      if (hasS && hasT) {
-        this.edges.push({ source: cl.sourceId, target: cl.targetId, isCrosslink: true });
-      }
+      if (hasS && hasT) this.edges.push({ source: cl.sourceId, target: cl.targetId, isCrosslink: true });
     }
 
-    // FrameBuffer for graph — exact size, no overlap
+    // Camera starts at root (world origin)
+    this.camX = 0;
+    this.camY = 0;
+    this.targetCamX = 0;
+    this.targetCamY = 0;
+
     this.fb = new FrameBufferRenderable(this.renderer, {
       id: "graph-fb",
-      width: this.gw,
-      height: this.gh,
+      width: this.vw,
+      height: this.vh,
     });
 
-    // Peek panel — positioned beside the graph by the caller via flexbox
+    // Peek panel
     this.peekBox = new BoxRenderable(this.renderer, {
       id: "graph-peek",
       width: 32,
@@ -356,22 +343,35 @@ export class GraphView {
   }
 
   start() {
-    // Pre-settle
-    for (let i = 0; i < 100; i++) {
-      simulate(this.graphNodes, this.gw, this.gh);
-    }
-    renderGraph(this.fb, this.graphNodes, this.edges, this.getSelectedId(), this.gw, this.gh);
+    // Pre-settle physics
+    for (let i = 0; i < 80; i++) simulate(this.graphNodes);
+
+    // Initial render
+    renderGraph(this.fb, this.graphNodes, this.edges, this.getSelectedId(), this.vw, this.vh, this.camX, this.camY);
 
     (this.renderer as any).requestLive?.();
     this.interval = setInterval(() => {
-      simulate(this.graphNodes, this.gw, this.gh);
-      renderGraph(this.fb, this.graphNodes, this.edges, this.getSelectedId(), this.gw, this.gh);
-    }, 100); // 10fps — gentle
+      simulate(this.graphNodes);
+
+      // Smooth camera pan toward target
+      this.camX += (this.targetCamX - this.camX) * 0.15;
+      this.camY += (this.targetCamY - this.camY) * 0.15;
+
+      renderGraph(this.fb, this.graphNodes, this.edges, this.getSelectedId(), this.vw, this.vh, this.camX, this.camY);
+    }, 80); // 12fps
   }
 
   stop() {
     if (this.interval) clearInterval(this.interval);
     (this.renderer as any).dropLive?.();
+  }
+
+  /** Resize the graph viewport. Call when terminal resizes. */
+  resize(newWidth: number, newHeight: number) {
+    this.vw = newWidth;
+    this.vh = newHeight;
+    this.fb.width = newWidth;
+    this.fb.height = newHeight;
   }
 
   handleKey(key: KeyEvent) {
@@ -401,16 +401,19 @@ export class GraphView {
 
     if (target) {
       this.selectedIdx = this.graphNodes.indexOf(target);
+      this.panToSelected();
       this.updatePeek();
     }
   }
 
-  /**
-   * Find the nearest node in a direction from the current node.
-   * dx/dy indicate direction: (1,0) = right, (-1,0) = left, (0,1) = down, (0,-1) = up.
-   * Scores candidates by: must be in the correct half-plane, then by distance
-   * weighted to prefer nodes more aligned with the direction.
-   */
+  private panToSelected() {
+    const node = this.graphNodes[this.selectedIdx];
+    if (node) {
+      this.targetCamX = node.x;
+      this.targetCamY = node.y;
+    }
+  }
+
   private findNearest(from: GNode, dx: number, dy: number): GNode | null {
     let best: GNode | null = null;
     let bestScore = Infinity;
@@ -419,20 +422,13 @@ export class GraphView {
       if (candidate.id === from.id) continue;
 
       const cdx = candidate.x - from.x;
-      const cdy = (candidate.y - from.y) * 2; // Scale Y for terminal aspect
+      const cdy = (candidate.y - from.y) * 2;
 
-      // Check the candidate is in the right direction
       const dot = cdx * dx + cdy * dy;
-      if (dot <= 0) continue; // Wrong direction entirely
+      if (dot <= 0) continue;
 
-      // Distance
       const dist = Math.sqrt(cdx * cdx + cdy * cdy);
-
-      // Alignment: how well does the candidate's direction match?
-      // 1.0 = perfectly aligned, 0.0 = perpendicular
       const alignment = dot / (dist * Math.sqrt(dx * dx + dy * dy) + 0.001);
-
-      // Score: prefer close + aligned. Penalize misalignment heavily.
       const score = dist / (alignment * alignment + 0.01);
 
       if (score < bestScore) {

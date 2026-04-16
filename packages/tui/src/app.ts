@@ -1200,6 +1200,14 @@ Latest: ${short}
     }
   });
 
+  // ---- Resize handler ----
+  renderer.on("resize", (w: number, h: number) => {
+    if (mode === "graph" && graphView) {
+      const peekWidth = 34;
+      graphView.resize(w - peekWidth - 4, h - 6);
+    }
+  });
+
   // ---- Cleanup ----
   function cleanup() {
     if (storage) storage.close();
