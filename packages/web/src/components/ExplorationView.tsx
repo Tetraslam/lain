@@ -109,22 +109,22 @@ export function ExplorationView({ dbFile, onBack }: { dbFile: string; onBack: ()
 
       let target: string | null = null;
 
-      // Up/Down: traverse in document order (same as nav panel)
-      if (e.key === "ArrowUp" || e.key === "ArrowDown") {
+      // Up/Down/j/k: traverse in document order (same as nav panel)
+      if (e.key === "ArrowUp" || e.key === "ArrowDown" || e.key === "j" || e.key === "k") {
         const currentIdx = navItems.findIndex((item) => item.id === selectedId);
         if (currentIdx === -1) return;
-        if (e.key === "ArrowUp" && currentIdx > 0) target = navItems[currentIdx - 1].id;
-        if (e.key === "ArrowDown" && currentIdx < navItems.length - 1) target = navItems[currentIdx + 1].id;
+        if ((e.key === "ArrowUp" || e.key === "k") && currentIdx > 0) target = navItems[currentIdx - 1].id;
+        if ((e.key === "ArrowDown" || e.key === "j") && currentIdx < navItems.length - 1) target = navItems[currentIdx + 1].id;
       }
 
-      // Left/Right: siblings
-      if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+      // Left/Right/h/l: siblings
+      if (e.key === "ArrowLeft" || e.key === "ArrowRight" || e.key === "h" || e.key === "l") {
         const cur = data.nodes.find((n: any) => n.id === selectedId);
         if (cur?.parentId) {
           const sibs = data.nodes.filter((n: any) => n.parentId === cur.parentId && n.status !== "pruned").sort((a: any, b: any) => a.branchIndex - b.branchIndex);
           const idx = sibs.findIndex((s: any) => s.id === selectedId);
-          if (e.key === "ArrowRight" && idx < sibs.length - 1) target = sibs[idx + 1].id;
-          if (e.key === "ArrowLeft" && idx > 0) target = sibs[idx - 1].id;
+          if ((e.key === "ArrowRight" || e.key === "l") && idx < sibs.length - 1) target = sibs[idx + 1].id;
+          if ((e.key === "ArrowLeft" || e.key === "h") && idx > 0) target = sibs[idx - 1].id;
         }
       }
 
@@ -261,7 +261,7 @@ export function ExplorationView({ dbFile, onBack }: { dbFile: string; onBack: ()
 
             {/* Keyboard shortcut hint */}
             <div style={{ marginTop: "3rem", paddingTop: "1rem", borderTop: "1px solid var(--border-subtle)", fontSize: 11, color: "var(--fg-muted)", letterSpacing: "0.02em" }}>
-              ↑↓←→ navigate · <strong>e</strong> extend · <strong>r</strong> redirect · <strong>p</strong> prune · <strong>g</strong> graph · <strong>b</strong> toggle sidebar · <strong>esc</strong> back
+              j/k or ↑↓ navigate · h/l or ←→ siblings · <strong>e</strong> extend · <strong>r</strong> redirect · <strong>p</strong> prune · <strong>g</strong> graph · <strong>b</strong> toggle sidebar · <strong>esc</strong> back
             </div>
           </article>
         </main>

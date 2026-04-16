@@ -136,6 +136,7 @@ a:hover { color: var(--accent-hover); }
 .topbar-title {
   font-family: var(--font-body); font-size: 14px; color: var(--fg-dim);
   font-weight: 400; flex: 1;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .topbar-actions { display: flex; gap: 8px; }
 
@@ -195,7 +196,6 @@ a:hover { color: var(--accent-hover); }
   font-family: var(--font-body);
   font-size: 2rem; font-weight: 400; color: var(--fg-bright);
   line-height: 1.25; margin-bottom: 1rem;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 
 .article-meta {
