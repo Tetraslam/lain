@@ -130,33 +130,34 @@ function computeRadialLayout(lainNodes: LainNode[]): GNode[] {
 
   layout(root, 0, Math.PI * 2, 0);
 
-  // No-overlap pass: push apart nodes whose labels would collide
-  // Root (index 0) is anchored at origin — never moved
-  for (let pass = 0; pass < 8; pass++) {
+  // No-overlap pass: push overlapping nodes RADIALLY outward to preserve circular structure.
+  // Never move the root node.
+  for (let pass = 0; pass < 10; pass++) {
     for (let i = 0; i < result.length; i++) {
       for (let j = i + 1; j < result.length; j++) {
         const a = result[i], b = result[j];
         const dx = b.x - a.x;
+        const dy = b.y - a.y;
         const minSepX = (a.labelWidth + b.labelWidth) / 2 + 2;
         const minSepY = 2;
 
-        if (Math.abs(dx) < minSepX && Math.abs(b.y - a.y) < minSepY) {
+        if (Math.abs(dx) < minSepX && Math.abs(dy) < minSepY) {
+          // Push the deeper node outward along its angle from origin
+          // If same depth, push both along their respective angles
           const aIsRoot = a.depth === 0;
           const bIsRoot = b.depth === 0;
 
-          if (Math.abs(dx) < minSepX) {
-            const push = (minSepX - Math.abs(dx)) / 2 + 0.5;
-            const sign = dx >= 0 ? 1 : -1;
-            if (aIsRoot) { b.x += push * sign * 2; }
-            else if (bIsRoot) { a.x -= push * sign * 2; }
-            else { a.x -= push * sign; b.x += push * sign; }
+          if (!bIsRoot) {
+            const angle = Math.atan2(b.y, b.x);
+            const push = Math.max(minSepX - Math.abs(dx), minSepY - Math.abs(dy)) * 0.6;
+            b.x += Math.cos(angle) * push;
+            b.y += Math.sin(angle) * push * 0.45;
           }
-          if (Math.abs(b.y - a.y) < minSepY) {
-            const push = (minSepY - Math.abs(b.y - a.y)) / 2 + 0.3;
-            const sign = (b.y - a.y) >= 0 ? 1 : -1;
-            if (aIsRoot) { b.y += push * sign * 2; }
-            else if (bIsRoot) { a.y -= push * sign * 2; }
-            else { a.y -= push * sign; b.y += push * sign; }
+          if (!aIsRoot && !bIsRoot) {
+            const angle = Math.atan2(a.y, a.x);
+            const push = Math.max(minSepX - Math.abs(dx), minSepY - Math.abs(dy)) * 0.3;
+            a.x += Math.cos(angle + Math.PI) * push; // Push slightly inward / sideways
+            a.y += Math.sin(angle + Math.PI) * push * 0.45;
           }
         }
       }
