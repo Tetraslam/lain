@@ -1,12 +1,9 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 
 import { createApp } from "./app.js";
 
+// DB path is optional — the app will discover it automatically
 const dbPath = process.argv[2];
-if (!dbPath) {
-  console.error("Usage: lain-tui <file.db>");
-  process.exit(1);
-}
 
 createApp(dbPath).catch((err) => {
   console.error(`Error: ${err.message}`);
