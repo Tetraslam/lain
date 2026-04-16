@@ -787,8 +787,11 @@ export async function createApp(dbPathArg?: string): Promise<void> {
     treeSelect.blur();
     treeSelect.focusable = false;
 
-    const gw = termW - 40; // Leave room for peek panel beside it
-    const gh = (renderer.height ?? 24) - 6;
+    const currentW = renderer.width ?? termW;
+    const currentH = renderer.height ?? 24;
+    const peekWidth = 34; // peek panel width + border + gap
+    const gw = currentW - peekWidth - 4; // graph canvas width
+    const gh = currentH - 6;
 
     const crosslinks = graph.getCrosslinks(exploration.id);
     graphView = new GraphView({

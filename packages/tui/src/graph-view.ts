@@ -375,19 +375,72 @@ export class GraphView {
 
   handleKey(key: KeyEvent) {
     if (this.graphNodes.length === 0) return;
+    const current = this.graphNodes[this.selectedIdx];
+    if (!current) return;
+
+    let target: GNode | null = null;
+
     switch (key.name) {
-      case "j": case "down":
-        this.selectedIdx = (this.selectedIdx + 1) % this.graphNodes.length;
-        this.updatePeek();
+      case "right": case "l":
+        target = this.findNearest(current, 1, 0);
         break;
-      case "k": case "up":
-        this.selectedIdx = (this.selectedIdx - 1 + this.graphNodes.length) % this.graphNodes.length;
-        this.updatePeek();
+      case "left": case "h":
+        target = this.findNearest(current, -1, 0);
+        break;
+      case "down": case "j":
+        target = this.findNearest(current, 0, 1);
+        break;
+      case "up": case "k":
+        target = this.findNearest(current, 0, -1);
         break;
       case "return":
         this.onNodeSelect?.(this.getSelectedId());
-        break;
+        return;
     }
+
+    if (target) {
+      this.selectedIdx = this.graphNodes.indexOf(target);
+      this.updatePeek();
+    }
+  }
+
+  /**
+   * Find the nearest node in a direction from the current node.
+   * dx/dy indicate direction: (1,0) = right, (-1,0) = left, (0,1) = down, (0,-1) = up.
+   * Scores candidates by: must be in the correct half-plane, then by distance
+   * weighted to prefer nodes more aligned with the direction.
+   */
+  private findNearest(from: GNode, dx: number, dy: number): GNode | null {
+    let best: GNode | null = null;
+    let bestScore = Infinity;
+
+    for (const candidate of this.graphNodes) {
+      if (candidate.id === from.id) continue;
+
+      const cdx = candidate.x - from.x;
+      const cdy = (candidate.y - from.y) * 2; // Scale Y for terminal aspect
+
+      // Check the candidate is in the right direction
+      const dot = cdx * dx + cdy * dy;
+      if (dot <= 0) continue; // Wrong direction entirely
+
+      // Distance
+      const dist = Math.sqrt(cdx * cdx + cdy * cdy);
+
+      // Alignment: how well does the candidate's direction match?
+      // 1.0 = perfectly aligned, 0.0 = perpendicular
+      const alignment = dot / (dist * Math.sqrt(dx * dx + dy * dy) + 0.001);
+
+      // Score: prefer close + aligned. Penalize misalignment heavily.
+      const score = dist / (alignment * alignment + 0.01);
+
+      if (score < bestScore) {
+        bestScore = score;
+        best = candidate;
+      }
+    }
+
+    return best;
   }
 
   getSelectedId(): string {
