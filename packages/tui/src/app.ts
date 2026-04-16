@@ -970,7 +970,11 @@ export async function createApp(dbPathArg?: string): Promise<void> {
     const useExt = ext || config.defaultExtension;
 
     const slugName = seed.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 50);
-    const newDbPath = path.resolve(`${slugName}.db`);
+    let newDbPath = path.resolve(`${slugName}.db`);
+    // Avoid collision with existing file
+    if (fs.existsSync(newDbPath)) {
+      newDbPath = path.resolve(`${slugName}-${generateId().slice(0, 4)}.db`);
+    }
     const expId = generateId();
 
     // Switch to exploration view immediately with a placeholder

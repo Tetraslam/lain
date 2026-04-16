@@ -250,7 +250,10 @@ async function runExplore(args: ParsedArgs): Promise<void> {
   // Generate a name from the seed
   const name = seed.length > 60 ? seed.slice(0, 57) + "..." : seed;
   const explorationId = generateId();
-  const dbFileName = outputDb || `${slugify(name)}.db`;
+  let dbFileName = outputDb || `${slugify(name)}.db`;
+  if (!outputDb && fs.existsSync(path.resolve(dbFileName))) {
+    dbFileName = `${slugify(name)}-${explorationId.slice(0, 4)}.db`;
+  }
   const dbPath = path.resolve(dbFileName);
 
   // Estimate cost
