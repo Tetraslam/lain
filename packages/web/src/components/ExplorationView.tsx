@@ -79,6 +79,22 @@ export function ExplorationView({ dbFile, onBack }: { dbFile: string; onBack: ()
     return r;
   }, [data, node]);
 
+  // Build nav tree (document order) — used for navigation and rendering
+  const navItems = useMemo(() => {
+    if (!data) return [];
+    const items: { id: string; title: string; depth: number; status: string }[] = [];
+    function buildNav(nodeId: string, depth: number) {
+      const n = data!.nodes.find((x: any) => x.id === nodeId);
+      if (!n) return;
+      items.push({ id: n.id, title: n.title || n.id, depth, status: n.status });
+      const ch = data!.nodes.filter((x: any) => x.parentId === nodeId).sort((a: any, b: any) => a.branchIndex - b.branchIndex);
+      for (const c of ch) buildNav(c.id, depth + 1);
+    }
+    const rootNode = data.nodes.find((n: any) => !n.parentId);
+    if (rootNode) buildNav(rootNode.id, 0);
+    return items;
+  }, [data]);
+
   // Scroll to top when node changes
   useEffect(() => {
     contentRef.current?.scrollTo(0, 0);
@@ -86,35 +102,37 @@ export function ExplorationView({ dbFile, onBack }: { dbFile: string; onBack: ()
 
   // Keyboard shortcuts
   useEffect(() => {
-    if (!data) return;
+    if (!data || !navItems.length) return;
     function handleKey(e: KeyboardEvent) {
       if (!data) return;
-      // Don't handle if user is typing in an input
       if ((e.target as HTMLElement)?.tagName === "INPUT" || (e.target as HTMLElement)?.tagName === "TEXTAREA") return;
 
-      const cur = data.nodes.find((n: any) => n.id === selectedId);
-      if (!cur) return;
-
-      // Navigation: arrow keys
       let target: string | null = null;
-      if (e.key === "ArrowUp" && cur.parentId) target = cur.parentId;
-      if (e.key === "ArrowDown") {
-        const ch = data.nodes.filter((n: any) => n.parentId === selectedId && n.status !== "pruned").sort((a: any, b: any) => a.branchIndex - b.branchIndex);
-        if (ch.length > 0) target = ch[0].id;
+
+      // Up/Down: traverse in document order (same as nav panel)
+      if (e.key === "ArrowUp" || e.key === "ArrowDown") {
+        const currentIdx = navItems.findIndex((item) => item.id === selectedId);
+        if (currentIdx === -1) return;
+        if (e.key === "ArrowUp" && currentIdx > 0) target = navItems[currentIdx - 1].id;
+        if (e.key === "ArrowDown" && currentIdx < navItems.length - 1) target = navItems[currentIdx + 1].id;
       }
+
+      // Left/Right: siblings
       if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
-        if (cur.parentId) {
+        const cur = data.nodes.find((n: any) => n.id === selectedId);
+        if (cur?.parentId) {
           const sibs = data.nodes.filter((n: any) => n.parentId === cur.parentId && n.status !== "pruned").sort((a: any, b: any) => a.branchIndex - b.branchIndex);
           const idx = sibs.findIndex((s: any) => s.id === selectedId);
           if (e.key === "ArrowRight" && idx < sibs.length - 1) target = sibs[idx + 1].id;
           if (e.key === "ArrowLeft" && idx > 0) target = sibs[idx - 1].id;
         }
       }
+
       if (target) { e.preventDefault(); setSelectedId(target); return; }
 
       // Shortcuts
-      if (e.key === "g") { setShowGraph((v) => !v); return; }
-      if (e.key === "b") { setNavCollapsed((v) => !v); return; }
+      if (e.key === "g") { setShowGraph((v: boolean) => !v); return; }
+      if (e.key === "b") { setNavCollapsed((v: boolean) => !v); return; }
       if (e.key === "e") { handleAction("extend"); return; }
       if (e.key === "r" && selectedId !== "root") { handleAction("redirect"); return; }
       if (e.key === "p" && selectedId !== "root") { handleAction("prune"); return; }
@@ -126,7 +144,7 @@ export function ExplorationView({ dbFile, onBack }: { dbFile: string; onBack: ()
     }
     window.addEventListener("keydown", handleKey);
     return () => window.removeEventListener("keydown", handleKey);
-  }, [data, selectedId, showGraph]);
+  }, [data, selectedId, showGraph, navItems]);
 
   const handleAction = useCallback(async (action: string, nodeId?: string) => {
     const target = nodeId || selectedId;
@@ -139,18 +157,6 @@ export function ExplorationView({ dbFile, onBack }: { dbFile: string; onBack: ()
 
   const exp = data.exploration;
   const isNarrow = typeof window !== "undefined" && window.innerWidth < 1100;
-
-  // Build nav tree
-  const navItems: { id: string; title: string; depth: number; status: string }[] = [];
-  function buildNav(nodeId: string, depth: number) {
-    const n = data!.nodes.find((x: any) => x.id === nodeId);
-    if (!n) return;
-    navItems.push({ id: n.id, title: n.title || n.id, depth, status: n.status });
-    const ch = data!.nodes.filter((x: any) => x.parentId === nodeId).sort((a: any, b: any) => a.branchIndex - b.branchIndex);
-    for (const c of ch) buildNav(c.id, depth + 1);
-  }
-  const rootNode = data.nodes.find((n: any) => !n.parentId);
-  if (rootNode) buildNav(rootNode.id, 0);
 
   return (
     <div className="exploration">
@@ -282,7 +288,7 @@ export function ExplorationView({ dbFile, onBack }: { dbFile: string; onBack: ()
       </div>
 
       {/* Graph toggle */}
-      <button className="graph-toggle" onClick={() => setShowGraph(!showGraph)}>{showGraph ? "Close graph" : "Graph ⌘G"}</button>
+      <button className="graph-toggle" onClick={() => setShowGraph(!showGraph)}>{showGraph ? "Close graph" : "Graph (g)"}</button>
 
       {/* Graph overlay */}
       {showGraph && (
