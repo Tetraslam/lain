@@ -7,6 +7,7 @@ import {
   SelectRenderableEvents,
   InputRenderable,
   InputRenderableEvents,
+  TextareaRenderable,
   type StyledText,
 } from "@opentui/core";
 import { t, fg, dim, bold, italic } from "@opentui/core";
@@ -16,6 +17,7 @@ import { Storage, Graph, Orchestrator, Sync, Exporter } from "@lain/core";
 import type { LainNode, Exploration, Strategy, PlanDetail } from "@lain/shared";
 import { generateId } from "@lain/shared";
 import { loadConfig, loadCredentials, createProviderFromCredentials } from "./config-loader.js";
+import { GraphView } from "./graph-view.js";
 import * as fs from "fs";
 import * as path from "path";
 
@@ -635,12 +637,10 @@ export async function createApp(dbPathArg?: string): Promise<void> {
   function openPalette() {
     previousMode = mode;
     mode = "palette";
-    // Disable all select renderables so they don't intercept keys
-    treeSelect.focusable = false;
-    treeSelect.blur();
-    homeSelect.focusable = false;
-    homeSelect.blur();
-    paletteSelect.focusable = false; // We drive it manually via moveUp/moveDown
+    // Remove all select renderables from DOM to prevent them intercepting keys
+    try { treePanel.remove("tree-select"); } catch {}
+    try { homeBodyInner.remove("home-select"); } catch {}
+    paletteSelect.focusable = false;
     showScreen("palette");
   }
 
@@ -648,15 +648,18 @@ export async function createApp(dbPathArg?: string): Promise<void> {
     mode = previousMode;
     try { rootBox.remove("palette-overlay"); } catch {}
     if (mode === "home") {
+      homeBodyInner.add(homeSelect);
       homeSelect.focusable = true;
       homeSelect.focus();
     } else if (mode === "exploring") {
+      treePanel.add(treeSelect);
       treeSelect.focusable = true;
       treeSelect.focus();
       treePanel.borderColor = c.accent;
       nodePanel.borderColor = c.muted;
       expFooterText.content = exploringFooter();
     } else if (mode === "reading") {
+      treePanel.add(treeSelect);
       treeSelect.focusable = false;
       treePanel.borderColor = c.muted;
       nodePanel.borderColor = c.accent;
