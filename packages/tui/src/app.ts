@@ -326,6 +326,8 @@ export async function createApp(dbPathArg?: string): Promise<void> {
 
   const treeSelect = new SelectRenderable(renderer, {
     id: "tree-select",
+    width: "100%",
+    height: "100%",
     options: selectOpts,
     selectedIndex: 0,
     backgroundColor: "transparent",
