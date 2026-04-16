@@ -998,6 +998,7 @@ Using extension: ${bold(useExt)}.
     let nodesGenerated = 0;
     let totalExpected = 0;
     let streamingContent = "";
+    let streamingNodeTitle = "";
     for (let d = 1; d <= useM; d++) totalExpected += Math.pow(useN, d);
 
     try {
@@ -1005,22 +1006,32 @@ Using extension: ${bold(useExt)}.
         dbPath: newDbPath, agent, concurrency: 5, streaming: true,
         onEvent: (event) => {
           if (event.type === "node:content-chunk") {
-            // Live streaming: append chunk to the content display
             const chunkData = event.data as { chunk?: string } | undefined;
             if (chunkData?.chunk) {
               streamingContent += chunkData.chunk;
-              nodeText.content = t`${bold(fg(c.bright)(seed))}
+              // Only update display on newlines (line-wise) to avoid frantic scrolling
+              if (chunkData.chunk.includes("\n") || streamingContent.length < 50) {
+                const lines = streamingContent.split("\n");
+                // Show last ~20 lines
+                const visibleLines = lines.slice(-20).join("\n");
+                nodeText.content = t`${bold(fg(c.bright)(seed))}
 
 ${fg(c.yellow)(`Generating... ${nodesGenerated}/${totalExpected} nodes complete`)}
+${dim(`current node: ${streamingNodeTitle || "..."}`)}
 
-${streamingContent.slice(-500)}`;
+${visibleLines}`;
+              }
             }
+          }
+          if (event.type === "node:generating") {
+            streamingNodeTitle = event.nodeId || "";
           }
           if (event.type === "node:complete") {
             nodesGenerated++;
-            streamingContent = ""; // Reset for next node
+            streamingContent = "";
             const data = event.data as { title?: string } | undefined;
             const title = data?.title || "untitled";
+            streamingNodeTitle = title;
             const short = title.length > 30 ? title.slice(0, 29) + "…" : title;
             // Update the generating view with progress
             expHeaderText.content = t`  ${fg(c.accent)("lain")}  ${dim(shortName)}  ${fg(c.muted)("·")}  ${fg(c.yellow)(`generating ${nodesGenerated}/${totalExpected}`)}  ${fg(c.muted)("·")}  ${dim(`n=${useN} m=${useM}`)}`;
