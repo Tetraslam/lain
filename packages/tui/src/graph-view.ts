@@ -1,8 +1,6 @@
 /**
- * Radial tree graph view with infinite canvas and viewport panning.
- *
- * Nodes live in world-space coordinates. A camera/viewport determines
- * what's visible. Camera follows the selected node with smooth panning.
+ * Radial tree graph view with infinite canvas, viewport panning,
+ * minimap, depth-scaled node labels, and tight packing.
  */
 import {
   FrameBufferRenderable,
@@ -22,10 +20,9 @@ import type { LainNode, Crosslink } from "@lain/shared";
 interface GNode {
   id: string;
   title: string;
-  shortTitle: string;
+  label: string; // Depth-scaled label (longer for shallow, shorter for deep)
   depth: number;
   status: string;
-  // World-space position
   x: number;
   y: number;
   anchorX: number;
@@ -49,13 +46,29 @@ const BG = RGBA.fromHex("#1a1b26");
 const NODE_FG = RGBA.fromHex("#a9b1d6");
 const SELECTED_FG = RGBA.fromHex("#1a1b26");
 const SELECTED_BG = RGBA.fromHex("#bb9af7");
+const ROOT_BG = RGBA.fromHex("#292e42");
 const ROOT_FG = RGBA.fromHex("#7aa2f7");
+const DEPTH1_FG = RGBA.fromHex("#c0caf5");
 const EDGE_COLOR = RGBA.fromHex("#565f89");
 const CROSSLINK_COLOR = RGBA.fromHex("#bb9af7");
 const PRUNED_FG = RGBA.fromHex("#f7768e");
+const MINIMAP_BG = RGBA.fromHex("#16161e");
+const MINIMAP_NODE = RGBA.fromHex("#565f89");
+const MINIMAP_SELECTED = RGBA.fromHex("#bb9af7");
+const MINIMAP_VIEWPORT = RGBA.fromHex("#3b3f5c");
 
 // ============================================================================
-// Radial Tree Layout — positions in world space, no clamping
+// Label sizing by depth
+// ============================================================================
+
+function makeLabel(title: string, depth: number): string {
+  const maxLen = depth === 0 ? 40 : depth === 1 ? 28 : depth === 2 ? 18 : 12;
+  const t = title || "?";
+  return t.length > maxLen ? t.slice(0, maxLen - 1) + "…" : t;
+}
+
+// ============================================================================
+// Radial Tree Layout — tight packing
 // ============================================================================
 
 function computeRadialLayout(lainNodes: LainNode[]): GNode[] {
@@ -73,45 +86,32 @@ function computeRadialLayout(lainNodes: LainNode[]): GNode[] {
       childrenOf.set(n.parentId, siblings);
     }
   }
-  for (const [, children] of childrenOf) {
-    children.sort((a, b) => a.branchIndex - b.branchIndex);
-  }
+  for (const [, ch] of childrenOf) ch.sort((a, b) => a.branchIndex - b.branchIndex);
 
+  // Tighter ring spacing — pack nodes closer
   const maxDepth = Math.max(...active.map((n) => n.depth), 0);
-  // Generous spacing: 25 chars per ring so trees spread wide
-  const ringSpacing = Math.max(25, 20 + active.length * 0.5);
+  const ringSpacing = Math.max(12, Math.min(20, 60 / (maxDepth + 1)));
 
   const result: GNode[] = [];
 
   function layout(node: LainNode, angleStart: number, angleEnd: number, depth: number) {
     const angle = (angleStart + angleEnd) / 2;
     const radius = depth * ringSpacing;
-
     const ax = Math.cos(angle) * radius;
-    const ay = Math.sin(angle) * radius * 0.45; // Terminal aspect correction
-
-    const shortTitle = node.title
-      ? (node.title.length > 28 ? node.title.slice(0, 27) + "…" : node.title)
-      : node.id;
+    const ay = Math.sin(angle) * radius * 0.45;
+    const label = makeLabel(node.title || node.id, depth);
 
     result.push({
-      id: node.id,
-      title: node.title || node.id,
-      shortTitle,
-      depth: node.depth,
-      status: node.status,
-      x: ax, y: ay,
-      anchorX: ax, anchorY: ay,
-      vx: 0, vy: 0,
-      parentId: node.parentId,
+      id: node.id, title: node.title || node.id, label,
+      depth: node.depth, status: node.status,
+      x: ax, y: ay, anchorX: ax, anchorY: ay,
+      vx: 0, vy: 0, parentId: node.parentId,
     });
 
     const children = childrenOf.get(node.id) || [];
     if (children.length === 0) return;
-
     const arcSpan = angleEnd - angleStart;
     const childArc = arcSpan / children.length;
-
     children.forEach((child, i) => {
       layout(child, angleStart + childArc * i, angleStart + childArc * (i + 1), depth + 1);
     });
@@ -129,101 +129,125 @@ function simulate(nodes: GNode[]): void {
   for (let i = 0; i < nodes.length; i++) {
     for (let j = i + 1; j < nodes.length; j++) {
       const a = nodes[i], b = nodes[j];
-      if (a.depth !== b.depth) continue;
-      const dx = a.x - b.x;
-      const dy = (a.y - b.y) * 2;
-      const dist = Math.max(Math.sqrt(dx * dx + dy * dy), 3);
-      if (dist < 20) {
-        const force = 40 / (dist * dist);
-        a.vx += (dx / dist) * force;
-        a.vy += ((dy / 2) / dist) * force;
-        b.vx -= (dx / dist) * force;
-        b.vy -= ((dy / 2) / dist) * force;
+      if (Math.abs(a.depth - b.depth) > 1) continue;
+      const dx = a.x - b.x, dy = (a.y - b.y) * 2;
+      const dist = Math.max(Math.sqrt(dx * dx + dy * dy), 2);
+      if (dist < 14) {
+        const force = 25 / (dist * dist);
+        a.vx += (dx / dist) * force; a.vy += ((dy / 2) / dist) * force;
+        b.vx -= (dx / dist) * force; b.vy -= ((dy / 2) / dist) * force;
       }
     }
   }
-
   for (const n of nodes) {
-    n.vx += (n.anchorX - n.x) * 0.06;
-    n.vy += (n.anchorY - n.y) * 0.06;
-    n.vx *= 0.7;
-    n.vy *= 0.7;
+    n.vx += (n.anchorX - n.x) * 0.08;
+    n.vy += (n.anchorY - n.y) * 0.08;
+    n.vx *= 0.65; n.vy *= 0.65;
     const speed = Math.sqrt(n.vx * n.vx + n.vy * n.vy);
-    if (speed > 0.4) { n.vx = (n.vx / speed) * 0.4; n.vy = (n.vy / speed) * 0.4; }
-    n.x += n.vx;
-    n.y += n.vy;
+    if (speed > 0.3) { n.vx = (n.vx / speed) * 0.3; n.vy = (n.vy / speed) * 0.3; }
+    n.x += n.vx; n.y += n.vy;
   }
 }
 
 // ============================================================================
-// Viewport Rendering
+// Rendering
 // ============================================================================
 
 function renderGraph(
-  fb: FrameBufferRenderable,
-  nodes: GNode[],
-  edges: GEdge[],
-  selectedId: string,
-  vw: number, vh: number,  // viewport size (terminal cells)
-  camX: number, camY: number  // camera center in world space
+  fb: FrameBufferRenderable, nodes: GNode[], edges: GEdge[],
+  selectedId: string, vw: number, vh: number, camX: number, camY: number
 ): void {
   const buf = fb.frameBuffer;
   const map = new Map(nodes.map((n) => [n.id, n]));
-
-  // World-to-screen transform: offset so camX,camY maps to viewport center
-  const offsetX = Math.round(vw / 2 - camX);
-  const offsetY = Math.round(vh / 2 - camY);
+  const ox = Math.round(vw / 2 - camX);
+  const oy = Math.round(vh / 2 - camY);
 
   buf.fillRect(0, 0, vw, vh, BG);
 
-  // Draw edges (only if at least one endpoint is visible)
+  // Edges
   for (const edge of edges) {
     const a = map.get(edge.source), b = map.get(edge.target);
     if (!a || !b) continue;
-
-    const ax = Math.round(a.x + offsetX), ay = Math.round(a.y + offsetY);
-    const bx = Math.round(b.x + offsetX), by = Math.round(b.y + offsetY);
-
-    // Skip if both endpoints are way off screen
-    if (ax < -50 && bx < -50) continue;
-    if (ax > vw + 50 && bx > vw + 50) continue;
-    if (ay < -20 && by < -20) continue;
-    if (ay > vh + 20 && by > vh + 20) continue;
-
+    const ax = Math.round(a.x + ox), ay = Math.round(a.y + oy);
+    const bx = Math.round(b.x + ox), by = Math.round(b.y + oy);
+    if ((ax < -40 && bx < -40) || (ax > vw + 40 && bx > vw + 40)) continue;
+    if ((ay < -15 && by < -15) || (ay > vh + 15 && by > vh + 15)) continue;
     const color = edge.isCrosslink ? CROSSLINK_COLOR : EDGE_COLOR;
-    const ch = edge.isCrosslink ? ":" : "·";
-    const spacing = edge.isCrosslink ? 1 : 2;
-    drawDottedLine(buf, ax, ay, bx, by, ch, color, BG, spacing, vw, vh);
+    drawLine(buf, ax, ay, bx, by, "·", color, BG, edge.isCrosslink ? 1 : 2, vw, vh);
   }
 
-  // Draw nodes — selected last
+  // Nodes — selected last
   const sorted = [...nodes].sort((a, b) => (a.id === selectedId ? 1 : 0) - (b.id === selectedId ? 1 : 0));
   for (const node of sorted) {
-    const sx = Math.round(node.x + offsetX);
-    const sy = Math.round(node.y + offsetY);
-    const label = ` ${node.shortTitle} `;
-
-    // Skip if off screen (with margin for label width)
-    if (sy < 0 || sy >= vh) continue;
+    const sx = Math.round(node.x + ox);
+    const sy = Math.round(node.y + oy);
+    if (sy < -1 || sy >= vh + 1) continue;
+    const label = ` ${node.label} `;
     if (sx + label.length < 0 || sx >= vw) continue;
 
     const isSelected = node.id === selectedId;
-    if (isSelected) {
-      buf.drawText(label, sx, sy, SELECTED_FG, SELECTED_BG);
-    } else if (node.depth === 0) {
-      buf.drawText(label, sx, sy, ROOT_FG, BG);
-    } else if (node.status === "pruned") {
-      buf.drawText(label, sx, sy, PRUNED_FG, BG);
-    } else {
-      buf.drawText(label, sx, sy, NODE_FG, BG);
+    const isRoot = node.depth === 0;
+    const isD1 = node.depth === 1;
+
+    let nodeFg = NODE_FG, nodeBg = BG;
+    if (isSelected) { nodeFg = SELECTED_FG; nodeBg = SELECTED_BG; }
+    else if (isRoot) { nodeFg = ROOT_FG; nodeBg = ROOT_BG; }
+    else if (isD1) { nodeFg = DEPTH1_FG; }
+    else if (node.status === "pruned") { nodeFg = PRUNED_FG; }
+
+    buf.drawText(label, sx, sy, nodeFg, nodeBg);
+  }
+
+  // Minimap (bottom-right corner)
+  renderMinimap(buf, nodes, selectedId, vw, vh, camX, camY);
+}
+
+function renderMinimap(
+  buf: any, nodes: GNode[], selectedId: string,
+  vw: number, vh: number, camX: number, camY: number
+): void {
+  if (nodes.length === 0) return;
+
+  const mmW = 20, mmH = 10;
+  const mmX = vw - mmW - 1, mmY = vh - mmH - 1;
+
+  // Compute world bounds
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (const n of nodes) {
+    minX = Math.min(minX, n.x); maxX = Math.max(maxX, n.x);
+    minY = Math.min(minY, n.y); maxY = Math.max(maxY, n.y);
+  }
+  const worldW = Math.max(maxX - minX, 10);
+  const worldH = Math.max(maxY - minY, 5);
+
+  // Draw minimap bg
+  buf.fillRect(mmX, mmY, mmW, mmH, MINIMAP_BG);
+
+  // Draw viewport rectangle
+  const vpLeft = ((camX - vw / 2) - minX) / worldW * mmW;
+  const vpTop = ((camY - vh / 2) - minY) / worldH * mmH;
+  const vpW = (vw / worldW) * mmW;
+  const vpH = (vh / worldH) * mmH;
+  for (let x = Math.max(0, Math.floor(vpLeft)); x < Math.min(mmW, Math.ceil(vpLeft + vpW)); x++) {
+    for (let y = Math.max(0, Math.floor(vpTop)); y < Math.min(mmH, Math.ceil(vpTop + vpH)); y++) {
+      buf.setCell(mmX + x, mmY + y, " ", MINIMAP_VIEWPORT, MINIMAP_VIEWPORT);
+    }
+  }
+
+  // Draw nodes as dots
+  for (const n of nodes) {
+    const nx = Math.round(((n.x - minX) / worldW) * (mmW - 1));
+    const ny = Math.round(((n.y - minY) / worldH) * (mmH - 1));
+    if (nx >= 0 && nx < mmW && ny >= 0 && ny < mmH) {
+      const color = n.id === selectedId ? MINIMAP_SELECTED : MINIMAP_NODE;
+      buf.setCell(mmX + nx, mmY + ny, "●", color, MINIMAP_BG);
     }
   }
 }
 
-function drawDottedLine(
+function drawLine(
   buf: any, x0: number, y0: number, x1: number, y1: number,
-  ch: string, color: RGBA, bg: RGBA, spacing: number,
-  vw: number, vh: number
+  ch: string, color: RGBA, bg: RGBA, spacing: number, vw: number, vh: number
 ): void {
   const dx = Math.abs(x1 - x0), dy = Math.abs(y1 - y0);
   const sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1;
@@ -261,11 +285,11 @@ export class GraphView {
   private selectedIdx = 0;
   private interval: ReturnType<typeof setInterval> | null = null;
   private renderer: RenderContext;
-  private vw: number;  // viewport width
-  private vh: number;  // viewport height
-  private camX = 0;    // camera center in world space
+  private vw: number;
+  private vh: number;
+  private camX = 0;
   private camY = 0;
-  private targetCamX = 0;  // smooth camera target
+  private targetCamX = 0;
   private targetCamY = 0;
   private onNodeSelect?: (nodeId: string) => void;
   private allLainNodes: LainNode[];
@@ -281,10 +305,8 @@ export class GraphView {
     this.onNodeSelect = opts.onNodeSelect;
     this.allLainNodes = opts.nodes;
 
-    // Compute radial layout in world space (no clamping)
     this.graphNodes = computeRadialLayout(opts.nodes);
 
-    // Build edges
     for (const gn of this.graphNodes) {
       if (gn.parentId) this.edges.push({ source: gn.parentId, target: gn.id, isCrosslink: false });
     }
@@ -294,44 +316,24 @@ export class GraphView {
       if (hasS && hasT) this.edges.push({ source: cl.sourceId, target: cl.targetId, isCrosslink: true });
     }
 
-    // Camera starts at root (world origin)
-    this.camX = 0;
-    this.camY = 0;
-    this.targetCamX = 0;
-    this.targetCamY = 0;
-
     this.fb = new FrameBufferRenderable(this.renderer, {
-      id: "graph-fb",
-      width: this.vw,
-      height: this.vh,
+      id: "graph-fb", width: this.vw, height: this.vh,
     });
 
-    // Peek panel
     this.peekBox = new BoxRenderable(this.renderer, {
-      id: "graph-peek",
-      width: 32,
-      height: "100%",
-      border: true,
-      borderStyle: "rounded",
-      borderColor: "#bb9af7",
-      paddingLeft: 1,
-      paddingRight: 1,
-      paddingTop: 1,
-      flexDirection: "column",
-      overflow: "hidden",
+      id: "graph-peek", width: 32, height: "100%",
+      border: true, borderStyle: "rounded", borderColor: "#bb9af7",
+      paddingLeft: 1, paddingRight: 1, paddingTop: 1,
+      flexDirection: "column", overflow: "hidden",
     });
 
     this.peekScroll = new ScrollBoxRenderable(this.renderer, {
-      id: "graph-peek-scroll",
-      scrollY: true,
-      scrollX: false,
+      id: "graph-peek-scroll", scrollY: true, scrollX: false,
     });
     this.peekBox.add(this.peekScroll);
 
     this.peekText = new TextRenderable(this.renderer, {
-      id: "graph-peek-text",
-      content: "",
-      width: "100%",
+      id: "graph-peek-text", content: "", width: "100%",
     });
     this.peekScroll.content.add(this.peekText);
 
@@ -343,22 +345,16 @@ export class GraphView {
   }
 
   start() {
-    // Pre-settle physics
-    for (let i = 0; i < 80; i++) simulate(this.graphNodes);
-
-    // Initial render
+    for (let i = 0; i < 60; i++) simulate(this.graphNodes);
     renderGraph(this.fb, this.graphNodes, this.edges, this.getSelectedId(), this.vw, this.vh, this.camX, this.camY);
 
     (this.renderer as any).requestLive?.();
     this.interval = setInterval(() => {
       simulate(this.graphNodes);
-
-      // Smooth camera pan toward target
-      this.camX += (this.targetCamX - this.camX) * 0.15;
-      this.camY += (this.targetCamY - this.camY) * 0.15;
-
+      this.camX += (this.targetCamX - this.camX) * 0.2;
+      this.camY += (this.targetCamY - this.camY) * 0.2;
       renderGraph(this.fb, this.graphNodes, this.edges, this.getSelectedId(), this.vw, this.vh, this.camX, this.camY);
-    }, 80); // 12fps
+    }, 33); // 30fps
   }
 
   stop() {
@@ -366,7 +362,6 @@ export class GraphView {
     (this.renderer as any).dropLive?.();
   }
 
-  /** Resize the graph viewport. Call when terminal resizes. */
   resize(newWidth: number, newHeight: number) {
     this.vw = newWidth;
     this.vh = newHeight;
@@ -380,23 +375,12 @@ export class GraphView {
     if (!current) return;
 
     let target: GNode | null = null;
-
     switch (key.name) {
-      case "right": case "l":
-        target = this.findNearest(current, 1, 0);
-        break;
-      case "left": case "h":
-        target = this.findNearest(current, -1, 0);
-        break;
-      case "down": case "j":
-        target = this.findNearest(current, 0, 1);
-        break;
-      case "up": case "k":
-        target = this.findNearest(current, 0, -1);
-        break;
-      case "return":
-        this.onNodeSelect?.(this.getSelectedId());
-        return;
+      case "right": case "l": target = this.findNearest(current, 1, 0); break;
+      case "left": case "h": target = this.findNearest(current, -1, 0); break;
+      case "down": case "j": target = this.findNearest(current, 0, 1); break;
+      case "up": case "k": target = this.findNearest(current, 0, -1); break;
+      case "return": this.onNodeSelect?.(this.getSelectedId()); return;
     }
 
     if (target) {
@@ -408,35 +392,21 @@ export class GraphView {
 
   private panToSelected() {
     const node = this.graphNodes[this.selectedIdx];
-    if (node) {
-      this.targetCamX = node.x;
-      this.targetCamY = node.y;
-    }
+    if (node) { this.targetCamX = node.x; this.targetCamY = node.y; }
   }
 
   private findNearest(from: GNode, dx: number, dy: number): GNode | null {
-    let best: GNode | null = null;
-    let bestScore = Infinity;
-
-    for (const candidate of this.graphNodes) {
-      if (candidate.id === from.id) continue;
-
-      const cdx = candidate.x - from.x;
-      const cdy = (candidate.y - from.y) * 2;
-
+    let best: GNode | null = null, bestScore = Infinity;
+    for (const c of this.graphNodes) {
+      if (c.id === from.id) continue;
+      const cdx = c.x - from.x, cdy = (c.y - from.y) * 2;
       const dot = cdx * dx + cdy * dy;
       if (dot <= 0) continue;
-
       const dist = Math.sqrt(cdx * cdx + cdy * cdy);
       const alignment = dot / (dist * Math.sqrt(dx * dx + dy * dy) + 0.001);
       const score = dist / (alignment * alignment + 0.01);
-
-      if (score < bestScore) {
-        bestScore = score;
-        best = candidate;
-      }
+      if (score < bestScore) { bestScore = score; best = c; }
     }
-
     return best;
   }
 
@@ -447,10 +417,9 @@ export class GraphView {
   private updatePeek() {
     const gn = this.graphNodes[this.selectedIdx];
     if (!gn) return;
-
-    const lainNode = this.allLainNodes.find((n) => n.id === gn.id);
-    const content = lainNode?.content
-      ? (lainNode.content.length > 300 ? lainNode.content.slice(0, 297) + "…" : lainNode.content)
+    const ln = this.allLainNodes.find((n) => n.id === gn.id);
+    const content = ln?.content
+      ? (ln.content.length > 300 ? ln.content.slice(0, 297) + "…" : ln.content)
       : "(no content)";
 
     this.peekText.content = t`${bold(fg("#c0caf5")(gn.title))}
