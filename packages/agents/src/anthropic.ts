@@ -5,8 +5,10 @@ import type {
   GenerateResponse,
   PlanRequest,
   PlanResponse,
+  SynthesizeRequest,
+  SynthesizeResponse,
 } from "@lain/shared";
-import { buildGeneratePrompt, buildPlanPrompt } from "./prompts.js";
+import { buildGeneratePrompt, buildPlanPrompt, buildSynthesizePrompt, parseSynthesizeResponse } from "./prompts.js";
 
 export interface AnthropicProviderOptions {
   apiKey?: string;
@@ -106,5 +108,31 @@ export class AnthropicProvider implements AgentProvider {
     const content = lines.slice(1).join("\n").trim();
 
     return { title, content, model: this.model, provider: "anthropic" };
+  }
+
+  async synthesize(request: SynthesizeRequest): Promise<SynthesizeResponse> {
+    const { system, user } = buildSynthesizePrompt(request);
+
+    const message = await this.client.messages.create({
+      model: this.model,
+      max_tokens: 4096,
+      system,
+      messages: [{ role: "user", content: user }],
+    });
+
+    const text =
+      message.content[0].type === "text" ? message.content[0].text : "";
+
+    return parseSynthesizeResponse(text, this.model, "anthropic");
+  }
+
+  async generateRaw(system: string, user: string, maxTokens = 4096): Promise<string> {
+    const message = await this.client.messages.create({
+      model: this.model,
+      max_tokens: maxTokens,
+      system,
+      messages: [{ role: "user", content: user }],
+    });
+    return message.content[0].type === "text" ? message.content[0].text : "";
   }
 }

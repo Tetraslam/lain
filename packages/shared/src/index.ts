@@ -1,5 +1,25 @@
 // @lain/shared — shared types, config, and utilities
 
+// Re-export config module
+export {
+  loadConfig,
+  loadCredentials,
+  saveConfig,
+  saveCredentials,
+  saveWorkspaceConfig,
+  configExists,
+  slugify,
+  deepMerge,
+  type Credentials,
+} from "./config.js";
+
+// Re-export merge prompt utilities
+export {
+  buildMergeGenerationPrompt,
+  parseMergeGenerationResponse,
+  type MergeGenerationRequest,
+} from "./merge-prompts.js";
+
 // ============================================================================
 // Node & Graph Types
 // ============================================================================
@@ -8,6 +28,9 @@ export type NodeStatus = "pending" | "generating" | "complete" | "pruned";
 export type Strategy = "bf" | "df";
 export type PlanDetail = "brief" | "sentence" | "detailed" | "none";
 export type Provider = "anthropic" | "bedrock" | "openai";
+
+/** Internal-only provider marker for synthesis-generated nodes. Not a real provider. */
+export type NodeProvider = Provider | "synthesis" | "manual";
 
 export interface LainNode {
   id: string;
@@ -20,7 +43,7 @@ export interface LainNode {
   branchIndex: number;
   status: NodeStatus;
   model: string | null;
-  provider: Provider | null;
+  provider: NodeProvider | null;
   planSummary: string | null;
   extensionData: Record<string, unknown> | null;
   createdAt: string;
@@ -74,6 +97,37 @@ export interface SynthesisAnnotation {
   merged: boolean;
   createdAt: string;
 }
+
+/** A persistent note attached to a node (produced by merging a 'note' annotation). */
+export interface NodeAnnotation {
+  id: string;
+  nodeId: string;
+  content: string;
+  source: "synthesis" | "user"; // who created it
+  synthesisAnnotationId: string | null; // link back to the synthesis annotation that produced this
+  createdAt: string;
+}
+
+/** Result of generating content for a contradiction resolution or merge synthesis. */
+export interface MergePreview {
+  title: string;
+  content: string;
+  parentId: string; // where the new node would be placed
+  crosslinkTo: string[]; // nodes the new node would be crosslinked to
+}
+
+/** A diff describing what a merge operation will do to the graph. */
+export interface SynthesisDiff {
+  annotationId: string;
+  annotationType: AnnotationType;
+  /** What changes this merge will produce. */
+  changes: SynthesisDiffChange[];
+}
+
+export type SynthesisDiffChange =
+  | { type: "add_crosslink"; sourceId: string; sourceTitle: string; targetId: string; targetTitle: string; label: string | null }
+  | { type: "add_note"; nodeId: string; nodeTitle: string; content: string }
+  | { type: "add_node"; title: string; content: string; parentId: string; parentTitle: string; crosslinkTo: { id: string; title: string }[] };
 
 export interface SyncState {
   nodeId: string;
@@ -149,6 +203,8 @@ export type LainEventType =
   | "node:content-chunk"  // streaming content
   | "exploration:created"
   | "exploration:complete"
+  | "synthesis:started"
+  | "synthesis:complete"
   | "sync:started"
   | "sync:file-changed"
   | "sync:conflict"
@@ -199,6 +255,28 @@ export interface PlanResponse {
   directions: string[];
 }
 
+export interface SynthesizeRequest {
+  exploration: Exploration;
+  nodes: LainNode[];
+  crosslinks: Crosslink[];
+  extensionSystemPrompt?: string;
+}
+
+/** A single annotation produced by the synthesis agent. */
+export interface SynthesisAnnotationData {
+  type: AnnotationType;
+  sourceNodeId?: string;
+  targetNodeId?: string;
+  content: string;
+}
+
+export interface SynthesizeResponse {
+  summary: string;
+  annotations: SynthesisAnnotationData[];
+  model: string;
+  provider: Provider;
+}
+
 export interface AgentProvider {
   generate(request: GenerateRequest): Promise<GenerateResponse>;
   generateStream(
@@ -206,6 +284,9 @@ export interface AgentProvider {
     onChunk: (chunk: string) => void
   ): Promise<GenerateResponse>;
   plan(request: PlanRequest): Promise<PlanResponse>;
+  synthesize(request: SynthesizeRequest): Promise<SynthesizeResponse>;
+  /** Raw converse: send system + user prompt, get back raw text. No prompt wrapping. */
+  generateRaw(system: string, user: string, maxTokens?: number): Promise<string>;
 }
 
 // ============================================================================

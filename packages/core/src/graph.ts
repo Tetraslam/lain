@@ -109,33 +109,13 @@ export class Graph {
    * Get all nodes at a given depth for an exploration.
    */
   getNodesAtDepth(explorationId: string, depth: number): LainNode[] {
-    return this.storage
-      .getNodesByExploration(explorationId)
-      .filter((n) => n.depth === depth);
+    return this.storage.getNodesByDepth(explorationId, depth);
   }
 
-  /**
-   * Get all pending nodes for an exploration, ordered for BF or DF traversal.
-   */
-  getPendingNodes(
-    explorationId: string,
-    strategy: "bf" | "df"
-  ): LainNode[] {
-    const pending = this.storage.getNodesByStatus(explorationId, "pending");
-    if (strategy === "bf") {
-      // Already ordered by depth, branch_index from the query
-      return pending;
-    }
-    // DF: sort by depth descending (deepest first), then by branch_index
-    // Actually for DF we want to go deep along one path first.
-    // Sort: prioritize nodes whose ancestors have the lowest branch indices.
-    return pending.sort((a, b) => {
-      // For DF, we pick the shallowest pending node along the leftmost path first
-      // But actually DF means we go deep before wide — so pick the deepest node
-      // that's along the currently active path.
-      // Simplest correct approach: sort by ID lexicographically (root-1-1-1 before root-2)
-      return a.id.localeCompare(b.id);
-    });
+  getConflicts(explorationId: string): LainNode[] {
+    return this.storage
+      .getNodesByExploration(explorationId)
+      .filter((n) => n.contentConflict !== null);
   }
 
   addCrosslink(
@@ -180,11 +160,5 @@ export class Graph {
 
   getCrosslinksForNode(nodeId: string): Crosslink[] {
     return this.storage.getCrosslinksForNode(nodeId);
-  }
-
-  getConflicts(explorationId: string): LainNode[] {
-    return this.storage
-      .getNodesByExploration(explorationId)
-      .filter((n) => n.contentConflict !== null);
   }
 }

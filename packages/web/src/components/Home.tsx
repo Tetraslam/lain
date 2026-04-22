@@ -1,2 +1,1 @@
-// Home is handled inline in App.tsx
-export function Home() { return null; }
+// Removed — Home is handled inline in App.tsx. This file was dead code.

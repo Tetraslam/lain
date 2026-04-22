@@ -2,19 +2,15 @@ import * as p from "@clack/prompts";
 import * as fs from "fs";
 import * as path from "path";
 import { Orchestrator } from "@lain/core";
-import { Storage, Graph, Sync, Exporter, Watcher } from "@lain/core";
-import { createProvider } from "@lain/agents";
+import { Storage, Graph, Sync, Exporter, CanvasExporter, SynthesisEngine, Watcher } from "@lain/core";
 import {
-  ExtensionRegistry,
-  freeformExtension,
-  worldbuildingExtension,
-  debateExtension,
-  researchExtension,
+  buildExtensionRegistry,
 } from "@lain/extensions";
 import {
   generateId,
   nowISO,
   estimateCost,
+  slugify,
   type Strategy,
   type PlanDetail,
   type Provider,
@@ -30,6 +26,7 @@ import {
   saveWorkspaceConfig,
   configExists,
 } from "./config.js";
+import { findDb, createProviderFromCredentials, truncateStr } from "./commands/helpers.js";
 
 export async function run(args: ParsedArgs): Promise<void> {
   // Auto-init on first run (unless --non-interactive or this IS the init command)
@@ -62,6 +59,10 @@ export async function run(args: ParsedArgs): Promise<void> {
       return runExtend(args);
     case "link":
       return runLink(args);
+    case "synthesize":
+      return runSynthesize(args);
+    case "merge-synthesis":
+      return runMergeSynthesis(args);
     case "conflicts":
       return runConflicts(args);
     case "sync":
@@ -200,16 +201,16 @@ async function runInit(args: ParsedArgs): Promise<void> {
     defaultModel: result.model as string,
   });
 
-  const creds: Record<string, unknown> = {};
+  const creds: Partial<import("@lain/shared").Credentials> = {};
   if (result.provider === "anthropic" && result.apiKey) {
-    creds.anthropic = { apiKey: result.apiKey };
+    creds.anthropic = { apiKey: result.apiKey as string };
   } else if (result.provider === "bedrock" && result.apiKey) {
-    creds.bedrock = { apiKey: result.apiKey, region: result.region || "us-west-2" };
+    creds.bedrock = { apiKey: result.apiKey as string, region: (result.region || "us-west-2") as string };
   } else if (result.provider === "openai" && result.apiKey) {
-    creds.openai = { apiKey: result.apiKey };
+    creds.openai = { apiKey: result.apiKey as string };
   }
   if (Object.keys(creds).length > 0) {
-    saveCredentials(creds as any);
+    saveCredentials(creds);
   }
 
   p.outro("lain is ready. Run `lain \"your idea\" --n 3 --m 2` to start.");
@@ -613,6 +614,162 @@ async function runLink(args: ParsedArgs): Promise<void> {
 }
 
 // ============================================================================
+// Synthesize
+// ============================================================================
+
+async function runSynthesize(args: ParsedArgs): Promise<void> {
+  const dbFile = args.positional[0] || getFlag(args.flags, "db") || findDb();
+  const autoMerge = getBoolFlag(args.flags, "auto-merge");
+
+  const config = loadConfig();
+  const credentials = loadCredentials();
+  const provider = (getFlag(args.flags, "provider") || config.defaultProvider) as Provider;
+  const agent = createProviderFromCredentials(provider, config, credentials);
+
+  const storage = new Storage(dbFile);
+  const graph = new Graph(storage);
+
+  const explorations = graph.getAllExplorations();
+  if (explorations.length === 0) {
+    storage.close();
+    throw new Error("No explorations in this database.");
+  }
+  const exp = explorations[0];
+
+  const activeNodes = graph.getAllNodes(exp.id).filter((n) => n.status !== "pruned");
+  console.log(`Synthesizing exploration "${exp.name}" (${activeNodes.length} active nodes)...`);
+
+  const engine = new SynthesisEngine({ storage, agent });
+
+  try {
+    const synthesisId = await engine.synthesize(exp.id);
+    const result = engine.getSynthesis(synthesisId);
+
+    if (!result) {
+      storage.close();
+      throw new Error("Synthesis failed — no result returned.");
+    }
+
+    console.log(`\nSynthesis complete: ${synthesisId}`);
+    console.log(`\n--- Summary ---\n${result.synthesis.content}\n`);
+
+    const annotations = result.annotations;
+    const byType: Record<string, typeof annotations> = {};
+    for (const a of annotations) {
+      (byType[a.type] ??= []).push(a);
+    }
+
+    for (const [type, items] of Object.entries(byType)) {
+      console.log(`${type} (${items.length}):`);
+      for (const a of items) {
+        const nodes = [a.sourceNodeId, a.targetNodeId].filter(Boolean).join(" ↔ ");
+        console.log(`  ${a.id}: ${nodes} — ${a.content ?? ""}`);
+      }
+    }
+
+    if (autoMerge) {
+      const { merged, skipped } = engine.mergeAll(synthesisId);
+      console.log(`\nAuto-merged ${merged} annotations.${skipped > 0 ? ` ${skipped} contradiction/merge_suggestion annotations require individual review (--annotation <id>).` : ""}`);
+    } else if (annotations.length > 0) {
+      console.log(`\n${annotations.length} annotations staged. Run \`lain merge-synthesis ${synthesisId}\` to apply.`);
+      console.log(`Or use --auto-merge to apply automatically.`);
+    }
+  } finally {
+    storage.close();
+  }
+}
+
+// ============================================================================
+// Merge Synthesis
+// ============================================================================
+
+async function runMergeSynthesis(args: ParsedArgs): Promise<void> {
+  const synthesisId = args.positional[0];
+  const dbFile = getFlag(args.flags, "db") || findDb();
+  const all = getBoolFlag(args.flags, "all");
+  const annotationId = getFlag(args.flags, "annotation");
+  const dismiss = getBoolFlag(args.flags, "dismiss");
+
+  if (!synthesisId) {
+    // List syntheses in this DB
+    const storage = new Storage(dbFile);
+    const graph = new Graph(storage);
+    const explorations = graph.getAllExplorations();
+    if (explorations.length === 0) {
+      storage.close();
+      throw new Error("No explorations in this database.");
+    }
+
+    const syntheses = storage.getSynthesesForExploration(explorations[0].id);
+    if (syntheses.length === 0) {
+      console.log("No syntheses found. Run `lain synthesize` first.");
+    } else {
+      for (const s of syntheses) {
+        const annotations = storage.getAnnotationsForSynthesis(s.id);
+        const unmerged = annotations.filter((a) => !a.merged).length;
+        const status = s.merged ? "merged" : unmerged > 0 ? `${unmerged} pending` : "no annotations";
+        console.log(`  ${s.id}  ${s.status}  ${status}  ${s.createdAt}`);
+      }
+    }
+    storage.close();
+    return;
+  }
+
+  const storage = new Storage(dbFile);
+  const graph = new Graph(storage);
+  const explorations = graph.getAllExplorations();
+  const exp = explorations[0];
+
+  try {
+    if (dismiss && annotationId) {
+      const engine = new SynthesisEngine({ storage, agent: null });
+      engine.dismissAnnotation(annotationId);
+      console.log(`Dismissed annotation ${annotationId}`);
+    } else if (annotationId) {
+      // Check if this annotation needs preview generation
+      const annotation = storage.getAnnotation(annotationId);
+      if (!annotation) throw new Error(`Annotation not found: ${annotationId}`);
+
+      if (annotation.type === "contradiction" || annotation.type === "merge_suggestion") {
+        // Generate preview via agent
+        const config = loadConfig();
+        const credentials = loadCredentials();
+        const provider = (getFlag(args.flags, "provider") || config.defaultProvider) as Provider;
+        const agent = createProviderFromCredentials(provider, config, credentials);
+        const engine = new SynthesisEngine({ storage, agent });
+
+        console.log(`Generating ${annotation.type === "contradiction" ? "resolution" : "synthesis"}...`);
+        const preview = await engine.generateMergePreview(annotationId, exp.id);
+
+        console.log(`\n--- Preview ---`);
+        console.log(`Title: ${preview.title}`);
+        console.log(`Parent: ${preview.parentId}`);
+        console.log(`Crosslinks to: ${preview.crosslinkTo.join(", ")}`);
+        console.log(`\n${preview.content}\n`);
+
+        if (getBoolFlag(args.flags, "yes") || getBoolFlag(args.flags, "non-interactive")) {
+          const nodeId = engine.applyMergePreview(annotationId, exp.id, preview);
+          console.log(`Applied — created node ${nodeId}`);
+        } else {
+          console.log(`Run with --yes to apply, or use the TUI/web for interactive preview.`);
+        }
+      } else {
+        const engine = new SynthesisEngine({ storage, agent: null });
+        engine.mergeSingle(annotationId);
+        console.log(`Merged annotation ${annotationId}`);
+      }
+    } else if (all || !annotationId) {
+      const engine = new SynthesisEngine({ storage, agent: null });
+      const { merged, skipped } = engine.mergeAll(synthesisId);
+      console.log(`Merged ${merged} annotations from ${synthesisId}.`);
+      if (skipped > 0) console.log(`${skipped} contradiction/merge_suggestion annotations skipped — use --annotation <id> for individual resolution.`);
+    }
+  } finally {
+    storage.close();
+  }
+}
+
+// ============================================================================
 // Conflicts
 // ============================================================================
 
@@ -668,10 +825,6 @@ async function runConflicts(args: ParsedArgs): Promise<void> {
   storage.close();
 }
 
-function truncateStr(s: string, max: number): string {
-  const oneLine = s.replace(/\n/g, " ").trim();
-  return oneLine.length > max ? oneLine.slice(0, max) + "..." : oneLine;
-}
 
 // ============================================================================
 // Sync
@@ -753,10 +906,10 @@ async function runSync(args: ParsedArgs): Promise<void> {
 async function runExport(args: ParsedArgs): Promise<void> {
   const dbFile = args.positional[0] || getFlag(args.flags, "db") || findDb();
   const out = getFlag(args.flags, "out");
+  const isCanvas = getBoolFlag(args.flags, "canvas");
 
   const storage = new Storage(dbFile);
   const graph = new Graph(storage);
-  const exporter = new Exporter(storage);
 
   const explorations = graph.getAllExplorations();
   if (explorations.length === 0) {
@@ -764,12 +917,34 @@ async function runExport(args: ParsedArgs): Promise<void> {
     throw new Error("No explorations in this database.");
   }
   const exp = explorations[0];
-
   const baseName = path.basename(dbFile, ".db");
-  const outputDir = out || path.join(path.dirname(dbFile), baseName);
 
-  exporter.export(exp.id, outputDir);
-  console.log(`Exported to ${outputDir}/`);
+  if (isCanvas) {
+    // Canvas export: .canvas file + markdown files it references
+    const mdDir = out || path.join(path.dirname(dbFile), baseName);
+
+    // First export markdown files so the canvas file nodes can reference them
+    const exporter = new Exporter(storage);
+    exporter.export(exp.id, mdDir);
+
+    // Write .canvas alongside the markdown folder
+    const canvasPath = out
+      ? path.join(path.dirname(out), baseName + ".canvas")
+      : path.join(path.dirname(dbFile), baseName + ".canvas");
+
+    const canvasExporter = new CanvasExporter(storage);
+    canvasExporter.export(exp.id, canvasPath, baseName);
+
+    console.log(`Exported canvas to ${canvasPath}`);
+    console.log(`Markdown files at ${mdDir}/`);
+  } else {
+    // Standard markdown export
+    const outputDir = out || path.join(path.dirname(dbFile), baseName);
+    const exporter = new Exporter(storage);
+    exporter.export(exp.id, outputDir);
+    console.log(`Exported to ${outputDir}/`);
+  }
+
   storage.close();
 }
 
@@ -986,13 +1161,17 @@ Commands:
   redirect <node-id>     Regenerate a node with fresh content
   extend <node-id>       Generate more children (--n <count>)
   link <node-a> <node-b> Add a cross-link (--label 'description')
+  synthesize [file.db]   Run synthesis pass (--auto-merge to apply immediately)
+  merge-synthesis <id>   Apply synthesis annotations (--annotation <id>, --dismiss)
   conflicts [file.db]    List/resolve sync conflicts (--resolve theirs|ours)
   sync <file.db>         Bidirectional sync (--push, --pull, --status)
-  export <file.db>       One-shot export to markdown (--out <dir>)
+  export <file.db>       One-shot export to markdown (--out <dir>, --canvas for .canvas)
   config set <k> <v>     Set config value (--local for workspace)
   config list            Show effective config (--global, --local)
   watch <file.db>        Auto-sync on file changes (--stop, --status)
   extensions [list]      List available extensions
+  tui [file.db]          Launch interactive TUI
+  serve [dir]            Start web API server (--port <n>, default 3001)
   help                   Show this help
 
 Extensions (use with --ext <name>):
@@ -1005,82 +1184,9 @@ Non-interactive mode (for agents):
   lain init --non-interactive --provider anthropic --api-key sk-...
   lain init --non-interactive --provider bedrock --api-key ABSK... --region us-west-2
   lain "idea" -n 3 -m 2 --db output.db
-  lain export output.db --out ./my-exploration
-  lain sync output.db --push
+   lain export output.db --out ./my-exploration
+   lain export output.db --canvas
+   lain sync output.db --push
 `);
 }
 
-// ============================================================================
-// Helpers
-// ============================================================================
-
-function findDb(): string {
-  const files = fs.readdirSync(".").filter((f) => f.endsWith(".db"));
-  if (files.length === 0) {
-    throw new Error(
-      "No .db file found in current directory. Specify one with --db <file>."
-    );
-  }
-  if (files.length === 1) return files[0];
-  throw new Error(
-    `Multiple .db files found: ${files.join(", ")}. Specify one with --db <file>.`
-  );
-}
-
-function slugify(text: string): string {
-  return text
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-|-$/g, "")
-    .slice(0, 50);
-}
-
-function createProviderFromCredentials(
-  provider: Provider,
-  config: LainConfig,
-  credentials: ReturnType<typeof loadCredentials>
-) {
-  switch (provider) {
-    case "anthropic":
-      return createProvider({
-        provider: "anthropic",
-        model: config.defaultModel,
-        apiKey: credentials.anthropic?.apiKey || process.env.ANTHROPIC_API_KEY,
-      });
-
-    case "bedrock": {
-      const bc = credentials.bedrock;
-      return createProvider({
-        provider: "bedrock",
-        model: config.defaultModel,
-        apiKey: bc?.apiKey || process.env.AWS_BEARER_TOKEN_BEDROCK,
-        region: bc?.region || process.env.AWS_REGION || "us-west-2",
-      });
-    }
-
-    case "openai":
-      return createProvider({
-        provider: "openai",
-        model: config.defaultModel,
-        apiKey: credentials.openai?.apiKey || process.env.OPENAI_API_KEY,
-      });
-
-    default:
-      return createProvider({
-        provider,
-        model: config.defaultModel,
-      });
-  }
-}
-
-/**
- * Build the extension registry with all built-in extensions loaded.
- */
-function buildExtensionRegistry(): ExtensionRegistry {
-  const registry = new ExtensionRegistry();
-  registry.register(freeformExtension);
-  registry.register(worldbuildingExtension);
-  registry.register(debateExtension);
-  registry.register(researchExtension);
-  return registry;
-}

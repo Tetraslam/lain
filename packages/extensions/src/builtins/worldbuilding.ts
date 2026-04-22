@@ -108,7 +108,7 @@ export const worldbuildingExtension: LainExtension = {
 
   hooks: {
     "after:generate": (context, response) => {
-      // Auto-tag worldbuilding nodes with category based on content keywords
+      // Auto-tag worldbuilding nodes with category in extension_data
       const content = (response.content || "").toLowerCase();
       let category = "general";
 
@@ -128,14 +128,7 @@ export const worldbuildingExtension: LainExtension = {
         category = "religion";
       }
 
-      // Inject category into extension_data via the response
-      // The orchestrator will store this
-      return {
-        ...response,
-        // We attach metadata that the orchestrator can pick up
-        // For now, we prefix the content with a metadata comment
-        content: response.content,
-      };
+      return response;
     },
   },
 };

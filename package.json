@@ -11,7 +11,8 @@
     "dev": "turbo dev",
     "test": "turbo test",
     "lint": "turbo lint",
-    "clean": "turbo clean"
+    "clean": "turbo clean",
+    "lain": "bun packages/cli/dist/index.js"
   },
   "devDependencies": {
     "@types/node": "^25.6.0",
@@ -22,8 +23,7 @@
   },
   "pnpm": {
     "onlyBuiltDependencies": [
-      "esbuild",
-      "better-sqlite3"
+      "esbuild"
     ]
   }
 }

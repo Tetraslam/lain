@@ -23,9 +23,9 @@ export class Sync {
   private graph: Graph;
   private exporter: Exporter;
 
-  constructor(private storage: Storage) {
-    this.graph = new Graph(storage);
-    this.exporter = new Exporter(storage);
+  constructor(private storage: Storage, graph?: Graph) {
+    this.graph = graph ?? new Graph(storage);
+    this.exporter = new Exporter(storage, this.graph);
   }
 
   /**

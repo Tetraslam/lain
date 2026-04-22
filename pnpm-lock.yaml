@@ -56,6 +56,9 @@ importers:
 
   packages/core:
     dependencies:
+      '@lain/agents':
+        specifier: workspace:*
+        version: link:../agents
       '@lain/shared':
         specifier: workspace:*
         version: link:../shared

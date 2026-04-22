@@ -646,40 +646,39 @@ engineered bioluminescent organisms...
 
 ## milestones
 
-### v0.1 — proof of concept
-- [ ] core graph model + SQLite storage
-- [ ] single-provider agent (anthropic direct or bedrock)
-- [ ] basic CLI with clack: `lain "idea" -n N -m M`
-- [ ] `lain init` (global config + credentials setup)
-- [ ] sequential generation (no concurrency yet)
-- [ ] freeform extension only
-- [ ] obsidian export (`lain export`)
-- [ ] bidirectional sync with split content/frontmatter tracking (`lain sync`)
-- [ ] file watcher daemon (`lain watch`)
+### v0.1 — proof of concept ✓
+- [x] core graph model + SQLite storage
+- [x] single-provider agent (anthropic direct or bedrock)
+- [x] basic CLI with clack: `lain "idea" -n N -m M`
+- [x] `lain init` (global config + credentials setup)
+- [x] sequential generation (no concurrency yet)
+- [x] freeform extension only
+- [x] obsidian export (`lain export`)
+- [x] bidirectional sync with split content/frontmatter tracking (`lain sync`)
+- [x] file watcher daemon (`lain watch`)
 
-### v0.2 — usable tool
-- [ ] multi-provider support (anthropic + bedrock + openai-compatible)
-- [ ] concurrent agent execution with pool
-- [ ] branching plan phase with configurable detail level
-- [ ] bf/df strategy selection
-- [ ] extension system + worldbuilding extension
-- [ ] extension install/auth/config (`lain extensions add/auth/config`)
-- [ ] prune/extend/redirect/link operations
-- [ ] cost estimation
-- [ ] workspace config (`lain init --workspace`)
-- [ ] conflict resolution (`lain conflicts`)
+### v0.2 — usable tool ✓
+- [x] multi-provider support (anthropic + bedrock + openai-compatible)
+- [x] concurrent agent execution with pool
+- [x] branching plan phase with configurable detail level
+- [x] bf/df strategy selection
+- [x] extension system + worldbuilding extension
+- [x] extension install/auth/config (`lain extensions add/auth/config`)
+- [x] prune/extend/redirect/link operations
+- [x] cost estimation
+- [x] workspace config (`lain init --workspace`)
+- [x] conflict resolution (`lain conflicts`)
 
-### v0.3 — interfaces
-- [ ] TUI with OpenTUI
-- [ ] web UI with Vite + React Flow
-- [ ] real-time streaming
-- [ ] canvas export
+### v0.3 — interfaces ✓
+- [x] TUI with OpenTUI
+- [x] web UI with Vite + React Flow
+- [x] real-time streaming
+- [x] canvas export ✓
 
-### v0.4 — intelligence
-- [ ] synthesis pass with staged annotations
-- [ ] merge-synthesis (manual + auto-merge)
-- [ ] context management strategies
-- [ ] evaluation/ranking
+### v0.4 — intelligence (in progress)
+- [x] synthesis pass with staged annotations
+- [x] merge-synthesis (manual + auto-merge)
+- [ ] synthesis with instructions (custom prompts, focus areas, annotation type filters)
 - [ ] interactive mode (approve/reject/redirect at each depth)
 
 ### v1.0 — release

@@ -3,36 +3,18 @@
  * Serves REST endpoints + SSE for streaming.
  * Run with: bun run src/server/index.ts
  */
-import { Storage, Graph, Orchestrator, Sync, Exporter } from "@lain/core";
+import { Storage, Graph, Orchestrator, Sync, Exporter, SynthesisEngine } from "@lain/core";
 import { createProvider } from "@lain/agents";
-import { ExtensionRegistry, freeformExtension, worldbuildingExtension, debateExtension, researchExtension } from "@lain/extensions";
-import { generateId, type Strategy, type PlanDetail, type Provider, DEFAULT_CONFIG } from "@lain/shared";
+import { buildExtensionRegistry } from "@lain/extensions";
+import { generateId, loadConfig, loadCredentials, type Strategy, type PlanDetail, type Provider, type Credentials, type LainConfig } from "@lain/shared";
 import * as fs from "fs";
 import * as path from "path";
-import * as os from "os";
 
 const PORT = Number(process.env.LAIN_PORT) || 3001;
 const CWD = process.env.LAIN_CWD || process.cwd();
 
-// Load config
-function loadConfig() {
-  const configPath = path.join(os.homedir(), ".config", "lain", "config.json");
-  if (fs.existsSync(configPath)) {
-    try { return { ...DEFAULT_CONFIG, ...JSON.parse(fs.readFileSync(configPath, "utf-8")) }; } catch {}
-  }
-  return DEFAULT_CONFIG;
-}
-
-function loadCredentials(): Record<string, any> {
-  const credPath = path.join(os.homedir(), ".config", "lain", "credentials.json");
-  if (fs.existsSync(credPath)) {
-    try { return JSON.parse(fs.readFileSync(credPath, "utf-8")); } catch {}
-  }
-  return {};
-}
-
-function makeAgent(config: any, credentials: any) {
-  const provider = config.defaultProvider as Provider;
+function makeAgent(config: LainConfig, credentials: Credentials) {
+  const provider = config.defaultProvider;
   if (provider === "bedrock") {
     return createProvider({
       provider: "bedrock",
@@ -45,15 +27,6 @@ function makeAgent(config: any, credentials: any) {
     return createProvider({ provider: "anthropic", model: config.defaultModel, apiKey: credentials.anthropic?.apiKey });
   }
   return createProvider({ provider, model: config.defaultModel });
-}
-
-function buildExtensions() {
-  const reg = new ExtensionRegistry();
-  reg.register(freeformExtension);
-  reg.register(worldbuildingExtension);
-  reg.register(debateExtension);
-  reg.register(researchExtension);
-  return reg;
 }
 
 // Find all .db files
@@ -97,6 +70,18 @@ function cors() {
   });
 }
 
+/**
+ * Validate that a dbFile path doesn't escape the CWD via traversal.
+ * Returns the resolved path or null if invalid.
+ */
+function safeDbPath(dbFile: string): string | null {
+  const resolved = path.resolve(CWD, dbFile);
+  if (!resolved.startsWith(CWD)) return null;
+  if (!resolved.endsWith(".db")) return null;
+  if (!fs.existsSync(resolved)) return null;
+  return resolved;
+}
+
 // ============================================================================
 // Server
 // ============================================================================
@@ -117,8 +102,8 @@ Bun.serve({
     // ---- Get exploration data ----
     if (p.match(/^\/api\/exploration\/[^/]+$/) && req.method === "GET") {
       const dbFile = decodeURIComponent(p.split("/").pop()!);
-      const dbPath = path.join(CWD, dbFile);
-      if (!fs.existsSync(dbPath)) return json({ error: "Not found" }, 404);
+      const dbPath = safeDbPath(dbFile);
+      if (!dbPath) return json({ error: "Not found" }, 404);
 
       const s = new Storage(dbPath);
       const g = new Graph(s);
@@ -127,9 +112,15 @@ Bun.serve({
       const exp = exps[0];
       const nodes = g.getAllNodes(exp.id);
       const crosslinks = g.getCrosslinks(exp.id);
+      // Gather node annotations
+      const nodeAnnotations: Record<string, any[]> = {};
+      for (const node of nodes) {
+        const anns = s.getNodeAnnotations(node.id);
+        if (anns.length > 0) nodeAnnotations[node.id] = anns;
+      }
       s.close();
 
-      return json({ exploration: exp, nodes, crosslinks });
+      return json({ exploration: exp, nodes, crosslinks, nodeAnnotations });
     }
 
     // ---- Get single node ----
@@ -137,8 +128,7 @@ Bun.serve({
       const parts = p.split("/");
       const nodeId = decodeURIComponent(parts.pop()!);
       const dbFile = decodeURIComponent(parts.pop()!);
-      const dbPath = path.join(CWD, dbFile);
-      if (!fs.existsSync(dbPath)) return json({ error: "Not found" }, 404);
+      const dbPath = safeDbPath(dbFile); if (!dbPath) return json({ error: "Invalid database path" }, 400);
 
       const s = new Storage(dbPath);
       const g = new Graph(s);
@@ -160,7 +150,7 @@ Bun.serve({
       const config = loadConfig();
       const credentials = loadCredentials();
       const agent = makeAgent(config, credentials);
-      const extensions = buildExtensions();
+      const extensions = buildExtensionRegistry();
 
       const seed = body.seed;
       const n = body.n || config.defaultN;
@@ -219,7 +209,7 @@ Bun.serve({
     // ---- Prune ----
     if (p === "/api/prune" && req.method === "POST") {
       const { dbFile, nodeId } = await req.json() as { dbFile: string; nodeId: string };
-      const dbPath = path.join(CWD, dbFile);
+      const dbPath = safeDbPath(dbFile); if (!dbPath) return json({ error: "Invalid database path" }, 400);
       const s = new Storage(dbPath);
       const g = new Graph(s);
       g.pruneNode(nodeId);
@@ -230,11 +220,11 @@ Bun.serve({
     // ---- Extend ----
     if (p === "/api/extend" && req.method === "POST") {
       const { dbFile, nodeId, n } = await req.json() as { dbFile: string; nodeId: string; n?: number };
-      const dbPath = path.join(CWD, dbFile);
+      const dbPath = safeDbPath(dbFile); if (!dbPath) return json({ error: "Invalid database path" }, 400);
       const config = loadConfig();
       const credentials = loadCredentials();
       const agent = makeAgent(config, credentials);
-      const extensions = buildExtensions();
+      const extensions = buildExtensionRegistry();
 
       const s = new Storage(dbPath);
       const g = new Graph(s);
@@ -251,7 +241,7 @@ Bun.serve({
     // ---- Redirect ----
     if (p === "/api/redirect" && req.method === "POST") {
       const { dbFile, nodeId } = await req.json() as { dbFile: string; nodeId: string };
-      const dbPath = path.join(CWD, dbFile);
+      const dbPath = safeDbPath(dbFile); if (!dbPath) return json({ error: "Invalid database path" }, 400);
       const config = loadConfig();
       const credentials = loadCredentials();
       const agent = makeAgent(config, credentials);
@@ -271,7 +261,7 @@ Bun.serve({
     // ---- Link ----
     if (p === "/api/link" && req.method === "POST") {
       const { dbFile, sourceId, targetId, label } = await req.json() as { dbFile: string; sourceId: string; targetId: string; label?: string };
-      const dbPath = path.join(CWD, dbFile);
+      const dbPath = safeDbPath(dbFile); if (!dbPath) return json({ error: "Invalid database path" }, 400);
       const s = new Storage(dbPath);
       const g = new Graph(s);
       g.addCrosslink(sourceId, targetId, label);
@@ -282,7 +272,7 @@ Bun.serve({
     // ---- Export ----
     if (p === "/api/export" && req.method === "POST") {
       const { dbFile } = await req.json() as { dbFile: string };
-      const dbPath = path.join(CWD, dbFile);
+      const dbPath = safeDbPath(dbFile); if (!dbPath) return json({ error: "Invalid database path" }, 400);
       const s = new Storage(dbPath);
       const g = new Graph(s);
       const exp = g.getAllExplorations()[0];
@@ -294,10 +284,23 @@ Bun.serve({
       return json({ ok: true, outputDir });
     }
 
+    // ---- Edit node ----
+    if (p === "/api/edit" && req.method === "POST") {
+      const { dbFile, nodeId, content } = await req.json() as { dbFile: string; nodeId: string; content: string };
+      const dbPath = safeDbPath(dbFile); if (!dbPath) return json({ error: "Invalid database path" }, 400);
+      const s = new Storage(dbPath);
+      const g = new Graph(s);
+      const node = g.getNode(nodeId);
+      if (!node) { s.close(); return json({ error: "Node not found" }, 404); }
+      s.updateNodeContent(nodeId, node.title || nodeId, content, node.model || "manual", node.provider || "manual");
+      s.close();
+      return json({ ok: true });
+    }
+
     // ---- Sync ----
     if (p === "/api/sync" && req.method === "POST") {
       const { dbFile } = await req.json() as { dbFile: string };
-      const dbPath = path.join(CWD, dbFile);
+      const dbPath = safeDbPath(dbFile); if (!dbPath) return json({ error: "Invalid database path" }, 400);
       const s = new Storage(dbPath);
       const g = new Graph(s);
       const exp = g.getAllExplorations()[0];
@@ -307,6 +310,151 @@ Bun.serve({
       const result = new Sync(s).sync(exp.id, dir);
       s.close();
       return json(result);
+    }
+
+    // ---- Synthesis: list ----
+    if (p.match(/^\/api\/syntheses\//) && req.method === "GET") {
+      const dbFile = decodeURIComponent(p.split("/api/syntheses/")[1]);
+      const dbPath = safeDbPath(dbFile); if (!dbPath) return json({ error: "Invalid database path" }, 400);
+      const s = new Storage(dbPath);
+      const g = new Graph(s);
+      const exp = g.getAllExplorations()[0];
+      if (!exp) { s.close(); return json({ error: "No exploration" }, 404); }
+
+      const engine = new SynthesisEngine({ storage: s, agent: null });
+      const syntheses = engine.getSyntheses(exp.id);
+      const result = syntheses.map((synth) => {
+        const data = engine.getSynthesis(synth.id);
+        return {
+          ...synth,
+          annotations: data?.annotations ?? [],
+        };
+      });
+      s.close();
+      return json(result);
+    }
+
+    // ---- Synthesis: run ----
+    if (p === "/api/synthesize" && req.method === "POST") {
+      const { dbFile } = await req.json() as { dbFile: string };
+      const dbPath = safeDbPath(dbFile); if (!dbPath) return json({ error: "Invalid database path" }, 400);
+      const config = loadConfig();
+      const credentials = loadCredentials();
+      const agent = makeAgent(config, credentials);
+      const s = new Storage(dbPath);
+      const g = new Graph(s);
+      const exp = g.getAllExplorations()[0];
+      if (!exp) { s.close(); return json({ error: "No exploration" }, 404); }
+
+      try {
+        const engine = new SynthesisEngine({ storage: s, agent });
+        const synthesisId = await engine.synthesize(exp.id);
+        const result = engine.getSynthesis(synthesisId);
+        s.close();
+        return json(result);
+      } catch (err: any) {
+        s.close();
+        return json({ error: err.message }, 500);
+      }
+    }
+
+    // ---- Synthesis: compute diff ----
+    if (p === "/api/synthesis-diff" && req.method === "POST") {
+      const { dbFile, annotationId } = await req.json() as { dbFile: string; annotationId: string };
+      const dbPath = safeDbPath(dbFile); if (!dbPath) return json({ error: "Invalid database path" }, 400);
+      const s = new Storage(dbPath);
+      const engine = new SynthesisEngine({ storage: s, agent: null });
+      try {
+        const diff = engine.computeDiff(annotationId);
+        s.close();
+        return json(diff);
+      } catch (err: any) {
+        s.close();
+        return json({ error: err.message }, 500);
+      }
+    }
+
+    // ---- Synthesis: merge ----
+    if (p === "/api/merge-synthesis" && req.method === "POST") {
+      const { dbFile, synthesisId, annotationId, dismiss, preview } = await req.json() as {
+        dbFile: string; synthesisId?: string; annotationId?: string; dismiss?: boolean; preview?: any;
+      };
+      const dbPath = safeDbPath(dbFile); if (!dbPath) return json({ error: "Invalid database path" }, 400);
+      const s = new Storage(dbPath);
+      const g = new Graph(s);
+      const exp = g.getAllExplorations()[0];
+
+      try {
+        if (dismiss && annotationId) {
+          const engine = new SynthesisEngine({ storage: s, agent: null });
+          engine.dismissAnnotation(annotationId);
+          s.close();
+          return json({ ok: true, action: "dismissed", annotationId });
+        } else if (annotationId) {
+          // Check annotation type — contradiction/merge_suggestion need preview
+          const annotation = s.getAnnotation(annotationId);
+          if (!annotation) { s.close(); return json({ error: "Annotation not found" }, 404); }
+
+          if ((annotation.type === "contradiction" || annotation.type === "merge_suggestion") && !preview) {
+            // Generate preview
+            const config = loadConfig();
+            const credentials = loadCredentials();
+            const agent = makeAgent(config, credentials);
+            const engine = new SynthesisEngine({ storage: s, agent });
+            const mergePreview = await engine.generateMergePreview(annotationId, exp!.id);
+            s.close();
+            return json({ ok: true, action: "preview", preview: mergePreview });
+          } else if (preview) {
+            // Apply a previously generated preview
+            const engine = new SynthesisEngine({ storage: s, agent: null });
+            const nodeId = engine.applyMergePreview(annotationId, exp!.id, preview);
+            s.close();
+            return json({ ok: true, action: "applied", nodeId });
+          } else {
+            // crosslink / note: immediate merge
+            const engine = new SynthesisEngine({ storage: s, agent: null });
+            engine.mergeSingle(annotationId);
+            s.close();
+            return json({ ok: true, action: "merged", annotationId });
+          }
+        } else if (synthesisId) {
+          const engine = new SynthesisEngine({ storage: s, agent: null });
+          const { merged, skipped } = engine.mergeAll(synthesisId);
+          s.close();
+          return json({ ok: true, action: "mergedAll", merged, skipped });
+        }
+        s.close();
+        return json({ error: "Provide synthesisId or annotationId" }, 400);
+      } catch (err: any) {
+        s.close();
+        return json({ error: err.message }, 500);
+      }
+    }
+
+    // ---- Static file serving (built web UI) ----
+    const DIST_DIR = path.resolve(path.dirname(new URL(import.meta.url).pathname), "../../dist");
+    const MIME_TYPES: Record<string, string> = {
+      ".html": "text/html", ".js": "application/javascript", ".css": "text/css",
+      ".svg": "image/svg+xml", ".png": "image/png", ".ico": "image/x-icon",
+      ".json": "application/json", ".woff": "font/woff", ".woff2": "font/woff2",
+    };
+
+    // Try to serve from dist
+    let filePath = path.join(DIST_DIR, p === "/" ? "index.html" : p);
+    if (fs.existsSync(filePath) && fs.statSync(filePath).isFile()) {
+      const ext = path.extname(filePath);
+      const contentType = MIME_TYPES[ext] || "application/octet-stream";
+      return new Response(fs.readFileSync(filePath), {
+        headers: { "Content-Type": contentType, "Cache-Control": "public, max-age=3600" },
+      });
+    }
+
+    // SPA fallback: serve index.html for non-API routes
+    const indexPath = path.join(DIST_DIR, "index.html");
+    if (!p.startsWith("/api/") && fs.existsSync(indexPath)) {
+      return new Response(fs.readFileSync(indexPath), {
+        headers: { "Content-Type": "text/html" },
+      });
     }
 
     return json({ error: "Not found" }, 404);

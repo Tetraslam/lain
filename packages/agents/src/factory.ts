@@ -26,7 +26,8 @@ export function createProvider(options: CreateProviderOptions): AgentProvider {
     case "bedrock":
       if (!options.apiKey) {
         throw new Error(
-          "Bedrock requires an API key. Run `lain init` or set --api-key."
+          "Bedrock requires an API key. Run `lain init` to configure credentials, " +
+          "or set the AWS_BEARER_TOKEN_BEDROCK environment variable."
         );
       }
       return new BedrockProvider({

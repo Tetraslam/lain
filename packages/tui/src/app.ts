@@ -10,10 +10,10 @@ import {
   TextareaRenderable,
   type StyledText,
 } from "@opentui/core";
-import { t, fg, dim, bold, italic } from "@opentui/core";
+import { t, fg, dim, bold, italic, underline, strikethrough, cyan, green, yellow, magenta } from "@opentui/core";
 import type { KeyEvent, SelectOption } from "@opentui/core";
 import { ToasterRenderable, toast } from "@opentui-ui/toast";
-import { Storage, Graph, Orchestrator, Sync, Exporter } from "@lain/core";
+import { Storage, Graph, Orchestrator, Sync, Exporter, CanvasExporter, SynthesisEngine } from "@lain/core";
 import type { LainNode, Exploration, Strategy, PlanDetail } from "@lain/shared";
 import { generateId } from "@lain/shared";
 import { loadConfig, loadCredentials, createProviderFromCredentials } from "./config-loader.js";
@@ -32,6 +32,143 @@ const c = {
 };
 
 // ============================================================================
+// Markdown → StyledText renderer
+// ============================================================================
+
+/**
+ * Render markdown content into OpenTUI styled text.
+ * Handles: headings, bold, italic, strikethrough, inline code, code blocks,
+ * lists, blockquotes, horizontal rules, and links.
+ */
+function renderMarkdown(md: string): string {
+  if (!md) return "";
+  const lines = md.split("\n");
+  const output: string[] = [];
+  let inCodeBlock = false;
+  let codeBlockLang = "";
+  let codeLines: string[] = [];
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+
+    // Code block fence
+    if (line.trimStart().startsWith("```")) {
+      if (!inCodeBlock) {
+        inCodeBlock = true;
+        codeBlockLang = line.trimStart().slice(3).trim();
+        codeLines = [];
+      } else {
+        // Close code block — render it
+        output.push(`  ┌─${codeBlockLang ? ` ${codeBlockLang} ` : ""}${"─".repeat(Math.max(0, 36 - codeBlockLang.length))}`);
+        for (const cl of codeLines) {
+          output.push(`  │ ${cl}`);
+        }
+        output.push(`  └${"─".repeat(40)}`);
+        inCodeBlock = false;
+        codeBlockLang = "";
+      }
+      continue;
+    }
+
+    if (inCodeBlock) {
+      codeLines.push(line);
+      continue;
+    }
+
+    // Horizontal rule
+    if (/^---+$|^\*\*\*+$|^___+$/.test(line.trim())) {
+      output.push("  ─────────────────────────────────────────");
+      continue;
+    }
+
+    // Headings
+    const h1Match = line.match(/^# (.+)/);
+    if (h1Match) {
+      const text = renderInline(h1Match[1]);
+      output.push("");
+      output.push(`  ${text}`);
+      output.push(`  ${"━".repeat(Math.min(50, h1Match[1].length))}`);
+      output.push("");
+      continue;
+    }
+    const h2Match = line.match(/^## (.+)/);
+    if (h2Match) {
+      output.push("");
+      output.push(`  ${renderInline(h2Match[1])}`);
+      output.push("");
+      continue;
+    }
+    const h3Match = line.match(/^### (.+)/);
+    if (h3Match) {
+      output.push(`  ${renderInline(h3Match[1])}`);
+      continue;
+    }
+
+    // Blockquote
+    if (line.startsWith("> ") || line === ">") {
+      const content = line.slice(2);
+      output.push(`  ▐ ${renderInline(content)}`);
+      continue;
+    }
+
+    // Unordered list
+    const ulMatch = line.match(/^(\s*)[*\-+] (.+)/);
+    if (ulMatch) {
+      const indent = "  ".repeat(Math.floor(ulMatch[1].length / 2));
+      output.push(`  ${indent}• ${renderInline(ulMatch[2])}`);
+      continue;
+    }
+
+    // Ordered list
+    const olMatch = line.match(/^(\s*)(\d+)\. (.+)/);
+    if (olMatch) {
+      const indent = "  ".repeat(Math.floor(olMatch[1].length / 2));
+      output.push(`  ${indent}${olMatch[2]}. ${renderInline(olMatch[3])}`);
+      continue;
+    }
+
+    // Regular paragraph line
+    if (line.trim() === "") {
+      output.push("");
+    } else {
+      output.push(`  ${renderInline(line)}`);
+    }
+  }
+
+  // Handle unclosed code block
+  if (inCodeBlock && codeLines.length > 0) {
+    output.push(`  ┌─${codeBlockLang ? ` ${codeBlockLang} ` : ""}${"─".repeat(Math.max(0, 36 - codeBlockLang.length))}`);
+    for (const cl of codeLines) output.push(`  │ ${cl}`);
+    output.push(`  └${"─".repeat(40)}`);
+  }
+
+  return output.join("\n");
+}
+
+/**
+ * Render inline markdown: bold, italic, strikethrough, inline code, links.
+ * Returns a plain string (styled via ANSI when we upgrade, for now semantic).
+ */
+function renderInline(text: string): string {
+  return text
+    // Inline code (must be first to prevent inner patterns matching)
+    .replace(/`([^`]+)`/g, "‹$1›")
+    // Bold+italic
+    .replace(/\*\*\*(.+?)\*\*\*/g, "$1")
+    .replace(/___(.+?)___/g, "$1")
+    // Bold
+    .replace(/\*\*(.+?)\*\*/g, "$1")
+    .replace(/__(.+?)__/g, "$1")
+    // Italic
+    .replace(/\*(.+?)\*/g, "$1")
+    .replace(/_(.+?)_/g, "$1")
+    // Strikethrough
+    .replace(/~~(.+?)~~/g, "$1")
+    // Links
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, "$1 ‹$2›");
+}
+
+// ============================================================================
 // Types
 // ============================================================================
 
@@ -45,7 +182,7 @@ interface TreeItem {
   nodeId: string; prefix: string; title: string; depth: number; status: string; node: LainNode;
 }
 
-type AppMode = "home" | "exploring" | "reading" | "editing" | "graph" | "help" | "palette" | "creating";
+type AppMode = "home" | "exploring" | "reading" | "editing" | "graph" | "help" | "palette" | "creating" | "synthesis";
 
 // ============================================================================
 // DB Discovery
@@ -102,13 +239,13 @@ function buildTreeItems(node: LainNode, allNodes: LainNode[], prefix = "", isLas
 // Content Builder
 // ============================================================================
 
-function buildNodeContent(node: LainNode, graph: Graph, allNodes: LainNode[]): StyledText {
+function buildNodeContent(node: LainNode, graph: Graph, allNodes: LainNode[], storage?: Storage): StyledText {
   const ancestors = graph.getAncestorChain(node.id);
   let breadcrumb = "";
   if (ancestors.length > 0) {
     breadcrumb = [...ancestors, node].map((n) => {
       const name = n.title || n.id;
-      return name.length > 22 ? name.slice(0, 21) + "…" : name;
+      return name.length > 40 ? name.slice(0, 39) + "…" : name;
     }).join("  ›  ");
   }
 
@@ -132,6 +269,18 @@ function buildNodeContent(node: LainNode, graph: Graph, allNodes: LainNode[]): S
     for (const child of children) childrenStr += `  ${child.branchIndex}. ${child.title || child.id}\n`;
   }
 
+  // Persistent notes attached to this node
+  let notesStr = "";
+  if (storage) {
+    const nodeAnnotations = storage.getNodeAnnotations(node.id);
+    if (nodeAnnotations.length > 0) {
+      notesStr += `\n────────────────────────────────\nnotes (${nodeAnnotations.length})\n`;
+      for (const na of nodeAnnotations) {
+        notesStr += `  ◆ ${na.content}\n`;
+      }
+    }
+  }
+
   let metaExtraStr = "";
   if (node.model) metaExtraStr += `model  ${node.model} (${node.provider})\n`;
   if (node.planSummary) metaExtraStr += `direction  ${node.planSummary}\n`;
@@ -144,8 +293,8 @@ ${fg(c.muted)(sep)}
 
 ${fg(c.blue)("id")}  ${node.id}  ${fg(c.muted)("·")}  ${fg(c.blue)("depth")}  ${String(node.depth)}  ${fg(c.muted)("·")}  ${fg(c.blue)("branch")}  ${String(node.branchIndex)}  ${fg(c.muted)("·")}  ${fg(statusColor)(node.status)}
 ${metaExtraStr}
-${node.content || "(no content)"}
-${crosslinksStr}${childrenStr}`;
+${node.content ? renderMarkdown(node.content) : dim("(no content)")}
+${crosslinksStr}${notesStr}${childrenStr}`;
 }
 
 function buildHelpContent(): StyledText {
@@ -161,6 +310,7 @@ ${bold(fg(c.accent)("tree panel"))}
   ${fg(c.yellow)("r")}            redirect (regenerate)
   ${fg(c.yellow)("x")}            export to obsidian
   ${fg(c.yellow)("s")}            sync with obsidian
+  ${fg(c.yellow)("y")}            synthesize (find connections)
   ${fg(c.yellow)("ctrl+p")}       command palette
 
 ${bold(fg(c.accent)("content panel"))}
@@ -176,8 +326,9 @@ ${bold(fg(c.accent)("edit mode"))}
   ${fg(c.yellow)("ctrl+s")}       save and exit
 
 ${bold(fg(c.accent)("graph view"))}
-  ${fg(c.yellow)("j/k")}          select next/prev node
-  ${fg(c.yellow)("enter")}        open node in tree view
+  ${fg(c.yellow)("j/k  ↑/↓")}     select next/prev node
+  ${fg(c.yellow)("h/l  ←/→")}     spatial navigation (move toward direction)
+  ${fg(c.yellow)("enter")}        open node in reading mode
   ${fg(c.yellow)("esc  q")}       back to tree
 
 ${bold(fg(c.accent)("general"))}
@@ -253,7 +404,7 @@ export async function createApp(dbPathArg?: string): Promise<void> {
   homeContainer.add(homeHeader);
   const homeTitle = new TextRenderable(renderer, {
     id: "home-title",
-    content: t`${bold(fg(c.accent)("lain"))}  ${dim("graph-based ideation engine")}`,
+    content: t`${bold(fg(c.accent)("lain"))}  ${dim("everything is connected")}`,
   });
   homeHeader.add(homeTitle);
 
@@ -440,10 +591,10 @@ export async function createApp(dbPathArg?: string): Promise<void> {
   const paletteSelect = new SelectRenderable(renderer, {
     id: "palette-select", width: "100%", height: 12,
     options: [], selectedIndex: 0,
-    backgroundColor: "transparent", textColor: c.fg,
-    focusedBackgroundColor: "transparent", focusedTextColor: c.fg,
-    selectedBackgroundColor: c.surface, selectedTextColor: c.bright,
-    descriptionColor: c.dim, selectedDescriptionColor: c.fg,
+    backgroundColor: "transparent", textColor: c.dim,
+    focusedBackgroundColor: "transparent", focusedTextColor: c.dim,
+    selectedBackgroundColor: "#2a2e46", selectedTextColor: c.bright,
+    descriptionColor: c.muted, selectedDescriptionColor: c.fg,
     showDescription: true, showScrollIndicator: false, wrapSelection: false,
     itemSpacing: 0,
   });
@@ -508,10 +659,23 @@ export async function createApp(dbPathArg?: string): Promise<void> {
 
   const createExtLabel = new TextRenderable(renderer, { id: "create-ext-label", content: "ext:", fg: c.blue });
   createParamsRow.add(createExtLabel);
-  const createExtInput = new InputRenderable(renderer, {
-    id: "create-ext-input", width: 15, placeholder: "freeform", value: "freeform",
+  const availableExtensions = ["freeform", "worldbuilding", "debate", "research"];
+  let createExtIdx = 0;
+  const createExtDisplay = new TextRenderable(renderer, {
+    id: "create-ext-display", content: "", fg: c.fg,
   });
-  createParamsRow.add(createExtInput);
+  createParamsRow.add(createExtDisplay);
+
+  function updateExtDisplay(focused = false) {
+    const parts = availableExtensions.map((ext, i) => {
+      if (i === createExtIdx) {
+        return focused ? fg(c.accent)(`▸${ext}`) : fg(c.bright)(`▸${ext}`);
+      }
+      return dim(` ${ext}`);
+    });
+    createExtDisplay.content = t`${parts.join(" ")}`;
+  }
+  updateExtDisplay();
 
   const createHint = new TextRenderable(renderer, {
     id: "create-hint",
@@ -521,15 +685,193 @@ export async function createApp(dbPathArg?: string): Promise<void> {
   createForm.add(createHint);
 
   // ===========================================================================
+  // SYNTHESIS VIEW
+  // ===========================================================================
+
+  const synthContainer = new BoxRenderable(renderer, {
+    id: "synth-container", width: "100%", height: "100%",
+    flexDirection: "column",
+  });
+
+  const synthHeader = new BoxRenderable(renderer, {
+    id: "synth-header", width: "100%", height: 1,
+    flexDirection: "row", backgroundColor: c.surface,
+  });
+  synthContainer.add(synthHeader);
+  const synthHeaderText = new TextRenderable(renderer, {
+    id: "synth-header-text",
+    content: t`${bold(fg(c.accent)("synthesis"))}`,
+  });
+  synthHeader.add(synthHeaderText);
+
+  const synthBody = new BoxRenderable(renderer, {
+    id: "synth-body", width: "100%", height: "100%",
+    flexDirection: "row",
+  });
+  synthContainer.add(synthBody);
+
+  // Left: annotation list
+  const synthListBox = new BoxRenderable(renderer, {
+    id: "synth-list-box", width: 44, height: "100%",
+    border: true, borderStyle: "rounded", borderColor: c.accent,
+  });
+  synthBody.add(synthListBox);
+  const synthSelect = new SelectRenderable(renderer, {
+    id: "synth-select", width: "100%", height: "100%",
+    options: [], selectedIndex: 0,
+    backgroundColor: "transparent", textColor: c.fg,
+    focusedBackgroundColor: "transparent", focusedTextColor: c.fg,
+    selectedBackgroundColor: c.surface, selectedTextColor: c.bright,
+    descriptionColor: c.dim, selectedDescriptionColor: c.accentDim,
+    showDescription: true, showScrollIndicator: true, wrapSelection: false,
+    itemSpacing: 0,
+  });
+  synthListBox.add(synthSelect);
+
+  // Right: detail view
+  const synthDetailBox = new BoxRenderable(renderer, {
+    id: "synth-detail-box", width: "100%", height: "100%",
+    border: true, borderStyle: "rounded", borderColor: c.muted,
+  });
+  synthBody.add(synthDetailBox);
+  const synthDetailScroll = new ScrollBoxRenderable(renderer, {
+    id: "synth-detail-scroll", width: "100%", height: "100%",
+  });
+  synthDetailBox.add(synthDetailScroll);
+  const synthDetailText = new TextRenderable(renderer, {
+    id: "synth-detail-text", content: "",
+  });
+  synthDetailScroll.add(synthDetailText);
+
+  const synthFooter = new BoxRenderable(renderer, {
+    id: "synth-footer", width: "100%", height: 1,
+  });
+  synthContainer.add(synthFooter);
+  const synthFooterText = new TextRenderable(renderer, {
+    id: "synth-footer-text",
+    content: t`  ${dim("j/k")} navigate  ${fg(c.muted)("·")}  ${dim("m")} merge  ${fg(c.muted)("·")}  ${dim("d")} dismiss  ${fg(c.muted)("·")}  ${dim("M")} merge all  ${fg(c.muted)("·")}  ${dim("enter")} jump to node  ${fg(c.muted)("·")}  ${dim("esc")} back`,
+  });
+  synthFooter.add(synthFooterText);
+
+  // Synthesis state
+  let currentSynthesisId: string | null = null;
+  let synthAnnotations: any[] = [];
+  let synthSummary = "";
+  let dismissedIds = new Set<string>(); // track dismissed vs merged
+  let pendingMergePreview: { annotationId: string; explorationId: string; preview: any } | null = null;
+
+  function enterSynthesisMode(synthesisId: string) {
+    if (!storage) return;
+    currentSynthesisId = synthesisId;
+    const engine = new SynthesisEngine({ storage, agent: null });
+    const result = engine.getSynthesis(synthesisId);
+    if (!result) { toast.error("Synthesis not found"); return; }
+
+    synthSummary = result.synthesis.content;
+    synthAnnotations = result.annotations;
+
+    // Build select options: summary at top, then annotations
+    const options: SelectOption[] = [
+      { name: "◈ Summary", description: `${synthAnnotations.length} annotations`, value: "__summary__" },
+    ];
+    for (const a of synthAnnotations) {
+      const typeColors: Record<string, string> = { crosslink: "↔", contradiction: "⚡", note: "●", merge_suggestion: "⊕" };
+      const icon = typeColors[a.type] || "•";
+      const sourceTitle = graph?.getNode(a.sourceNodeId)?.title?.slice(0, 18) || a.sourceNodeId || "";
+      const targetTitle = a.targetNodeId ? (graph?.getNode(a.targetNodeId)?.title?.slice(0, 18) || a.targetNodeId) : "";
+      const nodeStr = targetTitle ? `${sourceTitle} → ${targetTitle}` : sourceTitle;
+      const status = a.merged ? (dismissedIds.has(a.id) ? " ✕" : " ✓") : "";
+      options.push({
+        name: `${icon} ${a.type}${status}`,
+        description: nodeStr,
+        value: a.id,
+      });
+    }
+    synthSelect.options = options;
+    synthSelect.setSelectedIndex(0);
+    updateSynthDetail();
+
+    previousMode = mode;
+    mode = "synthesis";
+    showScreen("synthesis");
+  }
+
+  function updateSynthDetail() {
+    const idx = synthSelect.getSelectedIndex();
+    if (idx === 0) {
+      // Show summary
+      const annotCounts: Record<string, number> = {};
+      for (const a of synthAnnotations) annotCounts[a.type] = (annotCounts[a.type] || 0) + 1;
+      const countStr = Object.entries(annotCounts).map(([t, c]) => `${c} ${t}`).join("  ·  ");
+      const unmerged = synthAnnotations.filter((a: any) => !a.merged).length;
+
+      synthDetailText.content = t`${bold(fg(c.bright)("Synthesis Summary"))}
+${fg(c.muted)("─".repeat(40))}
+
+${synthSummary}
+
+${fg(c.muted)("─".repeat(40))}
+${fg(c.blue)("annotations")}  ${countStr}
+${fg(c.blue)("unmerged")}  ${String(unmerged)} of ${String(synthAnnotations.length)}
+
+${dim("Use j/k to browse annotations, m to merge, d to dismiss, M to merge all.")}`;
+    } else {
+      // Show annotation detail
+      const annotation = synthAnnotations[idx - 1];
+      if (!annotation) return;
+
+      const sourceNode = graph?.getNode(annotation.sourceNodeId);
+      const targetNode = annotation.targetNodeId ? graph?.getNode(annotation.targetNodeId) : null;
+
+      const typeLabel = annotation.type.replace("_", " ");
+      const typeColor = annotation.type === "crosslink" ? c.cyan : annotation.type === "contradiction" ? c.red : annotation.type === "note" ? c.yellow : c.accent;
+
+      const sourceName = sourceNode ? (sourceNode.title || sourceNode.id) : "";
+      const targetName = targetNode ? (targetNode.title || targetNode.id) : "";
+      const statusLabel = annotation.merged ? "merged ✓" : "pending";
+      const statusColor = annotation.merged ? c.green : c.yellow;
+
+      synthDetailText.content = t`${bold(fg(typeColor)(typeLabel))}  ${fg(statusColor)(statusLabel)}
+${fg(c.muted)("─".repeat(40))}
+${sourceName ? "\nsource" : ""}${sourceName ? "  " + sourceName : ""}${targetName ? "\ntarget" : ""}${targetName ? "  " + targetName : ""}
+
+${annotation.content || "(no content)"}
+
+${fg(c.muted)("─".repeat(40))}
+${annotation.merged ? dim("Already merged.") : dim("m — merge  ·  d — dismiss  ·  enter — jump to source node")}`;
+    }
+    synthDetailScroll.scrollTop = 0;
+    // Update footer based on context
+    if (idx === 0) {
+      const unmerged = synthAnnotations.filter((a: any) => !a.merged).length;
+      synthFooterText.content = unmerged > 0
+        ? t`  ${dim("j/k")} browse annotations  ${fg(c.muted)("·")}  ${dim("M")} merge all (${String(unmerged)})  ${fg(c.muted)("·")}  ${dim("esc")} back  ${fg(c.muted)("·")}  ${dim("ctrl+d/u")} scroll`
+        : t`  ${dim("j/k")} browse annotations  ${fg(c.muted)("·")}  ${fg(c.green)("all merged")}  ${fg(c.muted)("·")}  ${dim("esc")} back`;
+    } else {
+      const annotation = synthAnnotations[idx - 1];
+      if (annotation?.merged) {
+        synthFooterText.content = t`  ${dim("j/k")} navigate  ${fg(c.muted)("·")}  ${dim("enter")} jump to node  ${fg(c.muted)("·")}  ${dim("esc")} back  ${fg(c.muted)("·")}  ${dim("ctrl+d/u")} scroll`;
+      } else {
+        synthFooterText.content = t`  ${dim("j/k")} navigate  ${fg(c.muted)("·")}  ${dim("m")} merge  ${fg(c.muted)("·")}  ${dim("d")} dismiss  ${fg(c.muted)("·")}  ${dim("enter")} jump to node  ${fg(c.muted)("·")}  ${dim("esc")} back`;
+      }
+    }
+  }
+
+  synthSelect.on(SelectRenderableEvents.SELECTION_CHANGED, () => {
+    if (mode === "synthesis") updateSynthDetail();
+  });
+
+  // ===========================================================================
   // Screen management
   // ===========================================================================
 
-  function showScreen(screen: "home" | "exploration" | "palette" | "create" | "graph") {
+  function showScreen(screen: "home" | "exploration" | "palette" | "create" | "graph" | "synthesis") {
     try { rootBox.remove("home-container"); } catch {}
     try { rootBox.remove("exp-container"); } catch {}
     try { rootBox.remove("graph-container"); } catch {}
     try { rootBox.remove("palette-overlay"); } catch {}
     try { rootBox.remove("create-box"); } catch {}
+    try { rootBox.remove("synth-container"); } catch {}
 
     if (screen === "home") {
       rootBox.add(homeContainer);
@@ -555,6 +897,7 @@ export async function createApp(dbPathArg?: string): Promise<void> {
     } else if (screen === "palette") {
       if (previousMode === "home") rootBox.add(homeContainer);
       else if (previousMode === "graph") rootBox.add(graphContainer);
+      else if (previousMode === "synthesis") rootBox.add(synthContainer);
       else rootBox.add(explorationContainer);
       rootBox.add(paletteOverlay);
       paletteInput.value = "";
@@ -567,6 +910,14 @@ export async function createApp(dbPathArg?: string): Promise<void> {
       rootBox.add(createBox);
       createSeedInput.value = "";
       createSeedInput.focus();
+    } else if (screen === "synthesis") {
+      rootBox.add(synthContainer);
+      homeSelect.focusable = false;
+      homeSelect.blur();
+      treeSelect.focusable = false;
+      treeSelect.blur();
+      synthSelect.focusable = true;
+      synthSelect.focus();
     }
   }
 
@@ -596,7 +947,7 @@ export async function createApp(dbPathArg?: string): Promise<void> {
     });
     treeSelect.setSelectedIndex(0);
 
-    nodeText.content = buildNodeContent(root, graph, allNodes);
+    nodeText.content = buildNodeContent(root, graph, allNodes, storage ?? undefined);
     expFooterText.content = exploringFooter();
 
     mode = "exploring";
@@ -651,13 +1002,13 @@ export async function createApp(dbPathArg?: string): Promise<void> {
 
   function showNode(node: LainNode) {
     if (!graph) return;
-    nodeText.content = buildNodeContent(node, graph, allNodes);
+    nodeText.content = buildNodeContent(node, graph, allNodes, storage ?? undefined);
     nodeScroll.scrollTop = 0;
   }
 
   // ---- Footers ----
   function exploringFooter(): StyledText {
-    return t`  ${dim("j/k")} navigate  ${fg(c.muted)("·")}  ${dim("enter/→")} open  ${fg(c.muted)("·")}  ${dim("g")}raph  ${fg(c.muted)("·")}  ${dim("p")}rune ${dim("e")}xtend ${dim("r")}edirect  ${fg(c.muted)("·")}  ${dim("ctrl+p")} palette`;
+    return t`  ${dim("j/k")} navigate  ${fg(c.muted)("·")}  ${dim("enter/→")} open  ${fg(c.muted)("·")}  ${dim("g")}raph  ${fg(c.muted)("·")}  ${dim("p")}rune ${dim("e")}xtend ${dim("r")}edirect  ${fg(c.muted)("·")}  ${dim("y")} synthesize  ${fg(c.muted)("·")}  ${dim("ctrl+p")} palette`;
   }
   function readingFooter(): StyledText {
     return t`  ${dim("j/k")} scroll  ${fg(c.muted)("·")}  ${dim("d/u")} page  ${fg(c.muted)("·")}  ${dim("i")} edit  ${fg(c.muted)("·")}  ${dim("esc/←")} back  ${fg(c.muted)("·")}  ${dim("ctrl+p")} palette`;
@@ -672,23 +1023,28 @@ export async function createApp(dbPathArg?: string): Promise<void> {
   // ---- Palette ----
   function buildPaletteActions(): PaletteAction[] {
     const actions: PaletteAction[] = [];
+    // When palette is open, check what mode we came from
+    const contextMode = mode === "palette" ? previousMode : mode;
 
-    if (mode === "exploring" || mode === "reading") {
+    if (contextMode === "exploring" || contextMode === "reading" || contextMode === "synthesis") {
       const node = selectedNode();
-      actions.push({ name: "Graph view", description: "Visualize exploration as a force-directed graph", key: "g", action: enterGraphMode });
-      if (mode === "reading") {
+      actions.push({ name: "Graph view", description: "Visualize exploration as a radial graph", key: "g", action: enterGraphMode });
+      if (contextMode === "reading") {
         actions.push({ name: "Edit node", description: `Edit content of ${node?.title || "selected"}`, key: "i", action: enterEditMode });
       }
       actions.push({ name: "Prune node", description: `Prune ${node?.title || "selected"} and descendants`, key: "p", action: doPrune });
       actions.push({ name: "Extend node", description: `Add ${exploration?.n || 3} children to ${node?.title || "selected"}`, key: "e", action: doExtend });
       actions.push({ name: "Redirect node", description: `Regenerate ${node?.title || "selected"} with fresh content`, key: "r", action: doRedirect });
-      actions.push({ name: "Export to Obsidian", description: "Export as markdown files", key: "x", action: doExport });
-      actions.push({ name: "Sync with Obsidian", description: "Bidirectional sync", key: "s", action: doSync });
+      actions.push({ name: "Synthesize", description: "Run synthesis pass — find connections across branches", key: "y", action: doSynthesize });
+      actions.push({ name: "View synthesis", description: "Open synthesis results view", key: "Y", action: doViewSynthesis });
+      actions.push({ name: "Export to markdown", description: "Export as Obsidian-compatible markdown files", key: "x", action: doExport });
+      actions.push({ name: "Export to canvas", description: "Export as Obsidian .canvas file (radial graph)", action: doCanvasExport });
+      actions.push({ name: "Sync with Obsidian", description: "Bidirectional sync with filesystem", key: "s", action: doSync });
       actions.push({ name: "Back to home", description: "Return to exploration list", action: () => { mode = "home"; showScreen("home"); } });
     }
 
-    actions.push({ name: "New exploration", description: "Create a new idea graph", action: () => { previousMode = mode; mode = "creating"; showScreen("create"); } });
-    actions.push({ name: "Help", description: "Show keyboard shortcuts", key: "?", action: () => showHelpMode() });
+    actions.push({ name: "New exploration", description: "Create a new idea graph from scratch", action: () => { previousMode = mode; mode = "creating"; showScreen("create"); } });
+    actions.push({ name: "Help", description: "Show all keyboard shortcuts", key: "?", action: () => showHelpMode() });
     actions.push({ name: "Quit", description: "Exit lain", key: "q", action: cleanup });
 
     return actions;
@@ -745,6 +1101,10 @@ export async function createApp(dbPathArg?: string): Promise<void> {
       treePanel.borderColor = c.muted;
       nodePanel.borderColor = c.accent;
       expFooterText.content = readingFooter();
+    } else if (mode === "synthesis") {
+      showScreen("synthesis");
+    } else if (mode === "graph") {
+      showScreen("graph");
     }
   }
 
@@ -777,6 +1137,22 @@ export async function createApp(dbPathArg?: string): Promise<void> {
     nodeText.content = buildHelpContent();
     nodeScroll.scrollTop = 0;
     expFooterText.content = t`  ${dim("press any key to dismiss")}`;
+  }
+
+  function exitHelpMode() {
+    mode = previousMode;
+    if (mode === "reading") {
+      treePanel.borderColor = c.muted;
+      nodePanel.borderColor = c.accent;
+      treeSelect.focusable = false;
+      expFooterText.content = readingFooter();
+      const node = selectedNode();
+      if (node) showNode(node);
+    } else {
+      enterExploringMode();
+      const node = selectedNode();
+      if (node) showNode(node);
+    }
   }
 
   // ---- Graph mode ----
@@ -880,15 +1256,36 @@ export async function createApp(dbPathArg?: string): Promise<void> {
     expFooterText.content = readingFooter();
   }
 
+  // ---- Confirmation state ----
+  let pendingConfirm: { message: string; action: () => void } | null = null;
+  let generating = false; // blocks explore-mode actions during doCreate
+
+  function showConfirm(message: string, action: () => void) {
+    pendingConfirm = { message, action };
+    expFooterText.content = t`  ${fg(c.yellow)(message)}  ${dim("y")} confirm  ${fg(c.muted)("·")}  ${dim("n/esc")} cancel`;
+  }
+
   // ---- Write operations ----
   async function doPrune() {
     const node = selectedNode();
     if (!node || node.id === "root" || !graph) { toast.warning("Cannot prune root node"); return; }
-    graph.pruneNode(node.id);
-    toast.success(`Pruned ${node.title || node.id}`);
-    refreshTree();
-    const current = selectedNode();
-    if (current) showNode(current);
+    const childCount = allNodes.filter((n) => n.parentId === node.id && n.status !== "pruned").length;
+    const desc = childCount > 0 ? ` and ${childCount} descendant${childCount > 1 ? "s" : ""}` : "";
+    showConfirm(`Prune "${(node.title || node.id).slice(0, 25)}"${desc}?`, () => {
+      graph!.pruneNode(node.id);
+      toast.success(`Pruned ${node.title || node.id}`);
+      // Navigate to sibling or parent
+      const siblings = allNodes.filter((n) => n.parentId === node.parentId && n.status !== "pruned" && n.id !== node.id);
+      const parent = allNodes.find((n) => n.id === node.parentId);
+      const target = siblings[0] || parent;
+      refreshTree();
+      if (target) {
+        const idx = treeItems.findIndex((t) => t.nodeId === target.id);
+        if (idx >= 0) treeSelect.setSelectedIndex(idx);
+      }
+      const current = selectedNode();
+      if (current) showNode(current);
+    });
   }
 
   async function doExtend() {
@@ -916,22 +1313,28 @@ export async function createApp(dbPathArg?: string): Promise<void> {
   async function doRedirect() {
     const node = selectedNode();
     if (!node || node.id === "root" || !exploration) { toast.warning("Cannot redirect root"); return; }
-    toast.loading("Regenerating...");
-    try {
-      const config = loadConfig();
-      const credentials = loadCredentials();
-      const agent = createProviderFromCredentials(config, credentials);
-      const orchestrator = new Orchestrator({ dbPath, agent });
-      await orchestrator.redirectNode(exploration.id, node.id);
-      orchestrator.close();
-      if (storage) storage.close();
-      storage = new Storage(dbPath);
-      graph = new Graph(storage);
-      toast.success("Regenerated");
-      refreshTree();
-      const current = selectedNode();
-      if (current) showNode(current);
-    } catch (err: any) { toast.error(`Redirect failed: ${err.message}`); }
+    showConfirm(`Regenerate "${(node.title || node.id).slice(0, 25)}"? Content will be overwritten.`, async () => {
+      const loadingId = toast.loading("Regenerating...");
+      try {
+        const config = loadConfig();
+        const credentials = loadCredentials();
+        const agent = createProviderFromCredentials(config, credentials);
+        const orchestrator = new Orchestrator({ dbPath, agent });
+        await orchestrator.redirectNode(exploration!.id, node.id);
+        orchestrator.close();
+        if (storage) storage.close();
+        storage = new Storage(dbPath);
+        graph = new Graph(storage);
+        toast.dismiss(loadingId);
+        toast.success("Regenerated");
+        refreshTree();
+        const current = selectedNode();
+        if (current) showNode(current);
+      } catch (err: any) {
+        toast.dismiss(loadingId);
+        toast.error(`Redirect failed: ${err.message}`);
+      }
+    });
   }
 
   function doExport() {
@@ -959,8 +1362,65 @@ export async function createApp(dbPathArg?: string): Promise<void> {
     } catch (err: any) { toast.error(`Sync failed: ${err.message}`); }
   }
 
+  async function doSynthesize() {
+    if (!storage || !exploration) return;
+    const loadingId = toast.loading("Running synthesis...");
+    try {
+      const config = loadConfig();
+      const credentials = loadCredentials();
+      const agent = createProviderFromCredentials(config, credentials);
+      const engine = new SynthesisEngine({ storage, agent });
+      const synthesisId = await engine.synthesize(exploration.id);
+      const result = engine.getSynthesis(synthesisId);
+      toast.dismiss(loadingId);
+      if (result) {
+        const n = result.annotations.length;
+        toast.success(`Synthesis: ${n} annotation${n === 1 ? "" : "s"} found`);
+        refreshTree();
+        // Enter synthesis view
+        enterSynthesisMode(synthesisId);
+      } else {
+        toast.error("Synthesis returned no result");
+      }
+    } catch (err: any) {
+      toast.dismiss(loadingId);
+      toast.error(`Synthesis failed: ${err.message}`);
+    }
+  }
+
+  function doViewSynthesis() {
+    if (!storage || !exploration) return;
+    const engine = new SynthesisEngine({ storage, agent: null });
+    const syntheses = engine.getSyntheses(exploration.id);
+    if (syntheses.length === 0) {
+      toast.warning("No syntheses yet. Press y to run one.");
+      return;
+    }
+    // Open the most recent synthesis
+    enterSynthesisMode(syntheses[0].id);
+  }
+
+  function doCanvasExport() {
+    if (!storage || !exploration) return;
+    try {
+      const baseName = path.basename(dbPath, ".db");
+      const mdDir = path.join(path.dirname(dbPath), baseName);
+      const canvasPath = path.join(path.dirname(dbPath), baseName + ".canvas");
+      // Export markdown files first
+      const exporter = new Exporter(storage);
+      exporter.export(exploration.id, mdDir);
+      // Then canvas
+      const canvasExporter = new CanvasExporter(storage);
+      canvasExporter.export(exploration.id, canvasPath, baseName);
+      toast.success(`Canvas: ${canvasPath}`);
+    } catch (err: any) {
+      toast.error(`Canvas export failed: ${err.message}`);
+    }
+  }
+
   async function doCreate(seed: string, n?: number, m?: number, ext?: string) {
     if (!seed.trim()) { toast.warning("Seed cannot be empty"); return; }
+    generating = true;
     const config = loadConfig();
     const credentials = loadCredentials();
     const agent = createProviderFromCredentials(config, credentials);
@@ -997,7 +1457,8 @@ Using extension: ${bold(useExt)}.
 
     let nodesGenerated = 0;
     let totalExpected = 0;
-    let streamingContent = "";
+    let streamingBuffers = new Map<string, string>(); // per-node buffers
+    let activeStreamNodeId = "";
     let streamingNodeTitle = "";
     for (let d = 1; d <= useM; d++) totalExpected += Math.pow(useN, d);
 
@@ -1006,20 +1467,24 @@ Using extension: ${bold(useExt)}.
         dbPath: newDbPath, agent, concurrency: 5, streaming: true,
         onEvent: (event) => {
           if (event.type === "node:content-chunk") {
-            const chunkData = event.data as { chunk?: string } | undefined;
+            const chunkData = event.data as { chunk?: string; nodeId?: string } | undefined;
+            const nodeId = event.nodeId || "";
             if (chunkData?.chunk) {
-              streamingContent += chunkData.chunk;
-              // Only update display on newlines (line-wise) to avoid frantic scrolling
-              if (chunkData.chunk.includes("\n") || streamingContent.length < 50) {
-                const lines = streamingContent.split("\n");
-                // Show last ~20 lines
-                const visibleLines = lines.slice(-20).join("\n");
-                nodeText.content = t`${bold(fg(c.bright)(seed))}
+              const buf = (streamingBuffers.get(nodeId) || "") + chunkData.chunk;
+              streamingBuffers.set(nodeId, buf);
+              // Only display the first active stream to avoid interleaving
+              if (!activeStreamNodeId || activeStreamNodeId === nodeId) {
+                activeStreamNodeId = nodeId;
+                if (chunkData.chunk.includes("\n") || buf.length < 50) {
+                  const lines = buf.split("\n");
+                  const visibleLines = lines.slice(-20).join("\n");
+                  nodeText.content = t`${bold(fg(c.bright)(seed))}
 
 ${fg(c.yellow)(`Generating... ${nodesGenerated}/${totalExpected} nodes complete`)}
-${dim(`current node: ${streamingNodeTitle || "..."}`)}
+${dim(`current: ${streamingNodeTitle || "..."}`)}
 
 ${visibleLines}`;
+                }
               }
             }
           }
@@ -1028,7 +1493,13 @@ ${visibleLines}`;
           }
           if (event.type === "node:complete") {
             nodesGenerated++;
-            streamingContent = "";
+            const nodeId = event.nodeId || "";
+            streamingBuffers.delete(nodeId);
+            if (activeStreamNodeId === nodeId) {
+              // Switch to next active stream if any
+              const nextActive = streamingBuffers.keys().next().value;
+              activeStreamNodeId = nextActive || "";
+            }
             const data = event.data as { title?: string } | undefined;
             const title = data?.title || "untitled";
             streamingNodeTitle = title;
@@ -1052,10 +1523,12 @@ Latest: ${short}
         extension: useExt,
       });
       orchestrator.close();
+      generating = false;
       toast.success("Exploration complete!");
       refreshHomeScreen();
       openExploration(newDbPath, expId);
     } catch (err: any) {
+      generating = false;
       toast.error(`Create failed: ${err.message}`);
       mode = "home";
       showScreen("home");
@@ -1071,7 +1544,7 @@ Latest: ${short}
     updatePaletteOptions(paletteInput.value);
   });
 
-  renderer.keyInput.on("keypress", (key: KeyEvent) => {
+  renderer.keyInput.on("keypress", async (key: KeyEvent) => {
     // ---- Ctrl+P: command palette from anywhere ----
     if (key.name === "p" && key.ctrl) {
       if (mode === "palette") { closePalette(); return; }
@@ -1101,20 +1574,40 @@ Latest: ${short}
       }
       if (key.name === "tab") {
         key.stopPropagation();
-        // Cycle focus between seed, n, m, ext inputs
-        const createFields = [createSeedInput, createNInput, createMInput, createExtInput];
-        const currentFocus = createFields.findIndex((f) => (f as any)._focused);
-        const next = (currentFocus + 1) % createFields.length;
-        createFields.forEach((f) => f.blur());
-        createFields[next].focus();
+        // Cycle focus between seed, n, m fields (ext uses ←/→ when m is focused → tab goes to ext zone)
+        const createFields: any[] = [createSeedInput, createNInput, createMInput];
+        const currentFocus = createFields.findIndex((f) => f._focused);
+        if (currentFocus === 2) {
+          // From m, tab goes to ext "zone" — blur everything, ext is active
+          createFields.forEach((f: any) => f.blur());
+          updateExtDisplay(true);
+        } else if (currentFocus === -1) {
+          // From ext zone, tab wraps to seed
+          createFields[0].focus();
+          updateExtDisplay(false);
+        } else {
+          const next = (currentFocus + 1) % createFields.length;
+          createFields.forEach((f: any) => f.blur());
+          createFields[next].focus();
+          updateExtDisplay(false);
+        }
+        return;
+      }
+      // When no input is focused (ext zone active), left/right cycles extensions
+      const anyInputFocused = (createSeedInput as any)._focused || (createNInput as any)._focused || (createMInput as any)._focused;
+      if (!anyInputFocused && (key.name === "left" || key.name === "right")) {
+        key.stopPropagation();
+        if (key.name === "right") createExtIdx = (createExtIdx + 1) % availableExtensions.length;
+        else createExtIdx = (createExtIdx - 1 + availableExtensions.length) % availableExtensions.length;
+        updateExtDisplay(true);
         return;
       }
       if (key.name === "return") {
         key.stopPropagation();
         const seed = createSeedInput.value;
-        const n = parseInt(createNInput.value) || 3;
-        const m = parseInt(createMInput.value) || 2;
-        const ext = createExtInput.value || "freeform";
+        const n = Math.max(1, Math.min(10, parseInt(createNInput.value) || 3));
+        const m = Math.max(1, Math.min(10, parseInt(createMInput.value) || 2));
+        const ext = availableExtensions[createExtIdx];
         mode = previousMode;
         try { rootBox.remove("create-box"); } catch {}
         doCreate(seed, n, m, ext);
@@ -1144,14 +1637,37 @@ Latest: ${short}
 
     // ---- Help mode ----
     if (mode === "help") {
-      const node = selectedNode();
-      if (node) showNode(node);
-      enterExploringMode();
+      exitHelpMode();
+      return;
+    }
+
+    // ---- Generation in progress: esc returns to home ----
+    if (generating && mode === "exploring" && key.name === "escape") {
+      generating = false;
+      mode = "home";
+      showScreen("home");
+      toast.warning("Generation continues in background");
+      return;
+    }
+
+    // ---- Confirmation prompt intercept ----
+    if (pendingConfirm && (mode === "exploring" || mode === "reading")) {
+      key.stopPropagation();
+      if (key.name === "y") {
+        const action = pendingConfirm.action;
+        pendingConfirm = null;
+        expFooterText.content = exploringFooter();
+        action();
+      } else {
+        pendingConfirm = null;
+        expFooterText.content = mode === "reading" ? readingFooter() : exploringFooter();
+      }
       return;
     }
 
     // ---- Exploring mode ----
     if (mode === "exploring") {
+      if (generating) return; // block all actions during generation
       switch (key.name) {
         case "return": case "right": enterReadingMode(); return;
         case "tab": enterReadingMode(); return;
@@ -1162,6 +1678,7 @@ Latest: ${short}
         case "r": doRedirect(); return;
         case "x": doExport(); return;
         case "s": doSync(); return;
+        case "y": if (key.shift) { doViewSynthesis(); } else { doSynthesize(); } return;
         case "g": enterGraphMode(); return;
       }
       return;
@@ -1175,7 +1692,7 @@ Latest: ${short}
         case "k": case "up": nodeScroll.scrollBy({ x: 0, y: -2 }); return;
         case "d": nodeScroll.scrollBy({ x: 0, y: 10 }); return;
         case "u": nodeScroll.scrollBy({ x: 0, y: -10 }); return;
-        case "g": nodeScroll.scrollTop = 0; return;
+        case "g": if (key.shift) { nodeScroll.scrollTop = 99999; } else { nodeScroll.scrollTop = 0; } return;
         case "escape": case "left": case "h": enterExploringMode(); return;
         case "tab": enterExploringMode(); return;
         case "?": showHelpMode(); return;
@@ -1198,6 +1715,201 @@ Latest: ${short}
         return;
       }
       // Let textarea handle all other keys (typing, cursor movement, etc.)
+      return;
+    }
+
+    // ---- Synthesis mode ----
+    if (mode === "synthesis") {
+      // Handle merge preview confirmation
+      if (pendingMergePreview) {
+        key.stopPropagation();
+        if (key.name === "y") {
+          const { annotationId, explorationId, preview } = pendingMergePreview;
+          pendingMergePreview = null;
+          const engine = new SynthesisEngine({ storage: storage!, agent: null });
+
+          if (preview) {
+            // Generated content (contradiction/merge_suggestion)
+            const nodeId = engine.applyMergePreview(annotationId, explorationId, preview);
+            toast.success(`Created node: ${preview.title}`);
+          } else {
+            // Simple merge (crosslink/note)
+            engine.mergeSingle(annotationId);
+            toast.success("Merged");
+          }
+
+          const annIdx = synthAnnotations.findIndex((a: any) => a.id === annotationId);
+          if (annIdx >= 0) synthAnnotations[annIdx].merged = true;
+          refreshTree();
+          updateSynthDetail();
+          if (currentSynthesisId) enterSynthesisMode(currentSynthesisId);
+        } else {
+          // n or any other key cancels
+          pendingMergePreview = null;
+          toast.warning("Cancelled");
+          updateSynthDetail();
+        }
+        return;
+      }
+
+      if (key.name === "escape" || key.name === "q") {
+        key.stopPropagation();
+        mode = "exploring";
+        showScreen("exploration");
+        refreshTree();
+        const current = selectedNode();
+        if (current) showNode(current);
+        return;
+      }
+      if (key.name === "m" && !key.shift) {
+        key.stopPropagation();
+        // Merge current annotation
+        const idx = synthSelect.getSelectedIndex();
+        if (idx > 0 && currentSynthesisId && storage && exploration) {
+          const annotation = synthAnnotations[idx - 1];
+          if (annotation && !annotation.merged) {
+            if (annotation.type === "contradiction" || annotation.type === "merge_suggestion") {
+              // These need agent generation — show preview first
+              const loadingId = toast.loading(`Generating ${annotation.type === "contradiction" ? "resolution" : "synthesis"}...`);
+              try {
+                const config = loadConfig();
+                const credentials = loadCredentials();
+                const agent = createProviderFromCredentials(config, credentials);
+                const engine = new SynthesisEngine({ storage, agent });
+                const preview = await engine.generateMergePreview(annotation.id, exploration.id);
+                toast.dismiss(loadingId);
+
+                const sourceTitle = graph?.getNode(annotation.sourceNodeId)?.title || annotation.sourceNodeId || "?";
+                const targetTitle = graph?.getNode(annotation.targetNodeId)?.title || annotation.targetNodeId || "?";
+                const parentTitle = graph?.getNode(preview.parentId)?.title || preview.parentId;
+                const typeLabel = annotation.type === "contradiction" ? "Resolution" : "Synthesis";
+
+                synthDetailText.content = t`${bold(fg(c.accent)(typeLabel))}
+
+${dim("involved nodes")}
+  ${dim("from")}  ${sourceTitle}
+  ${dim("from")}  ${targetTitle}
+
+${dim("will create")}
+  ${fg(c.green)("+ new node")}  ${bold(preview.title)}
+  ${dim("under")}  ${parentTitle}
+  ${fg(c.green)("+ crosslink")}  → ${sourceTitle}
+  ${fg(c.green)("+ crosslink")}  → ${targetTitle}
+
+${fg(c.muted)("─".repeat(40))}
+
+${renderMarkdown(preview.content)}
+
+${fg(c.muted)("─".repeat(40))}
+  ${fg(c.yellow)("y")} accept  ${fg(c.muted)("·")}  ${fg(c.yellow)("n")} reject`;
+                synthFooterText.content = t`  ${dim("y")} accept  ${fg(c.muted)("·")}  ${dim("n")} reject`;
+                pendingMergePreview = { annotationId: annotation.id, explorationId: exploration.id, preview };
+              } catch (err: any) {
+                toast.dismiss(loadingId);
+                toast.error(`Generation failed: ${err.message}`);
+              }
+            } else {
+              // crosslink and note: show diff then merge on confirmation
+              const engine = new SynthesisEngine({ storage, agent: null });
+              const diff = engine.computeDiff(annotation.id);
+              const change = diff.changes[0];
+
+              if (change?.type === "add_crosslink") {
+                synthDetailText.content = t`${bold(fg(c.accent)("Add Crosslink"))}
+
+${dim("between")}
+  ${change.sourceTitle}
+  ${change.targetTitle}
+${change.label ? `\n${dim("reason")}\n  ${change.label}\n` : ""}
+${dim("will create")}
+  ${fg(c.green)("+ edge")}  ${change.sourceTitle} ↔ ${change.targetTitle}
+
+  ${fg(c.yellow)("y")} apply  ${fg(c.muted)("·")}  ${fg(c.yellow)("n")} cancel`;
+              } else if (change?.type === "add_note") {
+                synthDetailText.content = t`${bold(fg(c.accent)("Attach Note"))}
+
+${dim("to node")}
+  ${change.nodeTitle}
+
+${dim("will add")}
+  ${fg(c.green)("+ note")}  ${change.content}
+
+  ${fg(c.yellow)("y")} apply  ${fg(c.muted)("·")}  ${fg(c.yellow)("n")} cancel`;
+              }
+
+              synthFooterText.content = t`  ${dim("y")} apply  ${fg(c.muted)("·")}  ${dim("n")} cancel`;
+              pendingMergePreview = { annotationId: annotation.id, explorationId: exploration!.id, preview: null };
+            }
+          }
+        }
+        return;
+      }
+      if (key.name === "M" || (key.name === "m" && key.shift)) {
+        key.stopPropagation();
+        // Merge all
+        if (currentSynthesisId && storage) {
+          const engine = new SynthesisEngine({ storage, agent: null });
+          const { merged, skipped } = engine.mergeAll(currentSynthesisId);
+          for (const a of synthAnnotations) {
+            if (a.type !== "contradiction" && a.type !== "merge_suggestion") a.merged = true;
+          }
+          const msg = skipped > 0 ? `Merged ${merged}, ${skipped} need individual review` : `Merged all ${merged}`;
+          toast.success(msg);
+          updateSynthDetail();
+          // Refresh list display
+          enterSynthesisMode(currentSynthesisId);
+        }
+        return;
+      }
+      if (key.name === "d") {
+        key.stopPropagation();
+        // Dismiss current annotation
+        const idx = synthSelect.getSelectedIndex();
+        if (idx > 0 && currentSynthesisId && storage) {
+          const annotation = synthAnnotations[idx - 1];
+          if (annotation && !annotation.merged) {
+            const engine = new SynthesisEngine({ storage, agent: null });
+            engine.dismissAnnotation(annotation.id);
+            annotation.merged = true;
+            dismissedIds.add(annotation.id);
+            toast.success(`Dismissed: ${annotation.type}`);
+            updateSynthDetail();
+            const opts = synthSelect.options;
+            if (opts[idx]) opts[idx].name = opts[idx].name.replace(/^([^ ]+)/, "$1 ✕");
+            synthSelect.options = opts;
+          }
+        }
+        return;
+      }
+      if (key.name === "return") {
+        key.stopPropagation();
+        // Jump to the source node of the selected annotation
+        const idx = synthSelect.getSelectedIndex();
+        if (idx > 0) {
+          const annotation = synthAnnotations[idx - 1];
+          if (annotation?.sourceNodeId) {
+            mode = "exploring";
+            showScreen("exploration");
+            refreshTree();
+            const treeIdx = treeItems.findIndex((t) => t.nodeId === annotation.sourceNodeId);
+            if (treeIdx >= 0) treeSelect.setSelectedIndex(treeIdx);
+            enterReadingMode();
+          }
+        }
+        return;
+      }
+      // Let the select handle j/k/up/down for navigation (don't stopPropagation)
+      // But handle scrolling the detail panel with ctrl+d/u
+      if (key.ctrl && key.name === "d") {
+        key.stopPropagation();
+        synthDetailScroll.scrollBy({ x: 0, y: 10 });
+        return;
+      }
+      if (key.ctrl && key.name === "u") {
+        key.stopPropagation();
+        synthDetailScroll.scrollBy({ x: 0, y: -10 });
+        return;
+      }
       return;
     }
 

@@ -11,8 +11,8 @@ import * as path from "path";
 export class Exporter {
   private graph: Graph;
 
-  constructor(private storage: Storage) {
-    this.graph = new Graph(storage);
+  constructor(private storage: Storage, graph?: Graph) {
+    this.graph = graph ?? new Graph(storage);
   }
 
   /**

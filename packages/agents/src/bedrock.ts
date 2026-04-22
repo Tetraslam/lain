@@ -4,8 +4,10 @@ import type {
   GenerateResponse,
   PlanRequest,
   PlanResponse,
+  SynthesizeRequest,
+  SynthesizeResponse,
 } from "@lain/shared";
-import { buildGeneratePrompt, buildPlanPrompt } from "./prompts.js";
+import { buildGeneratePrompt, buildPlanPrompt, buildSynthesizePrompt, parseSynthesizeResponse } from "./prompts.js";
 
 export interface BedrockProviderOptions {
   apiKey: string;            // Bedrock API key (ABSK...)
@@ -254,5 +256,15 @@ export class BedrockProvider implements AgentProvider {
     const title = titleLine.replace(/^#+\s*/, "");
     const content = lines.slice(1).join("\n").trim();
     return { title, content, model: this.model, provider: "bedrock" };
+  }
+
+  async synthesize(request: SynthesizeRequest): Promise<SynthesizeResponse> {
+    const { system, user } = buildSynthesizePrompt(request);
+    const text = await this.converse(system, user, 4096);
+    return parseSynthesizeResponse(text, this.model, "bedrock");
+  }
+
+  async generateRaw(system: string, user: string, maxTokens = 4096): Promise<string> {
+    return this.converse(system, user, maxTokens);
   }
 }

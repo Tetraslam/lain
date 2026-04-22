@@ -45,9 +45,11 @@ export class Orchestrator {
   private streaming: boolean;
   private extensions: ExtensionRegistryLike | null;
   private onEvent: LainEventHandler;
+  private ownsStorage: boolean;
 
   constructor(options: OrchestratorOptions) {
     this.storage = new Storage(options.dbPath);
+    this.ownsStorage = true;
     this.graph = new Graph(this.storage);
     this.agent = options.agent;
     this.concurrency = options.concurrency ?? 5;
@@ -57,7 +59,9 @@ export class Orchestrator {
   }
 
   close(): void {
-    this.storage.close();
+    if (this.ownsStorage) {
+      this.storage.close();
+    }
   }
 
   getGraph(): Graph {

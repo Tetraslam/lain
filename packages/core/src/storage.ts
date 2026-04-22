@@ -5,6 +5,7 @@ import type {
   Crosslink,
   Synthesis,
   SynthesisAnnotation,
+  NodeAnnotation,
   SyncState,
   NodeStatus,
 } from "@lain/shared";
@@ -87,10 +88,21 @@ CREATE INDEX IF NOT EXISTS idx_node_depth ON node(depth);
 CREATE INDEX IF NOT EXISTS idx_node_status ON node(status);
 CREATE INDEX IF NOT EXISTS idx_crosslink_source ON crosslink(source_id);
 CREATE INDEX IF NOT EXISTS idx_crosslink_target ON crosslink(target_id);
+
+CREATE TABLE IF NOT EXISTS node_annotation (
+  id TEXT PRIMARY KEY,
+  node_id TEXT NOT NULL REFERENCES node(id),
+  content TEXT NOT NULL,
+  source TEXT NOT NULL DEFAULT 'synthesis',
+  synthesis_annotation_id TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_node_annotation_node ON node_annotation(node_id);
 `;
 
 export class Storage {
   private db: Database;
+  private closed = false;
 
   constructor(dbPath: string) {
     this.db = new Database(dbPath, { create: true });
@@ -100,6 +112,8 @@ export class Storage {
   }
 
   close(): void {
+    if (this.closed) return;
+    this.closed = true;
     this.db.close();
   }
 
@@ -216,24 +230,35 @@ export class Storage {
     return rows.map((r) => this.rowToNode(r));
   }
 
+  getNodesByDepth(explorationId: string, depth: number): LainNode[] {
+    const rows = this.db
+      .prepare(
+        "SELECT * FROM node WHERE exploration_id = ? AND depth = ? ORDER BY branch_index"
+      )
+      .all(explorationId, depth) as Record<string, unknown>[];
+    return rows.map((r) => this.rowToNode(r));
+  }
+
   updateNodeContent(
     id: string,
     title: string,
     content: string,
     model: string,
     provider: string
-  ): void {
+  ): LainNode {
     this.db
       .prepare(
         `UPDATE node SET title = ?, content = ?, model = ?, provider = ?, status = 'complete', updated_at = ? WHERE id = ?`
       )
       .run(title, content, model, provider, new Date().toISOString(), id);
+    return this.getNode(id)!;
   }
 
-  updateNodeStatus(id: string, status: NodeStatus): void {
+  updateNodeStatus(id: string, status: NodeStatus): LainNode {
     this.db
       .prepare("UPDATE node SET status = ?, updated_at = ? WHERE id = ?")
       .run(status, new Date().toISOString(), id);
+    return this.getNode(id)!;
   }
 
   updateNodeFromSync(
@@ -304,18 +329,19 @@ export class Storage {
   }
 
   getDescendants(nodeId: string): LainNode[] {
-    // BFS to find all descendants
-    const result: LainNode[] = [];
-    const queue = [nodeId];
-    while (queue.length > 0) {
-      const current = queue.shift()!;
-      const children = this.getChildren(current);
-      for (const child of children) {
-        result.push(child);
-        queue.push(child.id);
-      }
-    }
-    return result;
+    // Use recursive CTE for efficient single-query traversal
+    const rows = this.db
+      .prepare(
+        `WITH RECURSIVE descendants(id) AS (
+           SELECT id FROM node WHERE parent_id = ?
+           UNION ALL
+           SELECT n.id FROM node n JOIN descendants d ON n.parent_id = d.id
+         )
+         SELECT node.* FROM node JOIN descendants ON node.id = descendants.id
+         ORDER BY node.depth, node.branch_index`
+      )
+      .all(nodeId) as Record<string, unknown>[];
+    return rows.map((r) => this.rowToNode(r));
   }
 
   getAncestors(nodeId: string): LainNode[] {
@@ -387,11 +413,12 @@ export class Storage {
   getCrosslinksForExploration(explorationId: string): Crosslink[] {
     const rows = this.db
       .prepare(
-        `SELECT c.* FROM crosslink c
-         JOIN node n ON c.source_id = n.id
-         WHERE n.exploration_id = ?`
+        `SELECT DISTINCT c.* FROM crosslink c
+         JOIN node n1 ON c.source_id = n1.id
+         JOIN node n2 ON c.target_id = n2.id
+         WHERE n1.exploration_id = ? OR n2.exploration_id = ?`
       )
-      .all(explorationId) as Record<string, unknown>[];
+      .all(explorationId, explorationId) as Record<string, unknown>[];
     return rows.map((r) => ({
       sourceId: r.source_id as string,
       targetId: r.target_id as string,
@@ -457,6 +484,179 @@ export class Storage {
 
   deleteSyncState(nodeId: string): void {
     this.db.prepare("DELETE FROM sync_state WHERE node_id = ?").run(nodeId);
+  }
+
+  // ---- Synthesis ----
+
+  createSynthesis(synth: Synthesis): void {
+    this.db
+      .prepare(
+        `INSERT INTO synthesis (id, exploration_id, content, model, status, merged, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        synth.id,
+        synth.explorationId,
+        synth.content,
+        synth.model,
+        synth.status,
+        synth.merged ? 1 : 0,
+        synth.createdAt
+      );
+  }
+
+  getSynthesis(id: string): Synthesis | null {
+    const row = this.db
+      .prepare("SELECT * FROM synthesis WHERE id = ?")
+      .get(id) as Record<string, unknown> | undefined;
+    return row ? this.rowToSynthesis(row) : null;
+  }
+
+  getSynthesesForExploration(explorationId: string): Synthesis[] {
+    const rows = this.db
+      .prepare(
+        "SELECT * FROM synthesis WHERE exploration_id = ? ORDER BY created_at DESC"
+      )
+      .all(explorationId) as Record<string, unknown>[];
+    return rows.map((r) => this.rowToSynthesis(r));
+  }
+
+  updateSynthesisStatus(id: string, status: Synthesis["status"]): void {
+    this.db
+      .prepare("UPDATE synthesis SET status = ? WHERE id = ?")
+      .run(status, id);
+  }
+
+  updateSynthesisContent(id: string, content: string, model: string): void {
+    this.db
+      .prepare(
+        "UPDATE synthesis SET content = ?, model = ?, status = 'complete' WHERE id = ?"
+      )
+      .run(content, model, id);
+  }
+
+  markSynthesisMerged(id: string): void {
+    this.db
+      .prepare("UPDATE synthesis SET merged = 1 WHERE id = ?")
+      .run(id);
+  }
+
+  private rowToSynthesis(row: Record<string, unknown>): Synthesis {
+    return {
+      id: row.id as string,
+      explorationId: row.exploration_id as string,
+      content: row.content as string,
+      model: (row.model as string) || null,
+      status: row.status as Synthesis["status"],
+      merged: row.merged === 1,
+      createdAt: row.created_at as string,
+    };
+  }
+
+  // ---- Synthesis Annotations ----
+
+  createAnnotation(annotation: SynthesisAnnotation): void {
+    this.db
+      .prepare(
+        `INSERT INTO synthesis_annotation (id, synthesis_id, type, source_node_id, target_node_id, content, merged, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        annotation.id,
+        annotation.synthesisId,
+        annotation.type,
+        annotation.sourceNodeId,
+        annotation.targetNodeId,
+        annotation.content,
+        annotation.merged ? 1 : 0,
+        annotation.createdAt
+      );
+  }
+
+  getAnnotation(id: string): SynthesisAnnotation | null {
+    const row = this.db
+      .prepare("SELECT * FROM synthesis_annotation WHERE id = ?")
+      .get(id) as Record<string, unknown> | undefined;
+    return row ? this.rowToAnnotation(row) : null;
+  }
+
+  getAnnotationsForSynthesis(synthesisId: string): SynthesisAnnotation[] {
+    const rows = this.db
+      .prepare(
+        "SELECT * FROM synthesis_annotation WHERE synthesis_id = ? ORDER BY type, created_at"
+      )
+      .all(synthesisId) as Record<string, unknown>[];
+    return rows.map((r) => this.rowToAnnotation(r));
+  }
+
+  getUnmergedAnnotations(synthesisId: string): SynthesisAnnotation[] {
+    const rows = this.db
+      .prepare(
+        "SELECT * FROM synthesis_annotation WHERE synthesis_id = ? AND merged = 0 ORDER BY type, created_at"
+      )
+      .all(synthesisId) as Record<string, unknown>[];
+    return rows.map((r) => this.rowToAnnotation(r));
+  }
+
+  markAnnotationMerged(id: string): void {
+    this.db
+      .prepare("UPDATE synthesis_annotation SET merged = 1 WHERE id = ?")
+      .run(id);
+  }
+
+  markAllAnnotationsMerged(synthesisId: string): void {
+    this.db
+      .prepare("UPDATE synthesis_annotation SET merged = 1 WHERE synthesis_id = ?")
+      .run(synthesisId);
+  }
+
+  private rowToAnnotation(row: Record<string, unknown>): SynthesisAnnotation {
+    return {
+      id: row.id as string,
+      synthesisId: row.synthesis_id as string,
+      type: row.type as SynthesisAnnotation["type"],
+      sourceNodeId: (row.source_node_id as string) || null,
+      targetNodeId: (row.target_node_id as string) || null,
+      content: (row.content as string) || null,
+      merged: row.merged === 1,
+      createdAt: row.created_at as string,
+    };
+  }
+
+  // ---- Node Annotations (persistent notes on nodes) ----
+
+  createNodeAnnotation(annotation: NodeAnnotation): void {
+    this.db
+      .prepare(
+        `INSERT INTO node_annotation (id, node_id, content, source, synthesis_annotation_id, created_at)
+         VALUES (?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        annotation.id,
+        annotation.nodeId,
+        annotation.content,
+        annotation.source,
+        annotation.synthesisAnnotationId,
+        annotation.createdAt
+      );
+  }
+
+  getNodeAnnotations(nodeId: string): NodeAnnotation[] {
+    const rows = this.db
+      .prepare("SELECT * FROM node_annotation WHERE node_id = ? ORDER BY created_at")
+      .all(nodeId) as Record<string, unknown>[];
+    return rows.map((r) => ({
+      id: r.id as string,
+      nodeId: r.node_id as string,
+      content: r.content as string,
+      source: r.source as NodeAnnotation["source"],
+      synthesisAnnotationId: (r.synthesis_annotation_id as string) || null,
+      createdAt: r.created_at as string,
+    }));
+  }
+
+  deleteNodeAnnotation(id: string): void {
+    this.db.prepare("DELETE FROM node_annotation WHERE id = ?").run(id);
   }
 
   // ---- Transaction helper ----
