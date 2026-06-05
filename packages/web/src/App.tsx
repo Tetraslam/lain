@@ -12,7 +12,9 @@ interface DbInfo {
 export function App() {
   const [dbs, setDbs] = useState<DbInfo[]>([]);
   const [activeDb, setActiveDb] = useState<string | null>(null);
-  const [showCreate, setShowCreate] = useState(false);
+  const [showCreate, setShowCreate] = useState(() =>
+    typeof window !== "undefined" && window.location.hash === "#new"
+  );
   const [loading, setLoading] = useState(true);
   const [selectedIdx, setSelectedIdx] = useState(0);
 

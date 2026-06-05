@@ -147,11 +147,28 @@ Bun.serve({
 
     // ---- Create exploration (with SSE streaming) ----
     if (p === "/api/create" && req.method === "POST") {
-      const body = await req.json() as {
+      // Accept either JSON (text-only) or multipart/form-data (with file uploads).
+      const contentType = req.headers.get("content-type") || "";
+      let body: {
         seed: string; n?: number; m?: number; extension?: string;
         strategy?: string; planDetail?: string;
         agentic?: boolean; corpusSources?: { name: string; text: string }[];
       };
+      let uploadedFiles: File[] = [];
+
+      if (contentType.includes("multipart/form-data")) {
+        const form = await req.formData();
+        body = {
+          seed: String(form.get("seed") ?? ""),
+          n: Number(form.get("n")) || undefined,
+          m: Number(form.get("m")) || undefined,
+          extension: (form.get("extension") as string) || undefined,
+          agentic: form.get("agentic") === "true",
+        };
+        uploadedFiles = form.getAll("files").filter((v): v is File => typeof v !== "string");
+      } else {
+        body = await req.json();
+      }
 
       const config = loadConfig();
       const credentials = loadCredentials();
@@ -180,7 +197,8 @@ Bun.serve({
             controller.enqueue(new TextEncoder().encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
           };
 
-          const agentic = body.agentic ?? false;
+          // Uploaded files or inline text sources imply agentic (grounded) mode.
+          const agentic = (body.agentic ?? false) || uploadedFiles.length > 0 || (body.corpusSources?.length ?? 0) > 0;
           try {
             const orchestrator = new Orchestrator({
               dbPath, agent, concurrency: 5, streaming: !agentic, extensions, agentic,
@@ -191,14 +209,20 @@ Bun.serve({
 
             await orchestrator.explore({
               id: expId, name: seed, seed, n, m, strategy, planDetail, extension: ext,
-              beforeExpand: () => {
-                const sources = body.corpusSources ?? [];
+              beforeExpand: async () => {
                 const corpus = orchestrator.getCorpus();
-                if (!corpus || sources.length === 0) return;
-                for (const src of sources) {
+                if (!corpus) return;
+                let count = 0;
+                for (const src of body.corpusSources ?? []) {
                   corpus.ingestText(expId, { name: src.name, text: src.text });
+                  count++;
                 }
-                send("corpus:ingested", { count: sources.length });
+                for (const file of uploadedFiles) {
+                  const bytes = new Uint8Array(await file.arrayBuffer());
+                  await corpus.ingestBuffer(expId, file.name, bytes);
+                  count++;
+                }
+                if (count > 0) send("corpus:ingested", { count });
               },
             });
             orchestrator.close();

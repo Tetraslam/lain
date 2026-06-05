@@ -466,6 +466,83 @@ a:hover { color: var(--accent-hover); }
 }
 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.2; } }
 
+/* ---- Create modal: agentic + corpus + thinking ---- */
+.create-modal { width: 560px; }
+.create-seed { resize: none; line-height: 1.5; font-family: var(--font-body); font-size: 15px; }
+.lens-hint { margin-top: -0.8rem; margin-bottom: 1.2rem; color: var(--fg-muted); font-size: 11px; font-style: italic; }
+
+.drop-zone {
+  border: 1px dashed var(--border); border-radius: var(--radius);
+  padding: 14px; min-height: 56px; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  transition: border-color 0.18s, background 0.18s;
+}
+.drop-zone:hover { border-color: var(--accent); }
+.drop-zone.dragging { border-color: var(--accent); background: rgba(180, 160, 224, 0.08); }
+.drop-zone.has-files { cursor: pointer; justify-content: flex-start; }
+.drop-hint { color: var(--fg-muted); font-size: 12px; }
+.file-chips { display: flex; flex-wrap: wrap; gap: 6px; width: 100%; }
+.file-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  background: var(--bg-elevated); border: 1px solid var(--border);
+  border-radius: 4px; padding: 3px 6px 3px 9px; font-size: 11px; color: var(--fg);
+  font-family: var(--font-mono); animation: chipIn 0.18s ease;
+}
+@keyframes chipIn { from { opacity: 0; transform: scale(0.9); } to { opacity: 1; transform: scale(1); } }
+.file-size { color: var(--fg-muted); font-size: 10px; }
+.chip-x { color: var(--fg-muted); font-size: 14px; line-height: 1; padding: 0 2px; }
+.chip-x:hover { color: var(--red); }
+
+.agentic-toggle {
+  display: flex; align-items: center; gap: 12px; cursor: pointer;
+  padding: 12px 14px; border: 1px solid var(--border); border-radius: var(--radius);
+  margin-top: 0.4rem; transition: border-color 0.18s, background 0.18s;
+}
+.agentic-toggle.on { border-color: var(--accent); background: rgba(180, 160, 224, 0.06); }
+.toggle-switch {
+  flex: 0 0 36px; height: 20px; border-radius: 10px; background: var(--bg-hover);
+  border: 1px solid var(--border); position: relative; transition: background 0.18s;
+}
+.toggle-switch.on { background: var(--accent); border-color: var(--accent); }
+.toggle-knob {
+  position: absolute; top: 1px; left: 1px; width: 16px; height: 16px; border-radius: 50%;
+  background: var(--fg-dim); transition: transform 0.18s, background 0.18s;
+}
+.toggle-switch.on .toggle-knob { transform: translateX(16px); background: var(--bg); }
+.toggle-label { display: flex; flex-direction: column; gap: 2px; flex: 1; }
+.toggle-label strong { font-size: 13px; font-weight: 600; color: var(--fg-bright); }
+.toggle-label em { font-size: 11px; color: var(--fg-dim); font-style: normal; }
+.toggle-forced { font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--accent); }
+
+/* Thinking feed (during generation) */
+.thinking { display: flex; flex-direction: column; min-height: 320px; }
+.thinking-head {
+  display: flex; align-items: center; gap: 10px; padding-bottom: 12px;
+  margin-bottom: 12px; border-bottom: 1px solid var(--border-subtle);
+  font-size: 13px; color: var(--fg-bright); font-weight: 500;
+}
+.thinking-feed {
+  flex: 1; max-height: 50vh; overflow-y: auto; display: flex; flex-direction: column; gap: 2px;
+  font-family: var(--font-mono); font-size: 12px;
+}
+.feed-line {
+  display: flex; align-items: baseline; gap: 8px; padding: 3px 0;
+  animation: feedIn 0.2s ease;
+}
+@keyframes feedIn { from { opacity: 0; transform: translateX(-6px); } to { opacity: 1; transform: translateX(0); } }
+.feed-tag {
+  flex: 0 0 auto; color: var(--fg-muted); font-size: 10px;
+  background: var(--bg-elevated); padding: 1px 5px; border-radius: 3px;
+  font-family: var(--font-mono);
+}
+.feed-text { color: var(--fg-dim); }
+.feed-tool .feed-text { color: var(--cyan); }
+.feed-tool .feed-text::before { content: "↳ "; color: var(--fg-muted); }
+.feed-corpus .feed-text { color: var(--green); }
+.feed-plan .feed-text { color: var(--yellow); }
+.feed-node .feed-text { color: var(--accent); font-family: var(--font-body); font-size: 14px; }
+.feed-info .feed-text { color: var(--fg-muted); font-style: italic; }
+
 /* ---- Scrollbar ---- */
 ::-webkit-scrollbar { width: 4px; }
 ::-webkit-scrollbar-track { background: transparent; }
