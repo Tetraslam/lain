@@ -5,6 +5,7 @@ import type {
   GenerateResponse,
   LifecycleHooks,
   OperationDefinition,
+  ExtensionTool,
 } from "@lain/shared";
 
 /**
@@ -160,6 +161,19 @@ export class ExtensionRegistry {
       }
     }
     return ops;
+  }
+
+  // ========================================================================
+  // Custom tools (for agentic generation)
+  // ========================================================================
+
+  /** Collect custom tools from all active extensions. */
+  getTools(activeExtensions?: string[]): ExtensionTool[] {
+    const tools: ExtensionTool[] = [];
+    for (const ext of this.iterActive(activeExtensions)) {
+      if (ext.tools) tools.push(...ext.tools);
+    }
+    return tools;
   }
 
   // ========================================================================

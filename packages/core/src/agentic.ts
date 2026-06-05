@@ -11,6 +11,8 @@ import type {
   AgentProvider,
   AgentStepHandler,
   Exploration,
+  ExtensionTool,
+  ExtensionToolContext,
   GenerateResponse,
   LainNode,
   ToolResultBlock,
@@ -30,6 +32,8 @@ export interface AgenticGenerateDeps {
   extensionSystemPrompt?: string;
   /** Additional tools contributed by extensions / MCP servers. */
   extraTools?: LainTool[];
+  /** Extension-defined tools (adapted to LainTools with a corpus/graph/agent context). */
+  extensionTools?: ExtensionTool[];
   maxSteps?: number;
   maxTokens?: number;
   onStep?: AgentStepHandler;
@@ -94,7 +98,14 @@ export async function generateNodeAgentic(
   deps: AgenticGenerateDeps
 ): Promise<GenerateResponse> {
   const hasCorpus = deps.corpus ? !deps.corpus.isEmpty(deps.exploration.id) : false;
-  const tools: LainTool[] = [...buildNodeTools({ hasCorpus }), ...(deps.extraTools ?? [])];
+  const adaptedExtensionTools = (deps.extensionTools ?? []).map((et) =>
+    adaptExtensionTool(et, deps.agent)
+  );
+  const tools: LainTool[] = [
+    ...buildNodeTools({ hasCorpus }),
+    ...adaptedExtensionTools,
+    ...(deps.extraTools ?? []),
+  ];
 
   const ctx = buildToolContext({
     graph: deps.graph,
@@ -198,6 +209,36 @@ export async function generateNodeAgentic(
   }
   // Fallback: the agent never called submit_node (e.g. hit the step budget).
   return parseFinalNode(result.text, deps.agent.modelId, deps.agent.providerName);
+}
+
+/**
+ * Adapt an extension-defined tool into a LainTool. Builds the dependency-light
+ * ExtensionToolContext (graph reads, corpus search, sub-agent calls) from the
+ * live LainToolContext the runner provides for the current node.
+ */
+function adaptExtensionTool(et: ExtensionTool, agent: AgentProvider): LainTool {
+  return {
+    spec: et.spec,
+    async handler(input, ctx) {
+      const extCtx: ExtensionToolContext = {
+        exploration: ctx.exploration,
+        currentNodeId: ctx.currentNodeId,
+        readNode: (id) => {
+          const n = ctx.graph.getNode(id);
+          return n ? { id: n.id, title: n.title, content: n.content } : null;
+        },
+        searchCorpus: (query, limit) =>
+          ctx.corpus
+            ? ctx.corpus.search(ctx.exploration.id, query, limit ?? 6).map((h) => ({
+                sourceName: h.sourceName,
+                text: h.chunk.text,
+              }))
+            : [],
+        callAgent: (system, user, maxTokens) => agent.generateRaw(system, user, maxTokens),
+      };
+      return et.handler(input, extCtx);
+    },
+  };
 }
 
 /** Combine an optional external signal with our internal abort signal. */

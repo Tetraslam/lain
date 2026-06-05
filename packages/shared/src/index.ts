@@ -38,7 +38,7 @@ export {
   collectToolUses,
 } from "./agent.js";
 
-import type { ConverseRequest, ConverseResult } from "./agent.js";
+import type { ConverseRequest, ConverseResult, ToolSpec, ToolResultBlock } from "./agent.js";
 
 // ============================================================================
 // Node & Graph Types
@@ -441,6 +441,32 @@ export interface ConfigFieldDefinition {
   options?: { value: string; label: string }[]; // for select type
 }
 
+/**
+ * Context handed to an extension tool's handler. Deliberately dependency-light
+ * (callbacks, not core classes) so extensions only ever depend on @lain/shared.
+ * Gives extensions read access to the graph + corpus and the ability to spawn
+ * their own LLM calls — the basis for genuinely powerful domain tools.
+ */
+export interface ExtensionToolContext {
+  exploration: Exploration;
+  currentNodeId: string;
+  /** Read any node in the exploration. */
+  readNode: (id: string) => { id: string; title: string | null; content: string | null } | null;
+  /** Search the ingested corpus (returns ranked passages). */
+  searchCorpus: (query: string, limit?: number) => { sourceName: string; text: string }[];
+  /** Spawn an independent LLM call (e.g. a focused sub-generation). */
+  callAgent: (system: string, user: string, maxTokens?: number) => Promise<string>;
+}
+
+/** A custom tool an extension exposes to node-agents during generation. */
+export interface ExtensionTool {
+  spec: ToolSpec;
+  handler: (
+    input: Record<string, unknown>,
+    ctx: ExtensionToolContext
+  ) => Promise<{ content: ToolResultBlock[]; isError?: boolean; summary?: string }>;
+}
+
 /** Custom node type with additional required/optional fields. */
 export interface NodeTypeDefinition {
   name: string;
@@ -484,6 +510,13 @@ export interface LainExtension {
 
   /** Custom CLI operations (become subcommands). */
   operations?: OperationDefinition[];
+
+  /**
+   * Custom tools exposed to node-agents during agentic generation. This is how
+   * an extension makes a domain genuinely powerful — e.g. worldbuilding can
+   * coin in-world names, research can fetch citations, etc.
+   */
+  tools?: ExtensionTool[];
 
   /** Custom obsidian renderer for this extension's nodes. */
   renderer?: (node: LainNode) => string | undefined;

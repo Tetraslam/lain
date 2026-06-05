@@ -15,6 +15,7 @@ import type {
   GenerateResponse,
   Strategy,
   AgentStepEvent,
+  ExtensionTool,
 } from "@lain/shared";
 import { nowISO } from "@lain/shared";
 
@@ -26,6 +27,7 @@ export interface ExtensionRegistryLike {
   runAfterPlan(context: PlanContext, directions: string[], activeExtensions?: string[]): Promise<string[]>;
   runAfterGenerate(context: NodeContext, response: GenerateResponse, activeExtensions?: string[]): Promise<GenerateResponse>;
   runValidators(phase: "before:generate" | "after:generate", context: NodeContext, response?: GenerateResponse, activeExtensions?: string[]): { valid: boolean; errors: string[] };
+  getTools?(activeExtensions?: string[]): ExtensionTool[];
 }
 
 export interface OrchestratorOptions {
@@ -445,6 +447,9 @@ export class Orchestrator {
           exploration,
           extensionSystemPrompt: extensionSystemPrompt || undefined,
           extraTools: this.extraTools,
+          extensionTools: this.extensions?.getTools
+            ? this.extensions.getTools([exploration.extension])
+            : [],
           maxSteps: this.agentMaxSteps,
           maxTokens: this.agentMaxTokens,
           onStep: (step: AgentStepEvent) =>

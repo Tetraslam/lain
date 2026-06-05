@@ -231,6 +231,54 @@ describe("generateNodeAgentic", () => {
     expect(events.filter((e) => e.kind === "tool_call").length).toBe(3);
   });
 
+  it("adapts and dispatches extension tools (sub-agent + corpus access)", async () => {
+    corpus.ingestText("exp", { name: "lore.md", text: "Names in the deep end in -uul: Zindabuul, Maruul." });
+
+    let extToolCalled = false;
+    let sawCorpusInPrompt = false;
+    const extensionTools = [
+      {
+        spec: {
+          name: "coin_names",
+          description: "coin names",
+          inputSchema: { type: "object", properties: { concept: { type: "string" } }, required: ["concept"] },
+        },
+        async handler(input: Record<string, unknown>, ctx: import("@lain/shared").ExtensionToolContext) {
+          extToolCalled = true;
+          // exercise corpus access + sub-agent call through the adapter
+          const passages = ctx.searchCorpus(String(input.concept), 3);
+          if (passages.some((p) => /uul/.test(p.text))) sawCorpusInPrompt = true;
+          const out = await ctx.callAgent("coin names", "concept");
+          return { content: [{ type: "text" as const, text: out }] };
+        },
+      },
+    ];
+
+    // Provider: scripts the node-agent turns, AND answers the sub-agent callAgent
+    // (generateRaw) call deterministically.
+    const provider = new ScriptedProvider([
+      { stopReason: "tool_use", content: [{ type: "tool_use", id: "x1", name: "coin_names", input: { concept: "names in the deep" } }] },
+      { stopReason: "tool_use", content: [{ type: "tool_use", id: "x2", name: "submit_node", input: { title: "Rites of the Deep", content: "The Vauluul ceremony." } }] },
+    ]);
+    // generateRaw is used by the adapter's callAgent.
+    (provider as unknown as { generateRaw: () => Promise<string> }).generateRaw = async () => "Vauluul — a sinking rite";
+
+    const target = graph.getNode("root-2")!;
+    const res = await generateNodeAgentic(target, {
+      agent: provider,
+      graph,
+      corpus,
+      exploration: graph.getExploration("exp")!,
+      extensionTools,
+    });
+
+    expect(extToolCalled).toBe(true);
+    expect(sawCorpusInPrompt).toBe(true);
+    expect(res.title).toBe("Rites of the Deep");
+    // coin_names tool must have been advertised to the model.
+    expect(provider.calls[0].tools?.some((t) => t.name === "coin_names")).toBe(true);
+  });
+
   it("omits corpus tools when the corpus is empty", async () => {
     const provider = new ScriptedProvider([
       { stopReason: "end_turn", content: [{ type: "text", text: "# T\n\nbody" }] },

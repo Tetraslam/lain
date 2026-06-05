@@ -1,4 +1,47 @@
-import type { LainExtension, NodeContext, PlanContext } from "@lain/shared";
+import type { LainExtension, NodeContext, PlanContext, ExtensionTool } from "@lain/shared";
+
+/**
+ * coin_names — a domain tool that invents in-world terminology. It spawns a
+ * focused sub-agent call grounded in whatever world material the user ingested,
+ * so coined names match the established phonaesthetics rather than sounding
+ * generic. This is the kind of capability that makes an extension powerful.
+ */
+const coinNames: ExtensionTool = {
+  spec: {
+    name: "coin_names",
+    description:
+      "Invent original in-world names/terms for a concept, matching the naming conventions and phonaesthetics of the established world. Use this instead of inventing generic names yourself.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        concept: { type: "string", description: "What needs naming (e.g. 'a deep-sea burial ritual')." },
+        count: { type: "number", description: "How many candidates (default 5)." },
+        kind: { type: "string", description: "Optional: place | person | faction | term | title." },
+      },
+      required: ["concept"],
+      additionalProperties: false,
+    },
+  },
+  async handler(input, ctx) {
+    const concept = String(input.concept);
+    const count = Math.max(1, Math.min(12, Number(input.count) || 5));
+    const kind = input.kind ? String(input.kind) : "names";
+
+    const passages = ctx.searchCorpus(concept, 4);
+    const canon = passages.length
+      ? `Established world material (match its style):\n${passages.map((p) => `- ${p.text.slice(0, 300)}`).join("\n")}`
+      : "No prior world material; invent a coherent internal style.";
+
+    const system =
+      "You are a linguistic worldbuilder. Coin original, evocative, internally consistent in-world terminology. " +
+      "Match the phonaesthetics, morphology, and cultural logic of any provided material. " +
+      "Output ONLY a plain list, one candidate per line, each with a 3-8 word gloss after an em dash. No preamble.";
+    const user = `${canon}\n\nCoin ${count} ${kind} for: ${concept}`;
+
+    const text = await ctx.callAgent(system, user, 500);
+    return { content: [{ type: "text", text: text.trim() || "(no names generated)" }], summary: `coined ${kind} for ${concept}` };
+  },
+};
 
 /**
  * Worldbuilding extension — shapes generation toward structured worldbuilding.
@@ -93,6 +136,8 @@ export const worldbuildingExtension: LainExtension = {
       "Avoid generic directions like 'the culture' — be specific about WHICH aspect of culture.",
     ].join("\n");
   },
+
+  tools: [coinNames],
 
   nodeTypes: [
     {
