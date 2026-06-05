@@ -13,7 +13,7 @@ import {
 import { t, fg, dim, bold, italic, underline, strikethrough, cyan, green, yellow, magenta } from "@opentui/core";
 import type { KeyEvent, SelectOption } from "@opentui/core";
 import { ToasterRenderable, toast } from "@opentui-ui/toast";
-import { Storage, Graph, Orchestrator, Sync, Exporter, CanvasExporter, SynthesisEngine } from "@lain/core";
+import { Storage, Graph, Orchestrator, Sync, Exporter, CanvasExporter, SynthesisEngine, Corpus } from "@lain/core";
 import type { LainNode, Exploration, Strategy, PlanDetail } from "@lain/shared";
 import { generateId } from "@lain/shared";
 import { loadConfig, loadCredentials, createProviderFromCredentials } from "./config-loader.js";
@@ -1297,7 +1297,9 @@ ${annotation.merged ? dim("Already merged.") : dim("m — merge  ·  d — dismi
       const config = loadConfig();
       const credentials = loadCredentials();
       const agent = createProviderFromCredentials(config, credentials);
-      const orchestrator = new Orchestrator({ dbPath, agent });
+      const hasCorpus = storage ? new Corpus(storage).listSources(exploration.id).length > 0 : false;
+      if (hasCorpus) toast.loading("Extending (agentic — grounding in corpus)...");
+      const orchestrator = new Orchestrator({ dbPath, agent, agentic: hasCorpus });
       await orchestrator.extendNode(exploration.id, node.id, exploration.n);
       orchestrator.close();
       if (storage) storage.close();
@@ -1319,7 +1321,8 @@ ${annotation.merged ? dim("Already merged.") : dim("m — merge  ·  d — dismi
         const config = loadConfig();
         const credentials = loadCredentials();
         const agent = createProviderFromCredentials(config, credentials);
-        const orchestrator = new Orchestrator({ dbPath, agent });
+        const hasCorpus = storage ? new Corpus(storage).listSources(exploration!.id).length > 0 : false;
+        const orchestrator = new Orchestrator({ dbPath, agent, agentic: hasCorpus });
         await orchestrator.redirectNode(exploration!.id, node.id);
         orchestrator.close();
         if (storage) storage.close();
