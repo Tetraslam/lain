@@ -99,6 +99,7 @@ async function runInit(args: ParsedArgs): Promise<void> {
     const model = getFlag(args.flags, "model") || "claude-sonnet-4-6";
     const apiKey = getFlag(args.flags, "api-key");
     const region = getFlag(args.flags, "region") || "us-west-2";
+    const baseUrl = getFlag(args.flags, "base-url");
 
     if (isWorkspace) {
       saveWorkspaceConfig(process.cwd(), {
@@ -113,7 +114,9 @@ async function runInit(args: ParsedArgs): Promise<void> {
       } else if (provider === "bedrock" && apiKey) {
         saveCredentials({ bedrock: { apiKey, region } });
       } else if (provider === "openai" && apiKey) {
-        saveCredentials({ openai: { apiKey } });
+        saveCredentials({ openai: { apiKey, ...(baseUrl ? { baseUrl } : {}) } });
+      } else if (provider === "openrouter" && apiKey) {
+        saveCredentials({ openrouter: { apiKey, ...(baseUrl ? { baseUrl } : {}) } });
       }
       console.log(`Global config saved to ~/.config/lain/`);
     }
@@ -165,7 +168,8 @@ async function runInit(args: ParsedArgs): Promise<void> {
         options: [
           { value: "anthropic", label: "Anthropic (direct API)" },
           { value: "bedrock", label: "Amazon Bedrock" },
-          { value: "openai", label: "OpenAI / compatible" },
+          { value: "openai", label: "OpenAI / compatible (ollama, together, …)" },
+          { value: "openrouter", label: "OpenRouter" },
         ],
       }),
     model: () =>
@@ -191,6 +195,13 @@ async function runInit(args: ParsedArgs): Promise<void> {
         initialValue: "us-west-2",
       });
     },
+    baseUrl: ({ results }) => {
+      if (results.provider !== "openai") return Promise.resolve(undefined);
+      return p.text({
+        message: "Base URL (for OpenAI-compatible endpoints; blank = OpenAI)?",
+        placeholder: "https://api.openai.com/v1",
+      });
+    },
   });
 
   if (p.isCancel(result)) {
@@ -209,7 +220,9 @@ async function runInit(args: ParsedArgs): Promise<void> {
   } else if (result.provider === "bedrock" && result.apiKey) {
     creds.bedrock = { apiKey: result.apiKey as string, region: (result.region || "us-west-2") as string };
   } else if (result.provider === "openai" && result.apiKey) {
-    creds.openai = { apiKey: result.apiKey as string };
+    creds.openai = { apiKey: result.apiKey as string, ...(result.baseUrl ? { baseUrl: result.baseUrl as string } : {}) };
+  } else if (result.provider === "openrouter" && result.apiKey) {
+    creds.openrouter = { apiKey: result.apiKey as string };
   }
   if (Object.keys(creds).length > 0) {
     saveCredentials(creds);

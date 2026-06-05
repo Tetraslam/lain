@@ -52,6 +52,15 @@ export function createProviderFromCredentials(
         provider: "openai",
         model: config.defaultModel,
         apiKey: credentials.openai?.apiKey || process.env.OPENAI_API_KEY,
+        baseUrl: credentials.openai?.baseUrl || process.env.OPENAI_BASE_URL,
+      });
+
+    case "openrouter":
+      return createProvider({
+        provider: "openrouter",
+        model: config.defaultModel,
+        apiKey: credentials.openrouter?.apiKey || process.env.OPENROUTER_API_KEY,
+        baseUrl: credentials.openrouter?.baseUrl,
       });
 
     default:

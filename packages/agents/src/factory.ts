@@ -1,6 +1,7 @@
 import type { AgentProvider, Provider } from "@lain/shared";
 import { AnthropicProvider } from "./anthropic.js";
 import { BedrockProvider } from "./bedrock.js";
+import { OpenAIProvider } from "./openai.js";
 
 export interface CreateProviderOptions {
   provider: Provider;
@@ -38,9 +39,26 @@ export function createProvider(options: CreateProviderOptions): AgentProvider {
       });
 
     case "openai":
-      throw new Error(
-        "OpenAI provider not yet implemented. Use 'anthropic' or 'bedrock'."
-      );
+      return new OpenAIProvider({
+        apiKey: options.apiKey,
+        baseUrl: options.baseUrl,
+        model: options.model ?? "gpt-4o",
+        maxTokens: options.maxTokens,
+        label: "openai",
+      });
+
+    case "openrouter":
+      return new OpenAIProvider({
+        apiKey: options.apiKey,
+        baseUrl: options.baseUrl ?? "https://openrouter.ai/api/v1",
+        model: options.model ?? "anthropic/claude-sonnet-4.5",
+        maxTokens: options.maxTokens,
+        label: "openrouter",
+        headers: {
+          "HTTP-Referer": "https://cli.devin.ai",
+          "X-Title": "lain",
+        },
+      });
 
     default:
       throw new Error(`Unknown provider: ${options.provider}`);

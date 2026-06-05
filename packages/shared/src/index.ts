@@ -47,7 +47,7 @@ import type { ConverseRequest, ConverseResult } from "./agent.js";
 export type NodeStatus = "pending" | "generating" | "complete" | "pruned";
 export type Strategy = "bf" | "df";
 export type PlanDetail = "brief" | "sentence" | "detailed" | "none";
-export type Provider = "anthropic" | "bedrock" | "openai";
+export type Provider = "anthropic" | "bedrock" | "openai" | "openrouter";
 
 /** Internal-only provider marker for synthesis-generated nodes. Not a real provider. */
 export type NodeProvider = Provider | "synthesis" | "manual";

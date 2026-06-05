@@ -22,6 +22,7 @@ export interface Credentials {
   anthropic?: { apiKey: string };
   bedrock?: { apiKey: string; region: string };
   openai?: { apiKey: string; baseUrl?: string };
+  openrouter?: { apiKey: string; baseUrl?: string };
 }
 
 // ============================================================================
