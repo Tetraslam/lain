@@ -3,7 +3,7 @@
  * Serves REST endpoints + SSE for streaming.
  * Run with: bun run src/server/index.ts
  */
-import { Storage, Graph, Orchestrator, Sync, Exporter, SynthesisEngine } from "@lain/core";
+import { Storage, Graph, Orchestrator, Sync, Exporter, SynthesisEngine, Corpus } from "@lain/core";
 import { createProvider } from "@lain/agents";
 import { buildExtensionRegistry } from "@lain/extensions";
 import { generateId, loadConfig, loadCredentials, type Strategy, type PlanDetail, type Provider, type Credentials, type LainConfig } from "@lain/shared";
@@ -15,18 +15,23 @@ const CWD = process.env.LAIN_CWD || process.cwd();
 
 function makeAgent(config: LainConfig, credentials: Credentials) {
   const provider = config.defaultProvider;
-  if (provider === "bedrock") {
-    return createProvider({
-      provider: "bedrock",
-      model: config.defaultModel,
-      apiKey: credentials.bedrock?.apiKey || process.env.AWS_BEARER_TOKEN_BEDROCK,
-      region: credentials.bedrock?.region || "us-west-2",
-    });
+  switch (provider) {
+    case "bedrock":
+      return createProvider({
+        provider: "bedrock",
+        model: config.defaultModel,
+        apiKey: credentials.bedrock?.apiKey || process.env.AWS_BEARER_TOKEN_BEDROCK,
+        region: credentials.bedrock?.region || "us-west-2",
+      });
+    case "anthropic":
+      return createProvider({ provider: "anthropic", model: config.defaultModel, apiKey: credentials.anthropic?.apiKey || process.env.ANTHROPIC_API_KEY });
+    case "openai":
+      return createProvider({ provider: "openai", model: config.defaultModel, apiKey: credentials.openai?.apiKey || process.env.OPENAI_API_KEY, baseUrl: credentials.openai?.baseUrl || process.env.OPENAI_BASE_URL });
+    case "openrouter":
+      return createProvider({ provider: "openrouter", model: config.defaultModel, apiKey: credentials.openrouter?.apiKey || process.env.OPENROUTER_API_KEY, baseUrl: credentials.openrouter?.baseUrl });
+    default:
+      return createProvider({ provider, model: config.defaultModel });
   }
-  if (provider === "anthropic") {
-    return createProvider({ provider: "anthropic", model: config.defaultModel, apiKey: credentials.anthropic?.apiKey });
-  }
-  return createProvider({ provider, model: config.defaultModel });
 }
 
 // Find all .db files
@@ -145,6 +150,7 @@ Bun.serve({
       const body = await req.json() as {
         seed: string; n?: number; m?: number; extension?: string;
         strategy?: string; planDetail?: string;
+        agentic?: boolean; corpusSources?: { name: string; text: string }[];
       };
 
       const config = loadConfig();
@@ -174,9 +180,10 @@ Bun.serve({
             controller.enqueue(new TextEncoder().encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
           };
 
+          const agentic = body.agentic ?? false;
           try {
             const orchestrator = new Orchestrator({
-              dbPath, agent, concurrency: 5, streaming: true, extensions,
+              dbPath, agent, concurrency: 5, streaming: !agentic, extensions, agentic,
               onEvent: (event) => {
                 send(event.type, { nodeId: event.nodeId, data: event.data });
               },
@@ -184,6 +191,15 @@ Bun.serve({
 
             await orchestrator.explore({
               id: expId, name: seed, seed, n, m, strategy, planDetail, extension: ext,
+              beforeExpand: () => {
+                const sources = body.corpusSources ?? [];
+                const corpus = orchestrator.getCorpus();
+                if (!corpus || sources.length === 0) return;
+                for (const src of sources) {
+                  corpus.ingestText(expId, { name: src.name, text: src.text });
+                }
+                send("corpus:ingested", { count: sources.length });
+              },
             });
             orchestrator.close();
 
@@ -219,7 +235,7 @@ Bun.serve({
 
     // ---- Extend ----
     if (p === "/api/extend" && req.method === "POST") {
-      const { dbFile, nodeId, n } = await req.json() as { dbFile: string; nodeId: string; n?: number };
+      const { dbFile, nodeId, n, agentic } = await req.json() as { dbFile: string; nodeId: string; n?: number; agentic?: boolean };
       const dbPath = safeDbPath(dbFile); if (!dbPath) return json({ error: "Invalid database path" }, 400);
       const config = loadConfig();
       const credentials = loadCredentials();
@@ -232,10 +248,58 @@ Bun.serve({
       s.close();
       if (!exp) return json({ error: "No exploration" }, 404);
 
-      const orchestrator = new Orchestrator({ dbPath: dbPath, agent, streaming: true, extensions });
+      // Auto-enable agentic if this exploration already has corpus material.
+      const probe = new Storage(dbPath);
+      const hasCorpus = new Corpus(probe).listSources(exp.id).length > 0;
+      probe.close();
+      const useAgentic = agentic ?? hasCorpus;
+
+      const orchestrator = new Orchestrator({ dbPath: dbPath, agent, streaming: !useAgentic, extensions, agentic: useAgentic });
       const newNodes = await orchestrator.extendNode(exp.id, nodeId, n || exp.n);
       orchestrator.close();
       return json({ nodes: newNodes });
+    }
+
+    // ---- Corpus: list ----
+    if (p.match(/^\/api\/corpus\/[^/]+$/) && req.method === "GET") {
+      const dbFile = decodeURIComponent(p.split("/").pop()!);
+      const dbPath = safeDbPath(dbFile); if (!dbPath) return json({ error: "Invalid database path" }, 400);
+      const s = new Storage(dbPath);
+      const g = new Graph(s);
+      const exp = g.getAllExplorations()[0];
+      if (!exp) { s.close(); return json({ error: "No exploration" }, 404); }
+      const sources = new Corpus(s).listSources(exp.id).map((src) => ({
+        id: src.id, name: src.name, kind: src.kind, byteSize: src.byteSize,
+      }));
+      s.close();
+      return json({ sources });
+    }
+
+    // ---- Corpus: upload (multipart files) ----
+    if (p === "/api/corpus/upload" && req.method === "POST") {
+      const form = await req.formData();
+      const dbFile = String(form.get("dbFile") ?? "");
+      const dbPath = safeDbPath(dbFile); if (!dbPath) return json({ error: "Invalid database path" }, 400);
+      const s = new Storage(dbPath);
+      const g = new Graph(s);
+      const exp = g.getAllExplorations()[0];
+      if (!exp) { s.close(); return json({ error: "No exploration" }, 404); }
+      const corpus = new Corpus(s);
+      const ingested: { name: string; chunks: number }[] = [];
+      try {
+        for (const value of form.getAll("files")) {
+          if (typeof value === "string") continue;
+          const file = value as File;
+          const bytes = new Uint8Array(await file.arrayBuffer());
+          const res = await corpus.ingestBuffer(exp.id, file.name, bytes);
+          ingested.push({ name: res.source.name, chunks: res.chunkCount });
+        }
+        return json({ ok: true, ingested });
+      } catch (err: any) {
+        return json({ error: err.message }, 500);
+      } finally {
+        s.close();
+      }
     }
 
     // ---- Redirect ----

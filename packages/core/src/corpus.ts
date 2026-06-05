@@ -12,6 +12,7 @@
 
 import * as fs from "fs";
 import * as path from "path";
+import * as os from "os";
 import { Storage } from "./storage.js";
 import type {
   CorpusChunk,
@@ -148,6 +149,45 @@ export class Corpus {
       }
     }
     return results;
+  }
+
+  /**
+   * Ingest an in-memory file (e.g. an HTTP upload) by name + bytes, detecting
+   * kind from the extension. Mirrors ingestFile but without touching disk
+   * (except PDFs, which need a temp path for the extractor).
+   */
+  async ingestBuffer(
+    explorationId: string,
+    name: string,
+    bytes: Uint8Array,
+    opts: IngestOptions = {}
+  ): Promise<IngestResult> {
+    const ext = path.extname(name).toLowerCase();
+
+    if (IMAGE_EXTS[ext]) {
+      return this.ingestImage(explorationId, {
+        name,
+        format: IMAGE_EXTS[ext],
+        data: Buffer.from(bytes).toString("base64"),
+        byteSize: bytes.byteLength,
+      });
+    }
+
+    if (ext === ".pdf") {
+      const tmp = path.join(os.tmpdir(), `lain-upload-${Date.now()}-${name}`);
+      fs.writeFileSync(tmp, bytes);
+      try {
+        const text = await extractPdfText(tmp);
+        return this.ingestText(explorationId, { name, kind: "pdf", text, byteSize: bytes.byteLength, ...opts });
+      } finally {
+        try { fs.unlinkSync(tmp); } catch {}
+      }
+    }
+
+    const kind = TEXT_KIND_BY_EXT[ext] ?? "text";
+    const raw = Buffer.from(bytes).toString("utf-8");
+    const text = kind === "csv" ? csvToText(raw) : raw;
+    return this.ingestText(explorationId, { name, kind, text, byteSize: bytes.byteLength, ...opts });
   }
 
   /** Ingest raw text (e.g. pasted content or a URL fetch). */
