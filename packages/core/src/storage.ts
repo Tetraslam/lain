@@ -8,6 +8,8 @@ import type {
   NodeAnnotation,
   SyncState,
   NodeStatus,
+  CorpusSource,
+  CorpusChunk,
 } from "@lain/shared";
 
 const SCHEMA = `
@@ -98,6 +100,32 @@ CREATE TABLE IF NOT EXISTS node_annotation (
   created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_node_annotation_node ON node_annotation(node_id);
+
+CREATE TABLE IF NOT EXISTS corpus_source (
+  id TEXT PRIMARY KEY,
+  exploration_id TEXT NOT NULL REFERENCES exploration(id),
+  name TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  mime TEXT,
+  byte_size INTEGER,
+  data TEXT,
+  image_format TEXT,
+  meta TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_corpus_source_exploration ON corpus_source(exploration_id);
+
+CREATE TABLE IF NOT EXISTS corpus_chunk (
+  id TEXT PRIMARY KEY,
+  source_id TEXT NOT NULL REFERENCES corpus_source(id),
+  exploration_id TEXT NOT NULL REFERENCES exploration(id),
+  seq INTEGER NOT NULL,
+  text TEXT NOT NULL,
+  token_estimate INTEGER,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_corpus_chunk_exploration ON corpus_chunk(exploration_id);
+CREATE INDEX IF NOT EXISTS idx_corpus_chunk_source ON corpus_chunk(source_id);
 `;
 
 export class Storage {
@@ -657,6 +685,95 @@ export class Storage {
 
   deleteNodeAnnotation(id: string): void {
     this.db.prepare("DELETE FROM node_annotation WHERE id = ?").run(id);
+  }
+
+  // ---- Corpus (multimodal source material) ----
+
+  createCorpusSource(source: CorpusSource): void {
+    this.db
+      .prepare(
+        `INSERT INTO corpus_source (id, exploration_id, name, kind, mime, byte_size, data, image_format, meta, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        source.id,
+        source.explorationId,
+        source.name,
+        source.kind,
+        source.mime,
+        source.byteSize,
+        source.data,
+        source.imageFormat,
+        source.meta ? JSON.stringify(source.meta) : null,
+        source.createdAt
+      );
+  }
+
+  createCorpusChunks(chunks: CorpusChunk[]): void {
+    const stmt = this.db.prepare(
+      `INSERT INTO corpus_chunk (id, source_id, exploration_id, seq, text, token_estimate, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`
+    );
+    this.db.transaction(() => {
+      for (const c of chunks) {
+        stmt.run(c.id, c.sourceId, c.explorationId, c.seq, c.text, c.tokenEstimate, c.createdAt);
+      }
+    })();
+  }
+
+  getCorpusSources(explorationId: string): CorpusSource[] {
+    const rows = this.db
+      .prepare("SELECT * FROM corpus_source WHERE exploration_id = ? ORDER BY created_at")
+      .all(explorationId) as Record<string, unknown>[];
+    return rows.map((r) => this.rowToCorpusSource(r));
+  }
+
+  getCorpusSource(id: string): CorpusSource | null {
+    const row = this.db.prepare("SELECT * FROM corpus_source WHERE id = ?").get(id) as
+      | Record<string, unknown>
+      | undefined;
+    return row ? this.rowToCorpusSource(row) : null;
+  }
+
+  getCorpusChunks(explorationId: string): CorpusChunk[] {
+    const rows = this.db
+      .prepare("SELECT * FROM corpus_chunk WHERE exploration_id = ? ORDER BY source_id, seq")
+      .all(explorationId) as Record<string, unknown>[];
+    return rows.map((r) => this.rowToCorpusChunk(r));
+  }
+
+  deleteCorpusSource(id: string): void {
+    this.db.transaction(() => {
+      this.db.prepare("DELETE FROM corpus_chunk WHERE source_id = ?").run(id);
+      this.db.prepare("DELETE FROM corpus_source WHERE id = ?").run(id);
+    })();
+  }
+
+  private rowToCorpusSource(r: Record<string, unknown>): CorpusSource {
+    return {
+      id: r.id as string,
+      explorationId: r.exploration_id as string,
+      name: r.name as string,
+      kind: r.kind as CorpusSource["kind"],
+      mime: (r.mime as string) ?? null,
+      byteSize: (r.byte_size as number) ?? null,
+      data: (r.data as string) ?? null,
+      imageFormat: (r.image_format as CorpusSource["imageFormat"]) ?? null,
+      meta: r.meta ? (JSON.parse(r.meta as string) as Record<string, unknown>) : null,
+      createdAt: r.created_at as string,
+    };
+  }
+
+  private rowToCorpusChunk(r: Record<string, unknown>): CorpusChunk {
+    return {
+      id: r.id as string,
+      sourceId: r.source_id as string,
+      explorationId: r.exploration_id as string,
+      seq: r.seq as number,
+      text: r.text as string,
+      tokenEstimate: (r.token_estimate as number) ?? null,
+      createdAt: r.created_at as string,
+    };
   }
 
   // ---- Transaction helper ----

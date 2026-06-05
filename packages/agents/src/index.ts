@@ -2,6 +2,14 @@ export { AnthropicProvider } from "./anthropic.js";
 export { BedrockProvider } from "./bedrock.js";
 export { createProvider } from "./factory.js";
 export {
+  runAgent,
+  type AgentRunOptions,
+  type AgentRunResult,
+  type ToolCall,
+  type ToolOutcome,
+  type ToolDispatch,
+} from "./runner.js";
+export {
   buildGeneratePrompt,
   buildPlanPrompt,
   buildSynthesizePrompt,

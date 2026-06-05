@@ -2,7 +2,7 @@ import * as p from "@clack/prompts";
 import * as fs from "fs";
 import * as path from "path";
 import { Orchestrator } from "@lain/core";
-import { Storage, Graph, Sync, Exporter, CanvasExporter, SynthesisEngine, Watcher } from "@lain/core";
+import { Storage, Graph, Sync, Exporter, CanvasExporter, SynthesisEngine, Watcher, Corpus } from "@lain/core";
 import {
   buildExtensionRegistry,
 } from "@lain/extensions";
@@ -75,6 +75,8 @@ export async function run(args: ParsedArgs): Promise<void> {
       return runWatch(args);
     case "extensions":
       return runExtensions(args);
+    case "corpus":
+      return runCorpus(args);
     case "help":
       return runHelp();
     default:
@@ -247,6 +249,9 @@ async function runExplore(args: ParsedArgs): Promise<void> {
   const outputDb = getFlag(args.flags, "output", "o", "db");
   const concurrency = getNumFlag(args.flags, "concurrency", "c") ?? 5;
   const streaming = getBoolFlag(args.flags, "stream");
+  const corpusPath = getFlag(args.flags, "corpus");
+  const agentic = getBoolFlag(args.flags, "agentic", "agent") || !!corpusPath;
+  const agentMaxSteps = getNumFlag(args.flags, "max-steps") ?? 10;
 
   // Generate a name from the seed
   const name = seed.length > 60 ? seed.slice(0, 57) + "..." : seed;
@@ -272,6 +277,9 @@ async function runExplore(args: ParsedArgs): Promise<void> {
     `  Est. cost: ~$${estimate.estimatedCostUsd.toFixed(3)} (${estimate.model})`
   );
   console.log(`Strategy: ${strategy} | Plan detail: ${planDetail} | Concurrency: ${concurrency} | DB: ${dbFileName}`);
+  if (agentic) {
+    console.log(`Mode: agentic (nodes are tool-using agents${corpusPath ? `, corpus: ${corpusPath}` : ""})`);
+  }
 
   // Create provider
   const provider = config.defaultProvider;
@@ -285,6 +293,8 @@ async function runExplore(args: ParsedArgs): Promise<void> {
     concurrency,
     streaming,
     extensions,
+    agentic,
+    agentMaxSteps,
     onEvent: (event) => {
       switch (event.type) {
         case "node:generating":
@@ -292,9 +302,16 @@ async function runExplore(args: ParsedArgs): Promise<void> {
             `  Generating ${event.nodeId}...`
           );
           break;
+        case "node:agent-step": {
+          const step = event.data as { kind?: string; name?: string; summary?: string } | undefined;
+          if (step?.kind === "tool_call") {
+            process.stdout.write(`\n    ↳ ${event.nodeId}: ${step.name}`);
+          }
+          break;
+        }
         case "node:complete":
           const data = event.data as { title?: string } | undefined;
-          console.log(` done — "${data?.title || "untitled"}"`);
+          console.log(`${agentic ? "\n " : " "}done — "${data?.title || "untitled"}"`);
           break;
         case "node:content-chunk": {
           if (streaming) {
@@ -332,6 +349,21 @@ async function runExplore(args: ParsedArgs): Promise<void> {
       strategy,
       planDetail,
       extension: ext,
+      beforeExpand: async (exp) => {
+        if (!corpusPath) return;
+        const corpus = orchestrator.getCorpus();
+        if (!corpus) return;
+        const resolved = path.resolve(corpusPath);
+        if (!fs.existsSync(resolved)) {
+          console.warn(`  Corpus path not found, skipping: ${corpusPath}`);
+          return;
+        }
+        const results = fs.statSync(resolved).isDirectory()
+          ? await corpus.ingestDirectory(exp.id, resolved)
+          : [await corpus.ingestFile(exp.id, resolved)];
+        const chunks = results.reduce((a, r) => a + r.chunkCount, 0);
+        console.log(`  Ingested ${results.length} source(s), ${chunks} chunk(s) into corpus.`);
+      },
     });
 
     console.log(`\nExploration complete: ${dbPath}`);
@@ -1132,6 +1164,86 @@ async function runExtensions(args: ParsedArgs): Promise<void> {
 }
 
 // ============================================================================
+// Corpus — multimodal source material for agentic explorations
+// ============================================================================
+
+async function runCorpus(args: ParsedArgs): Promise<void> {
+  const subcommand = args.positional[0] ?? "list";
+  const dbFile = getFlag(args.flags, "db") ?? findDb();
+  const dbPath = path.resolve(dbFile);
+  if (!fs.existsSync(dbPath)) throw new Error(`Database not found: ${dbFile}`);
+
+  const storage = new Storage(dbPath);
+  try {
+    const graph = new Graph(storage);
+    const explorations = graph.getAllExplorations();
+    if (explorations.length === 0) throw new Error("No explorations in this database.");
+    const explorationId = getFlag(args.flags, "id") ?? explorations[0].id;
+    if (!explorations.some((e) => e.id === explorationId)) {
+      throw new Error(`Exploration not found: ${explorationId}`);
+    }
+    const corpus = new Corpus(storage);
+
+    if (subcommand === "add") {
+      const paths = args.positional.slice(1);
+      if (paths.length === 0) throw new Error("Usage: lain corpus add <file|dir>... [--db <file>] [--id <exploration>]");
+      let sources = 0;
+      let chunks = 0;
+      for (const p0 of paths) {
+        const resolved = path.resolve(p0);
+        if (!fs.existsSync(resolved)) {
+          console.warn(`  Skipping (not found): ${p0}`);
+          continue;
+        }
+        const results = fs.statSync(resolved).isDirectory()
+          ? await corpus.ingestDirectory(explorationId, resolved)
+          : [await corpus.ingestFile(explorationId, resolved)];
+        for (const r of results) {
+          sources++;
+          chunks += r.chunkCount;
+          console.log(`  + ${r.source.name} [${r.source.kind}] — ${r.chunkCount} chunk(s)`);
+        }
+      }
+      console.log(`\nIngested ${sources} source(s), ${chunks} chunk(s) into ${explorationId}.`);
+      return;
+    }
+
+    if (subcommand === "list") {
+      const sources = corpus.listSources(explorationId);
+      if (sources.length === 0) {
+        console.log(`No corpus sources for ${explorationId}. Add some with \`lain corpus add <files>\`.`);
+        return;
+      }
+      console.log(`Corpus for ${explorationId} (${sources.length} sources):`);
+      for (const s of sources) {
+        const size = s.byteSize ? `${(s.byteSize / 1024).toFixed(1)}kb` : "?";
+        console.log(`  ${s.name} [${s.kind}] ${size}`);
+      }
+      return;
+    }
+
+    if (subcommand === "search") {
+      const query = args.positional.slice(1).join(" ");
+      if (!query) throw new Error("Usage: lain corpus search <query> [--db <file>]");
+      const hits = corpus.search(explorationId, query, getNumFlag(args.flags, "limit") ?? 6);
+      if (hits.length === 0) {
+        console.log(`No matches for "${query}".`);
+        return;
+      }
+      for (const h of hits) {
+        console.log(`\n[${h.score.toFixed(2)}] ${h.sourceName} (${h.sourceKind})`);
+        console.log(`  ${truncateStr(h.chunk.text, 200)}`);
+      }
+      return;
+    }
+
+    throw new Error(`Unknown corpus subcommand: ${subcommand}. Use: add, list, search`);
+  } finally {
+    storage.close();
+  }
+}
+
+// ============================================================================
 // Help
 // ============================================================================
 
@@ -1151,6 +1263,9 @@ Options:
   --db <file>            Database file to use
   -o, --output <file>    Output database filename
   -c, --concurrency <n>  Max parallel agent calls (default: 5)
+  --agentic              Expand nodes as tool-using agents (graph + corpus + linking)
+  --corpus <path>        Ingest a file/dir as source material before generating (implies --agentic)
+  --max-steps <n>        Max agent tool round-trips per node (default: 10)
 
 Commands:
   init                   Set up global config (--workspace for local, --non-interactive for agents)
@@ -1170,6 +1285,9 @@ Commands:
   config list            Show effective config (--global, --local)
   watch <file.db>        Auto-sync on file changes (--stop, --status)
   extensions [list]      List available extensions
+  corpus add <path>...   Ingest files/dirs as source material (--db, --id)
+  corpus list            List corpus sources (--db, --id)
+  corpus search <query>  Search the corpus (--db, --id, --limit)
   tui [file.db]          Launch interactive TUI
   serve [dir]            Start web API server (--port <n>, default 3001)
   help                   Show this help

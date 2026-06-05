@@ -7,6 +7,12 @@ import type {
   PlanResponse,
   SynthesizeRequest,
   SynthesizeResponse,
+  ConverseRequest,
+  ConverseResult,
+  ContentBlock,
+  ImageFormat,
+  Provider,
+  StopReason,
 } from "@lain/shared";
 import { buildGeneratePrompt, buildPlanPrompt, buildSynthesizePrompt, parseSynthesizeResponse } from "./prompts.js";
 
@@ -27,6 +33,46 @@ export class AnthropicProvider implements AgentProvider {
     });
     this.model = options.model ?? "claude-sonnet-4-6";
     this.maxTokens = options.maxTokens ?? 2048;
+  }
+
+  get modelId(): string {
+    return this.model;
+  }
+
+  get providerName(): Provider {
+    return "anthropic";
+  }
+
+  /** Low-level tool-capable converse primitive (Anthropic Messages API). */
+  async converse(request: ConverseRequest): Promise<ConverseResult> {
+    const message = await this.client.messages.create({
+      model: this.model,
+      max_tokens: request.maxTokens ?? this.maxTokens,
+      system: request.system,
+      ...(request.temperature !== undefined ? { temperature: request.temperature } : {}),
+      ...(request.tools && request.tools.length > 0
+        ? {
+            tools: request.tools.map((t) => ({
+              name: t.name,
+              description: t.description,
+              input_schema: t.inputSchema as Anthropic.Tool.InputSchema,
+            })),
+          }
+        : {}),
+      messages: request.messages.map((m) => ({
+        role: m.role,
+        content: m.content.map(toAnthropicBlock),
+      })),
+    });
+
+    return {
+      content: message.content.map(fromAnthropicBlock),
+      stopReason: mapAnthropicStop(message.stop_reason),
+      usage: {
+        inputTokens: message.usage.input_tokens,
+        outputTokens: message.usage.output_tokens,
+      },
+    };
   }
 
   async generate(request: GenerateRequest): Promise<GenerateResponse> {
@@ -134,5 +180,69 @@ export class AnthropicProvider implements AgentProvider {
       messages: [{ role: "user", content: user }],
     });
     return message.content[0].type === "text" ? message.content[0].text : "";
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Block converters (lain ContentBlock <-> Anthropic content blocks)
+// ---------------------------------------------------------------------------
+
+function toAnthropicBlock(block: ContentBlock): Anthropic.ContentBlockParam {
+  switch (block.type) {
+    case "text":
+      return { type: "text", text: block.text };
+    case "image":
+      return {
+        type: "image",
+        source: { type: "base64", media_type: `image/${block.format}` as `image/${ImageFormat}`, data: block.data },
+      };
+    case "tool_use":
+      return { type: "tool_use", id: block.id, name: block.name, input: block.input };
+    case "tool_result":
+      return {
+        type: "tool_result",
+        tool_use_id: block.toolUseId,
+        is_error: block.isError ?? false,
+        content: block.content.map((c) =>
+          c.type === "image"
+            ? {
+                type: "image" as const,
+                source: { type: "base64" as const, media_type: `image/${c.format}` as `image/${ImageFormat}`, data: c.data },
+              }
+            : { type: "text" as const, text: c.text }
+        ),
+      };
+  }
+}
+
+function fromAnthropicBlock(block: Anthropic.ContentBlock): ContentBlock {
+  switch (block.type) {
+    case "text":
+      return { type: "text", text: block.text };
+    case "tool_use":
+      return {
+        type: "tool_use",
+        id: block.id,
+        name: block.name,
+        input: (block.input ?? {}) as Record<string, unknown>,
+      };
+    default:
+      // thinking / other block types collapse to empty text
+      return { type: "text", text: "" };
+  }
+}
+
+function mapAnthropicStop(reason: string | null): StopReason {
+  switch (reason) {
+    case "end_turn":
+      return "end_turn";
+    case "tool_use":
+      return "tool_use";
+    case "max_tokens":
+      return "max_tokens";
+    case "stop_sequence":
+      return "stop_sequence";
+    default:
+      return "unknown";
   }
 }

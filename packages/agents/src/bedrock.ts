@@ -6,8 +6,20 @@ import type {
   PlanResponse,
   SynthesizeRequest,
   SynthesizeResponse,
+  ConverseRequest,
+  ConverseResult,
+  ContentBlock,
+  AgentMessage,
+  StopReason,
+  Provider,
 } from "@lain/shared";
 import { buildGeneratePrompt, buildPlanPrompt, buildSynthesizePrompt, parseSynthesizeResponse } from "./prompts.js";
+import {
+  toBedrockMessages,
+  toBedrockTools,
+  fromBedrockContent,
+  mapBedrockStopReason,
+} from "./bedrock-convert.js";
 
 export interface BedrockProviderOptions {
   apiKey: string;            // Bedrock API key (ABSK...)
@@ -57,9 +69,68 @@ export class BedrockProvider implements AgentProvider {
     this.baseUrl = `https://bedrock-runtime.${this.region}.amazonaws.com`;
   }
 
+  get modelId(): string {
+    return this.model;
+  }
+
+  get providerName(): Provider {
+    return "bedrock";
+  }
+
+  /**
+   * Low-level tool-capable Converse call. One assistant turn. The AgentRunner
+   * drives the multi-step tool loop on top of this.
+   */
+  async converse(request: ConverseRequest): Promise<ConverseResult> {
+    const url = `${this.baseUrl}/model/${encodeURIComponent(this.model)}/converse`;
+
+    const body: Record<string, unknown> = {
+      messages: toBedrockMessages(request.messages),
+      system: [{ text: request.system }],
+      inferenceConfig: {
+        maxTokens: request.maxTokens ?? this.maxTokens,
+        ...(request.temperature !== undefined ? { temperature: request.temperature } : {}),
+      },
+    };
+    if (request.tools && request.tools.length > 0) {
+      body.toolConfig = toBedrockTools(request.tools);
+    }
+
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${this.apiKey}`,
+      },
+      body: JSON.stringify(body),
+    });
+
+    if (!response.ok) {
+      const errorBody = await response.text();
+      throw new Error(`Bedrock Converse error (${response.status}): ${errorBody}`);
+    }
+
+    const result = (await response.json()) as {
+      output?: { message?: { content?: unknown[] } };
+      stopReason?: string;
+      usage?: { inputTokens?: number; outputTokens?: number };
+    };
+
+    return {
+      content: fromBedrockContent(result.output?.message?.content as never),
+      stopReason: mapBedrockStopReason(result.stopReason),
+      usage: result.usage
+        ? {
+            inputTokens: result.usage.inputTokens ?? 0,
+            outputTokens: result.usage.outputTokens ?? 0,
+          }
+        : undefined,
+    };
+  }
+
   async generate(request: GenerateRequest): Promise<GenerateResponse> {
     const { system, user } = buildGeneratePrompt(request);
-    const text = await this.converse(system, user, this.maxTokens);
+    const text = await this.converseText(system, user, this.maxTokens);
     return this.parseGenerateResponse(text);
   }
 
@@ -74,7 +145,7 @@ export class BedrockProvider implements AgentProvider {
 
   async plan(request: PlanRequest): Promise<PlanResponse> {
     const { system, user } = buildPlanPrompt(request);
-    const text = await this.converse(system, user, 1024);
+    const text = await this.converseText(system, user, 1024);
 
     const directions = text
       .split("\n")
@@ -93,7 +164,7 @@ export class BedrockProvider implements AgentProvider {
    * Call the Bedrock Converse API with bearer token auth.
    * https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_Converse.html
    */
-  private async converse(
+  private async converseText(
     system: string,
     userMessage: string,
     maxTokens: number
@@ -260,11 +331,11 @@ export class BedrockProvider implements AgentProvider {
 
   async synthesize(request: SynthesizeRequest): Promise<SynthesizeResponse> {
     const { system, user } = buildSynthesizePrompt(request);
-    const text = await this.converse(system, user, 4096);
+    const text = await this.converseText(system, user, 4096);
     return parseSynthesizeResponse(text, this.model, "bedrock");
   }
 
   async generateRaw(system: string, user: string, maxTokens = 4096): Promise<string> {
-    return this.converse(system, user, maxTokens);
+    return this.converseText(system, user, maxTokens);
   }
 }

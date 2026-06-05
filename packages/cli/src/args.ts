@@ -37,6 +37,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
     "export",
     "config",
     "extensions",
+    "corpus",
     "watch",
     "tui",
     "serve",

@@ -1,5 +1,8 @@
 import { Graph } from "./graph.js";
 import { Storage } from "./storage.js";
+import { Corpus } from "./corpus.js";
+import { generateNodeAgentic } from "./agentic.js";
+import type { LainTool } from "./tools.js";
 import type {
   AgentProvider,
   Exploration,
@@ -11,6 +14,7 @@ import type {
   PlanContext,
   GenerateResponse,
   Strategy,
+  AgentStepEvent,
 } from "@lain/shared";
 import { nowISO } from "@lain/shared";
 
@@ -31,6 +35,20 @@ export interface OrchestratorOptions {
   streaming?: boolean; // Use streaming generation for real-time chunk events
   extensions?: ExtensionRegistryLike;
   onEvent?: LainEventHandler;
+  /**
+   * When true, each node is expanded by a tool-using agent (the substrate)
+   * rather than a single completion. Enables corpus retrieval, cross-node
+   * reading, and cross-branch linking.
+   */
+  agentic?: boolean;
+  /** Max agent steps (tool round-trips) per node when agentic. Default 10. */
+  agentMaxSteps?: number;
+  /** Max output tokens per agent turn when agentic. Default 4096 (node bodies are long). */
+  agentMaxTokens?: number;
+  /** Shared corpus for retrieval tools (created from the same db if omitted). */
+  corpus?: Corpus | null;
+  /** Extra tools contributed by extensions / MCP servers. */
+  extraTools?: LainTool[];
 }
 
 /**
@@ -46,6 +64,11 @@ export class Orchestrator {
   private extensions: ExtensionRegistryLike | null;
   private onEvent: LainEventHandler;
   private ownsStorage: boolean;
+  private agentic: boolean;
+  private agentMaxSteps: number;
+  private agentMaxTokens: number;
+  private corpus: Corpus | null;
+  private extraTools: LainTool[];
 
   constructor(options: OrchestratorOptions) {
     this.storage = new Storage(options.dbPath);
@@ -56,6 +79,16 @@ export class Orchestrator {
     this.streaming = options.streaming ?? false;
     this.extensions = options.extensions ?? null;
     this.onEvent = options.onEvent ?? (() => {});
+    this.agentic = options.agentic ?? false;
+    this.agentMaxSteps = options.agentMaxSteps ?? 10;
+    this.agentMaxTokens = options.agentMaxTokens ?? 4096;
+    // Reuse the orchestrator's Storage for the corpus so they share one db handle.
+    this.corpus = options.corpus ?? (this.agentic ? new Corpus(this.storage) : null);
+    this.extraTools = options.extraTools ?? [];
+  }
+
+  getCorpus(): Corpus | null {
+    return this.corpus;
   }
 
   close(): void {
@@ -84,6 +117,11 @@ export class Orchestrator {
     strategy: Strategy;
     planDetail: Exploration["planDetail"];
     extension: string;
+    /**
+     * Runs after the exploration row exists but before any generation — the
+     * place to ingest corpus material so node-agents can retrieve from it.
+     */
+    beforeExpand?: (exploration: Exploration) => Promise<void> | void;
   }): Promise<Exploration> {
     const exploration = this.graph.createExploration(params);
 
@@ -91,6 +129,10 @@ export class Orchestrator {
       type: "exploration:created",
       explorationId: exploration.id,
     });
+
+    if (params.beforeExpand) {
+      await params.beforeExpand(exploration);
+    }
 
     if (exploration.strategy === "df") {
       await this.expandTreeDF(exploration);
@@ -393,7 +435,27 @@ export class Orchestrator {
 
       let response: GenerateResponse;
 
-      if (this.streaming) {
+      if (this.agentic) {
+        // Substrate mode: expand the node with a tool-using agent that can
+        // read the graph, retrieve from the corpus, and link across branches.
+        response = await generateNodeAgentic(node, {
+          agent: this.agent,
+          graph: this.graph,
+          corpus: this.corpus,
+          exploration,
+          extensionSystemPrompt: extensionSystemPrompt || undefined,
+          extraTools: this.extraTools,
+          maxSteps: this.agentMaxSteps,
+          maxTokens: this.agentMaxTokens,
+          onStep: (step: AgentStepEvent) =>
+            this.emit({
+              type: "node:agent-step",
+              explorationId: exploration.id,
+              nodeId: node.id,
+              data: step,
+            }),
+        });
+      } else if (this.streaming) {
         // Stream mode: emit content chunks in real-time
         response = await this.agent.generateStream(generateRequest, (chunk) => {
           this.emit({

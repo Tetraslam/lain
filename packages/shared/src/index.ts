@@ -20,6 +20,26 @@ export {
   type MergeGenerationRequest,
 } from "./merge-prompts.js";
 
+// Re-export agent substrate wire types
+export {
+  type ImageFormat,
+  type ContentBlock,
+  type ToolResultBlock,
+  type AgentMessage,
+  type ToolSpec,
+  type StopReason,
+  type TokenUsage,
+  type ConverseRequest,
+  type ConverseResult,
+  type AgentStepEvent,
+  type AgentStepHandler,
+  userText,
+  collectText,
+  collectToolUses,
+} from "./agent.js";
+
+import type { ConverseRequest, ConverseResult } from "./agent.js";
+
 // ============================================================================
 // Node & Graph Types
 // ============================================================================
@@ -140,6 +160,62 @@ export interface SyncState {
 }
 
 // ============================================================================
+// Corpus Types (multimodal source material the agents can retrieve from)
+// ============================================================================
+
+/** What kind of source material a corpus entry is. */
+export type CorpusKind =
+  | "text"
+  | "markdown"
+  | "csv"
+  | "json"
+  | "pdf"
+  | "image"
+  | "url"
+  | "binary";
+
+/**
+ * A single ingested source (a file, an image, a pasted blob). Large text is
+ * split into `CorpusChunk`s for retrieval; images are stored whole as base64
+ * so they can be handed to a multimodal model.
+ */
+export interface CorpusSource {
+  id: string;
+  explorationId: string;
+  name: string;
+  kind: CorpusKind;
+  mime: string | null;
+  byteSize: number | null;
+  /** base64 payload for images (and other small binaries). null for text sources. */
+  data: string | null;
+  imageFormat: ImageFormatLike | null;
+  meta: Record<string, unknown> | null;
+  createdAt: string;
+}
+
+/** Loosened image format for storage (mirrors agent ImageFormat). */
+export type ImageFormatLike = "png" | "jpeg" | "gif" | "webp";
+
+/** A retrievable chunk of text derived from a source. */
+export interface CorpusChunk {
+  id: string;
+  sourceId: string;
+  explorationId: string;
+  seq: number;
+  text: string;
+  tokenEstimate: number | null;
+  createdAt: string;
+}
+
+/** A scored retrieval hit returned by corpus search. */
+export interface CorpusHit {
+  chunk: CorpusChunk;
+  sourceName: string;
+  sourceKind: CorpusKind;
+  score: number;
+}
+
+// ============================================================================
 // Config Types
 // ============================================================================
 
@@ -201,6 +277,7 @@ export type LainEventType =
   | "node:complete"
   | "node:pruned"
   | "node:content-chunk"  // streaming content
+  | "node:agent-step"     // agentic loop: tool call / thinking step
   | "exploration:created"
   | "exploration:complete"
   | "synthesis:started"
@@ -287,6 +364,16 @@ export interface AgentProvider {
   synthesize(request: SynthesizeRequest): Promise<SynthesizeResponse>;
   /** Raw converse: send system + user prompt, get back raw text. No prompt wrapping. */
   generateRaw(system: string, user: string, maxTokens?: number): Promise<string>;
+  /**
+   * Low-level tool-capable converse primitive. This is the foundation of the
+   * agent substrate: given a system prompt, a message history, and a set of
+   * tool specs, return one assistant turn (which may request tool calls).
+   * The AgentRunner drives the multi-step loop on top of this.
+   */
+  converse(request: ConverseRequest): Promise<ConverseResult>;
+  /** Identifying metadata for cost/attribution. */
+  readonly modelId: string;
+  readonly providerName: Provider;
 }
 
 // ============================================================================
