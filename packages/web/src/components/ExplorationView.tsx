@@ -1,16 +1,12 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
-import {
-  ReactFlow, Background, Controls, MiniMap,
-  useNodesState, useEdgesState,
-  type Node, type Edge, type NodeTypes,
-  BackgroundVariant, Position,
-} from "@xyflow/react";
+import { useNodesState, useEdgesState, type Node, type Edge } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import Markdown from "react-markdown";
-import { LainNode } from "./LainNode";
+import { GraphOverlay } from "./GraphOverlay";
+import { HelpOverlay } from "./HelpOverlay";
+import { CorpusPanel } from "./CorpusPanel";
 
 interface ExplorationData { exploration: any; nodes: any[]; crosslinks: any[]; nodeAnnotations?: Record<string, any[]>; }
-const nodeTypes: NodeTypes = { lain: LainNode as any };
 
 function buildFlowLayout(data: ExplorationData): { nodes: Node[]; edges: Edge[] } {
   const { nodes: lainNodes, crosslinks } = data;
@@ -568,6 +564,7 @@ export function ExplorationView({ dbFile, onBack }: { dbFile: string; onBack: ()
               <div className="context-item"><span className="cl">m</span> <span className="cv">{exp.m}</span></div>
               <div className="context-item"><span className="cl">strategy</span> <span className="cv">{exp.strategy}</span></div>
             </div>
+            <CorpusPanel dbFile={dbFile} />
           </aside>
         )}
         {showSynthesis && (
@@ -656,50 +653,15 @@ export function ExplorationView({ dbFile, onBack }: { dbFile: string; onBack: ()
 
       {/* Graph overlay */}
       {showGraph && (
-        <div className="graph-overlay">
-          <button className="graph-close" onClick={() => setShowGraph(false)}>✕ Close</button>
-          <ReactFlow
-            nodes={flowNodes} edges={flowEdges}
-            onNodesChange={onNodesChange} onEdgesChange={onEdgesChange}
-            onNodeClick={(_e: any, n: any) => { setSelectedId(n.id); setShowGraph(false); }}
-            nodeTypes={nodeTypes} nodesDraggable={false} nodesConnectable={false}
-            fitView fitViewOptions={{ padding: 0.3 }} minZoom={0.05} maxZoom={2}
-            defaultEdgeOptions={{ type: "straight" }} proOptions={{ hideAttribution: true }}
-          >
-            <Background variant={BackgroundVariant.Dots} gap={24} size={1} color="#1e1e28" />
-            <Controls position="bottom-left" />
-            <MiniMap
-              nodeColor={(n: any) => n.data?.depth === 0 ? "#88b0f0" : n.data?.status === "pruned" ? "#e07070" : "#50506a"}
-              maskColor="rgba(15, 15, 20, 0.85)" style={{ background: "#0f0f14", borderColor: "#28283a" }}
-            />
-          </ReactFlow>
-        </div>
+        <GraphOverlay
+          nodes={flowNodes} edges={flowEdges}
+          onNodesChange={onNodesChange} onEdgesChange={onEdgesChange}
+          onSelect={setSelectedId} onClose={() => setShowGraph(false)}
+        />
       )}
 
       {/* Help overlay */}
-      {showHelp && (
-        <div className="modal-overlay" onClick={() => setShowHelp(false)}>
-          <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 500 }}>
-            <h2 className="modal-title">Keyboard shortcuts</h2>
-            <div style={{ fontSize: 13, lineHeight: 2, fontFamily: "var(--font-mono)" }}>
-              <div><strong>j/k ↑↓</strong> — navigate nodes</div>
-              <div><strong>h/l ←→</strong> — siblings</div>
-              <div><strong>e</strong> — extend (add children)</div>
-              <div><strong>r</strong> — redirect (regenerate)</div>
-              <div><strong>i</strong> — edit node content</div>
-              <div><strong>p</strong> — prune node + descendants</div>
-              <div><strong>g</strong> — toggle graph overlay</div>
-              <div><strong>s</strong> — toggle synthesis panel</div>
-              <div><strong>b</strong> — toggle sidebar</div>
-              <div><strong>?</strong> — this help</div>
-              <div><strong>esc</strong> — close overlay / go back</div>
-            </div>
-            <div className="modal-actions">
-              <button className="btn btn-sm" onClick={() => setShowHelp(false)}>Close</button>
-            </div>
-          </div>
-        </div>
-      )}
+      {showHelp && <HelpOverlay onClose={() => setShowHelp(false)} />}
     </div>
   );
 }

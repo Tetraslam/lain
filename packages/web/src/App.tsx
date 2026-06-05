@@ -11,7 +11,11 @@ interface DbInfo {
 
 export function App() {
   const [dbs, setDbs] = useState<DbInfo[]>([]);
-  const [activeDb, setActiveDb] = useState<string | null>(null);
+  const [activeDb, setActiveDb] = useState<string | null>(() => {
+    if (typeof window === "undefined") return null;
+    const m = window.location.hash.match(/^#db=(.+)$/);
+    return m ? decodeURIComponent(m[1]) : null;
+  });
   const [showCreate, setShowCreate] = useState(() =>
     typeof window !== "undefined" && window.location.hash === "#new"
   );
