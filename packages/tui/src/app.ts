@@ -605,6 +605,22 @@ ${annotation.merged ? dim("Already merged.") : dim("m — merge  ·  d — dismi
     }
   }
 
+  function corpusCount(): number {
+    if (!storage || !exploration) return 0;
+    try { return new Corpus(storage).listSources(exploration.id).length; }
+    catch { return 0; }
+  }
+
+  function setExpHeader() {
+    if (!exploration) return;
+    const shortName = exploration.name.length > 50 ? exploration.name.slice(0, 47) + "…" : exploration.name;
+    const nc = allNodes.filter((n) => n.status !== "pruned").length;
+    const cc = corpusCount();
+    expHeaderText.content = cc > 0
+      ? t`  ${fg(c.accent)("lain")}  ${dim(shortName)}  ${fg(c.muted)("·")}  ${dim(`${nc} nodes`)}  ${fg(c.muted)("·")}  ${dim(`n=${exploration.n} m=${exploration.m}`)}  ${fg(c.muted)("·")}  ${dim(exploration.extension)}  ${fg(c.muted)("·")}  ${fg(c.green)(`⊕ ${cc} grounded`)}`
+      : t`  ${fg(c.accent)("lain")}  ${dim(shortName)}  ${fg(c.muted)("·")}  ${dim(`${nc} nodes`)}  ${fg(c.muted)("·")}  ${dim(`n=${exploration.n} m=${exploration.m}`)}  ${fg(c.muted)("·")}  ${dim(exploration.extension)}`;
+  }
+
   function openExploration(openDbPath: string, expId?: string) {
     if (storage) storage.close();
     dbPath = openDbPath;
@@ -620,8 +636,7 @@ ${annotation.merged ? dim("Already merged.") : dim("m — merge  ·  d — dismi
     const shortName = exploration.name.length > 50 ? exploration.name.slice(0, 47) + "…" : exploration.name;
     renderer.setTerminalTitle(`lain — ${shortName}`);
 
-    const nc = allNodes.filter((n) => n.status !== "pruned").length;
-    expHeaderText.content = t`  ${fg(c.accent)("lain")}  ${dim(shortName)}  ${fg(c.muted)("·")}  ${dim(`${nc} nodes`)}  ${fg(c.muted)("·")}  ${dim(`n=${exploration.n} m=${exploration.m}`)}  ${fg(c.muted)("·")}  ${dim(exploration.extension)}`;
+    setExpHeader();
 
     treeSelect.options = treeItems.map((item) => {
       const maxTitle = treePanelWidth - item.prefix.length - 6;
@@ -667,9 +682,7 @@ ${annotation.merged ? dim("Already merged.") : dim("m — merge  ·  d — dismi
     allNodes = graph.getAllNodes(exploration.id);
     const root = allNodes.find((n) => n.parentId === null)!;
     treeItems = buildTreeItems(root, allNodes);
-    const nc = allNodes.filter((n) => n.status !== "pruned").length;
-    const shortName = exploration.name.length > 50 ? exploration.name.slice(0, 47) + "…" : exploration.name;
-    expHeaderText.content = t`  ${fg(c.accent)("lain")}  ${dim(shortName)}  ${fg(c.muted)("·")}  ${dim(`${nc} nodes`)}  ${fg(c.muted)("·")}  ${dim(`n=${exploration.n} m=${exploration.m}`)}  ${fg(c.muted)("·")}  ${dim(exploration.extension)}`;
+    setExpHeader();
     treeSelect.options = treeItems.map((item) => {
       const maxTitle = treePanelWidth - item.prefix.length - 6;
       let title = item.title;
