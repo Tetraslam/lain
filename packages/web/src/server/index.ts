@@ -3,12 +3,15 @@
  * Serves REST endpoints + SSE for streaming.
  * Run with: bun run src/server/index.ts
  */
-import { Storage, Graph, Orchestrator, Sync, Exporter, SynthesisEngine, Corpus } from "@lain/core";
+import { Storage, Graph, Orchestrator, Sync, Exporter, SynthesisEngine, Corpus, checkForUpdate } from "@lain/core";
 import { createProvider } from "@lain/agents";
 import { buildExtensionRegistry } from "@lain/extensions";
 import { generateId, loadConfig, loadCredentials, type Strategy, type PlanDetail, type Provider, type Credentials, type LainConfig } from "@lain/shared";
 import * as fs from "fs";
 import * as path from "path";
+import { fileURLToPath } from "url";
+
+const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../..");
 
 const PORT = Number(process.env.LAIN_PORT) || 3001;
 const CWD = process.env.LAIN_CWD || process.cwd();
@@ -102,6 +105,13 @@ Bun.serve({
     // ---- Discovery ----
     if (p === "/api/explorations" && req.method === "GET") {
       return json(discoverDbs());
+    }
+
+    // ---- Version + update check ----
+    if (p === "/api/version" && req.method === "GET") {
+      let update = { available: false, current: null as string | null, remote: null as string | null };
+      try { update = await checkForUpdate(REPO_ROOT); } catch { /* fail-silent */ }
+      return json({ update });
     }
 
     // ---- Get exploration data ----

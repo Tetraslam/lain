@@ -5,7 +5,7 @@ import * as os from "os";
 import { execFileSync } from "child_process";
 import { fileURLToPath } from "url";
 import { Orchestrator } from "@lain/core";
-import { Storage, Graph, Sync, Exporter, CanvasExporter, SynthesisEngine, Watcher, Corpus, connectMcpServers, deriveIntentContract, CURRENT_SCHEMA_VERSION } from "@lain/core";
+import { Storage, Graph, Sync, Exporter, CanvasExporter, SynthesisEngine, Watcher, Corpus, connectMcpServers, deriveIntentContract, CURRENT_SCHEMA_VERSION, checkForUpdate } from "@lain/core";
 import {
   buildExtensionRegistry,
 } from "@lain/extensions";
@@ -92,7 +92,7 @@ export async function run(args: ParsedArgs): Promise<void> {
     case "version":
       return runVersion();
     case "doctor":
-      return runDoctor();
+      return await runDoctor();
     case "update":
       return runUpdate();
     case "uninstall":
@@ -1461,7 +1461,7 @@ function runVersion(): void {
   console.log(`db schema v${CURRENT_SCHEMA_VERSION}  ·  bun ${process.versions.bun ?? "?"}  ·  ${root}`);
 }
 
-function runDoctor(): void {
+async function runDoctor(): Promise<void> {
   const root = repoRoot();
   const ok = (b: boolean) => (b ? "✓" : "✗");
   console.log("lain doctor\n");
@@ -1495,6 +1495,11 @@ function runDoctor(): void {
 
   const git = gitInfo(root);
   console.log(`  · ${git ? `git ${git.branch} @ ${git.commit}` : "not a git checkout (self-update unavailable)"}`);
+
+  const update = await checkForUpdate(root);
+  if (update.available) console.log(`  ↑ update available (${update.remote}) — run \`lain update\``);
+  else if (git) console.log(`  ✓ up to date`);
+
   console.log(`\n  lain ${lainVersion()} · schema v${CURRENT_SCHEMA_VERSION}`);
 }
 

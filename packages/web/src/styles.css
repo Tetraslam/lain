@@ -560,6 +560,15 @@ a:hover { color: var(--accent-hover); }
 .corpus-drop:hover { border-color: var(--accent); color: var(--fg-dim); }
 .corpus-drop.dragging { border-color: var(--accent); color: var(--accent); background: rgba(180, 160, 224, 0.08); }
 
+/* ---- Update pill ---- */
+.update-pill {
+  position: fixed; bottom: 14px; right: 16px;
+  font-size: 11px; color: var(--fg-dim); font-family: var(--font-mono);
+  background: var(--bg-elevated); border: 1px solid var(--border);
+  border-radius: 999px; padding: 5px 12px; opacity: 0.85;
+}
+.update-pill code { color: var(--accent); }
+
 /* ---- Scrollbar ---- */
 ::-webkit-scrollbar { width: 4px; }
 ::-webkit-scrollbar-track { background: transparent; }

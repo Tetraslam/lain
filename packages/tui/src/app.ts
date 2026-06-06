@@ -12,9 +12,10 @@ import {
 } from "@opentui/core";
 import { t, fg, dim, bold, italic, underline, strikethrough, cyan, green, yellow, magenta } from "@opentui/core";
 import type { KeyEvent, SelectOption } from "@opentui/core";
-import { ToasterRenderable, toast } from "@opentui-ui/toast";
-import { Storage, Graph, Orchestrator, Sync, Exporter, CanvasExporter, SynthesisEngine, Corpus, connectMcpServers } from "@lain/core";
+import { toast, mountToaster } from "./toast.js";
+import { Storage, Graph, Orchestrator, Sync, Exporter, CanvasExporter, SynthesisEngine, Corpus, connectMcpServers, checkForUpdate } from "@lain/core";
 import { buildExtensionRegistry } from "@lain/extensions";
+import { fileURLToPath } from "url";
 import type { LainNode, Exploration, Strategy, PlanDetail } from "@lain/shared";
 import { generateId } from "@lain/shared";
 import { loadConfig, loadCredentials, createProviderFromCredentials } from "./config-loader.js";
@@ -63,11 +64,7 @@ export async function createApp(dbPathArg?: string): Promise<void> {
   const termW = renderer.width ?? 80;
 
   // ---- Toast ----
-  const toaster = new ToasterRenderable(renderer, {
-    position: "bottom-right",
-    stackingMode: "stack",
-  });
-  renderer.root.add(toaster);
+  mountToaster(renderer);
 
   // ---- Root container ----
   const rootBox = new BoxRenderable(renderer, {
@@ -166,6 +163,19 @@ export async function createApp(dbPathArg?: string): Promise<void> {
     content: t`  ${dim("j/k")} navigate  ${fg(c.muted)("·")}  ${dim("enter")} open  ${fg(c.muted)("·")}  ${dim("ctrl+p")} command palette  ${fg(c.muted)("·")}  ${dim("q")} quit`,
   });
   homeFooter.add(homeFooterText);
+
+  // Subtle, fail-silent update check (cached 24h). If a newer lain is on main,
+  // append a quiet indicator to the home footer + a one-time toast.
+  (async () => {
+    try {
+      const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
+      const status = await checkForUpdate(repoRoot);
+      if (status.available) {
+        homeFooterText.content = t`  ${dim("j/k")} navigate  ${fg(c.muted)("·")}  ${dim("enter")} open  ${fg(c.muted)("·")}  ${dim("ctrl+p")} palette  ${fg(c.muted)("·")}  ${dim("q")} quit  ${fg(c.muted)("·")}  ${fg(c.yellow)(`↑ ${status.remote} — run 'lain update'`)}`;
+        try { (toast as { info?: (m: string) => void }).info?.(`update available (${status.remote}) — run 'lain update'`); } catch { /* ignore */ }
+      }
+    } catch { /* never let an update check break the TUI */ }
+  })();
 
   // ===========================================================================
   // EXPLORATION VIEW
@@ -378,7 +388,7 @@ export async function createApp(dbPathArg?: string): Promise<void> {
     const label = availableExtensions
       .map((ext, i) => (i === createExtIdx ? `‹${ext}›` : ext))
       .join("  ");
-    createExtDisplay.content = focused ? fg(c.accent)(label) : fg(c.bright)(label);
+    createExtDisplay.content = focused ? t`${fg(c.accent)(label)}` : t`${fg(c.bright)(label)}`;
   }
   updateExtDisplay();
 

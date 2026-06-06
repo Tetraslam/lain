@@ -36,8 +36,26 @@ if (args.command === "tui") {
   });
   child.on("exit", (code) => process.exit(code ?? 0));
 } else {
-  run(args).catch((err) => {
-    console.error(`Error: ${err.message}`);
-    process.exit(1);
-  });
+  run(args)
+    .then(() => notifyIfUpdateAvailable(args.command))
+    .catch((err) => {
+      console.error(`Error: ${err.message}`);
+      process.exit(1);
+    });
+}
+
+/** Subtle, fail-silent "update available" nudge printed after a command. */
+async function notifyIfUpdateAvailable(command: string): Promise<void> {
+  if (command === "update" || command === "version" || command === "help") return;
+  try {
+    const { checkForUpdate } = await import("@lain/core");
+    const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
+    const status = await checkForUpdate(repoRoot);
+    if (status.available) {
+      // dim grey, to stderr so it never pollutes piped stdout
+      process.stderr.write(`\n\x1b[2m↑ lain ${status.remote} is available — run \x1b[0m\x1b[36mlain update\x1b[0m\n`);
+    }
+  } catch {
+    /* never let an update check break the CLI */
+  }
 }

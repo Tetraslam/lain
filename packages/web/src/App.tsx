@@ -21,6 +21,14 @@ export function App() {
   );
   const [loading, setLoading] = useState(true);
   const [selectedIdx, setSelectedIdx] = useState(0);
+  const [updateRemote, setUpdateRemote] = useState<string | null>(null);
+
+  useEffect(() => {
+    fetch("/api/version")
+      .then((r) => r.json())
+      .then((d) => { if (d?.update?.available) setUpdateRemote(d.update.remote); })
+      .catch(() => {});
+  }, []);
 
   const fetchDbs = useCallback(async () => {
     try {
@@ -78,6 +86,12 @@ export function App() {
         <h1>lain</h1>
         <p>everything is connected</p>
       </div>
+
+      {updateRemote && (
+        <div className="update-pill" title="A newer lain is available">
+          ↑ update available ({updateRemote}) — run <code>lain update</code>
+        </div>
+      )}
 
       {loading ? (
         <p className="home-loading">loading...</p>

@@ -7,7 +7,7 @@
     "lain-tui": "./dist/index.js"
   },
   "scripts": {
-    "build": "tsup src/index.ts --format esm --no-splitting --external @opentui/core --external @opentui-ui/toast --external @opentui-ui/dialog --external bun:sqlite --external chokidar --external gray-matter",
+    "build": "tsup src/index.ts --format esm --no-splitting --external @opentui/core --external bun:sqlite --external chokidar --external gray-matter --external unpdf --external @modelcontextprotocol/sdk",
     "dev": "bun run src/index.ts",
     "clean": "rm -rf dist"
   },
@@ -16,8 +16,6 @@
     "@lain/core": "workspace:*",
     "@lain/extensions": "workspace:*",
     "@lain/shared": "workspace:*",
-    "@opentui-ui/dialog": "^0.1.2",
-    "@opentui-ui/toast": "^0.0.5",
-    "@opentui/core": "^0.1.99"
+    "@opentui/core": "^0.3.2"
   }
 }
