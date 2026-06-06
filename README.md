@@ -66,10 +66,24 @@ lain synthesize      lain export idea.db         lain sync idea.db
 
 ## Tools beyond the graph
 
+Add any remote [MCP](https://modelcontextprotocol.io) server; its tools join the
+agents' toolbelt automatically. Authenticate whichever way the server expects:
+
 ```bash
-# add any remote MCP server — its tools join the agents' toolbelt
+# key embedded in the URL (e.g. Firecrawl)
 lain mcp add firecrawl https://mcp.firecrawl.dev/<key>/v2/mcp
-lain mcp test firecrawl
+
+# bearer token  →  Authorization: Bearer <token>
+lain mcp add ctx https://mcp.example.com/v1 --bearer "$MY_TOKEN"
+
+# API key header  (defaults to X-API-Key; override with --api-key-header)
+lain mcp add db https://mcp.example.com/v1 --api-key "$KEY"
+lain mcp add db https://mcp.example.com/v1 --api-key "$KEY" --api-key-header X-Api-Token
+
+# arbitrary headers (repeatable)
+lain mcp add svc https://mcp.example.com/v1 --header "Authorization: Bearer $T" --header "X-Org: acme"
+
+lain mcp test svc     # connect + list its tools   ·   lain mcp list   (secrets redacted)
 ```
 
 ## Providers
