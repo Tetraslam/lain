@@ -63,7 +63,7 @@ Every interactive CLI command must have a `--non-interactive` alternative with e
 - All timestamps are ISO 8601 strings.
 
 ### Agent Layer (packages/agents/)
-- `AgentProvider` interface: `generate()`, `plan()`, `synthesize()`, `generateRaw(system, user)`.
+- `AgentProvider` interface: `generate()`, `plan()`, `synthesize()`, `generateRaw(system, user)`, `converse(request)` (tool-capable primitive), plus `modelId`/`providerName`.
 - `generateRaw` is for clean prompt-only calls (used by merge preview generation). Do NOT hijack `synthesize()` with custom prompts.
 - Prompt construction lives in `prompt-engine.ts`. Branching plan phase is separate from content generation.
 - Sibling-awareness: each agent knows what siblings are exploring to diverge meaningfully.
@@ -135,45 +135,109 @@ bun run vitest run           # direct vitest invocation
 
 Coverage is thin — many newer features (synthesis merge previews, node annotations, diff computation, web API endpoints) lack dedicated tests. The goal is hundreds of tests.
 
-## Current State (v0.4 in progress)
+## The Agent Substrate (v0.5 — current)
+
+Node generation is no longer a single completion. In **agentic** mode each node
+is expanded by a tool-using agent driven by `AgentRunner` (in `@lain/agents`)
+over the provider's `converse()` tool primitive.
+
+- **`converse(request)`** is the low-level tool-capable primitive on every
+  `AgentProvider` (Bedrock Converse `toolConfig`, Anthropic tools, OpenAI
+  Chat-Completions tools). It returns one assistant turn (text / tool_use).
+- **`AgentRunner.runAgent`** (`agents/src/runner.ts`) drives the multi-step
+  loop: it always pairs `tool_result` blocks with `tool_use`, enforces a step
+  budget, recovers from tool errors, and emits `AgentStepEvent`s.
+- **Tools** are `LainTool { spec: ToolSpec; handler(input, ctx) }`. The default
+  node toolbelt (`core/src/tools.ts`): `outline`, `read_node`, `search_nodes`,
+  `link_to_node`, `read_findings`, `note_finding`, and (when a corpus exists)
+  `search_corpus`, `list_corpus_sources`. The agent delivers its result via a
+  `submit_node` tool (with a nudge + abort-on-submit) — never free-form parsing.
+- **`generateNodeAgentic`** (`core/src/agentic.ts`) assembles the system prompt
+  (substrate + mission + extension), tool context, extension tools, and MCP
+  tools, then runs the loop.
+
+Subsystems that plug into the substrate:
+- **Corpus** (`core/src/corpus.ts`): ingest text/md/csv/json/pdf(unpdf)/image;
+  BM25 retrieval; tables `corpus_source`/`corpus_chunk`. Tools let agents ground
+  in the user's material.
+- **Mission** (`core/src/mission.ts`): `deriveIntentContract` turns a seed into
+  an intent + success criteria (tables `mission`); a **shared knowledge
+  library** (`finding` table + note/read tools) lets branches collaborate.
+- **MCP** (`core/src/mcp.ts`): `connectMcpServers` connects remote Streamable
+  HTTP MCP servers (`@modelcontextprotocol/sdk`) and adapts their tools to
+  `LainTool`s (namespaced `mcp_<server>_<tool>`). Config: `LainConfig.mcpServers`.
+- **Extensions** contribute `ExtensionTool`s (shared) adapted with a
+  dependency-light context (graph read, corpus search, sub-agent calls).
+
+### Providers
+All four are real and tool-capable: **Bedrock** (bearer token, raw fetch),
+**Anthropic** (SDK), **OpenAI** (Chat Completions, raw fetch), **OpenRouter**
+(OpenAI-compatible). `OpenAIProvider` also serves any OpenAI-compatible endpoint
+via `baseUrl`.
+
+### Distribution & lifecycle
+`install.sh` builds + writes a `lain` launcher to `~/.local/bin`. CLI:
+`version`/`--version`, `doctor`, `update` (git pull + rebuild; never touches
+dbs/config), `uninstall`. Storage has a `schema_version` (`CURRENT_SCHEMA_VERSION`)
+and an idempotent migrations runner; legacy dbs upgrade in place (additive
+tables) with no data loss.
 
 ### Complete
-- Core graph engine, SQLite storage, full CRUD
-- Agent layer (Bedrock + Anthropic providers, streaming)
-- Full CLI with all commands (explore, init, status, tree, show, prune, extend, redirect, link, sync, export, watch, config, synthesize, merge-synthesis)
-- Bidirectional Obsidian sync with file watcher
-- Extension system with 4 built-in extensions
-- TUI (home, exploration view, graph view, edit mode, command palette, create form, synthesis view)
-- Web UI (editorial layout, graph overlay, SSE streaming, edit mode, keyboard nav)
-- Canvas export to Obsidian `.canvas` format
-- Synthesis pass with staged annotations and merge preview
+- Core graph engine, SQLite storage (+ schema versioning/migrations), full CRUD
+- Agent layer: Bedrock + Anthropic + OpenAI + OpenRouter, streaming, tool-calling
+- Agent substrate: agentic node generation, corpus, missions, MCP, extension tools
+- Full CLI (explore, init, status, tree, show, prune, extend, redirect, link,
+  sync, export, watch, config, synthesize, merge-synthesis, corpus, mcp, mission,
+  version, doctor, update, uninstall)
+- Bidirectional Obsidian sync + file watcher; canvas export
+- Extension system (4 built-ins; worldbuilding ships a `coin_names` tool)
+- TUI (decomposed into theme/markdown/views modules; corpus grounding indicator)
+- Web UI (editorial layout, graph overlay, SSE, corpus drag-drop create flow +
+  live thinking feed, in-exploration corpus panel)
+- Synthesis with staged annotations + merge preview
+- Distribution: install/uninstall scripts, version/doctor/update commands
 
-### Remaining
-- Synthesis with custom instructions/focus/filters
-- Interactive mode (approve/reject/redirect at each depth)
-- Quality cleanup, comprehensive test coverage, polish across all surfaces
+### Remaining / opportunities
+- Deeper TUI motion/aesthetics + an agentic create flow + live thinking panel
+- Synthesis using the mission contract as an explicit rubric
+- MCP OAuth flow (header/bearer/api-key/url-token auth already supported)
+- Interactive approve/reject/redirect at each depth
+
+### Testing note
+`@lain/core` tests run under **`bun test`** (not vitest — they need `bun:sqlite`).
+`pnpm test` runs the whole suite green (106 core tests + shared/agents/extensions).
 
 ## File Reference
 
 | File | Purpose |
 |------|---------|
-| `PLAN.md` | Comprehensive project spec — the source of truth |
+| `README.md` | User-facing front door (install, quickstart, features) — start here |
+| `PLAN.md` | Original project spec (historical; README + this file reflect reality) |
 | `packages/shared/src/index.ts` | All shared types, config defaults, ID generation |
 | `packages/core/src/storage.ts` | SQLite schema + all CRUD operations |
 | `packages/core/src/graph.ts` | DAG operations (addNode, getAncestors, prune, LCA) |
-| `packages/core/src/orchestrator.ts` | Generation loop (BF/DF, concurrent, streaming) |
+| `packages/core/src/orchestrator.ts` | Generation loop (BF/DF, concurrent, streaming, agentic) |
+| `packages/core/src/agentic.ts` | Agentic node generation (substrate + mission + tools loop) |
+| `packages/core/src/tools.ts` | Default node toolbelt + LainTool/LainToolContext |
+| `packages/core/src/corpus.ts` | Multimodal ingestion + BM25 retrieval |
+| `packages/core/src/mission.ts` | Intent-contract derivation |
+| `packages/core/src/mcp.ts` | Remote MCP client (tools → LainTools) |
 | `packages/core/src/synthesis.ts` | SynthesisEngine (synthesize, computeDiff, merge, preview) |
 | `packages/core/src/sync.ts` | Bidirectional Obsidian sync |
 | `packages/core/src/watcher.ts` | File watcher daemon |
 | `packages/core/src/export.ts` | Obsidian markdown export |
 | `packages/core/src/canvas-export.ts` | Obsidian .canvas export with radial layout |
-| `packages/agents/src/bedrock.ts` | Bedrock provider (bearer token, binary stream parser) |
+| `packages/agents/src/bedrock.ts` | Bedrock provider (bearer token, converse + stream) |
+| `packages/agents/src/openai.ts` | OpenAI / OpenRouter / compatible provider |
+| `packages/agents/src/runner.ts` | AgentRunner tool-use loop |
 | `packages/agents/src/prompts.ts` | All prompt construction |
-| `packages/agents/src/types.ts` | AgentProvider interface |
+| `packages/shared/src/agent.ts` | Agent wire types (ContentBlock, ToolSpec, Converse*) |
 | `packages/cli/src/index.ts` | CLI entry + arg parser + serve/tui dispatch |
 | `packages/cli/src/commands.ts` | All CLI command implementations |
-| `packages/tui/src/index.ts` | Full TUI application |
+| `packages/tui/src/app.ts` | TUI application (+ theme.ts, markdown.ts, views.ts) |
 | `packages/tui/src/graph-view.ts` | Radial graph view (FrameBuffer, minimap, spatial nav) |
 | `packages/web/src/App.tsx` | Web home + routing |
-| `packages/web/src/ExplorationView.tsx` | Three-column layout, graph overlay, synthesis panel |
-| `packages/web/src/server/index.ts` | Bun HTTP API server (REST + SSE + static) |
+| `packages/web/src/components/ExplorationView.tsx` | Three-column layout, graph overlay, synthesis |
+| `packages/web/src/components/CreateModal.tsx` | Agentic create flow (corpus drop, thinking feed) |
+| `packages/web/src/server/index.ts` | Bun HTTP API server (REST + SSE + static + corpus) |
+| `install.sh` / `uninstall.sh` | Install a `lain` launcher / remove it |
