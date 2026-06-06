@@ -13,13 +13,34 @@ import {
 import { t, fg, dim, bold, italic, underline, strikethrough, cyan, green, yellow, magenta } from "@opentui/core";
 import type { KeyEvent, SelectOption } from "@opentui/core";
 import { ToasterRenderable, toast } from "@opentui-ui/toast";
-import { Storage, Graph, Orchestrator, Sync, Exporter, CanvasExporter, SynthesisEngine, Corpus } from "@lain/core";
+import { Storage, Graph, Orchestrator, Sync, Exporter, CanvasExporter, SynthesisEngine, Corpus, connectMcpServers } from "@lain/core";
+import { buildExtensionRegistry } from "@lain/extensions";
 import type { LainNode, Exploration, Strategy, PlanDetail } from "@lain/shared";
 import { generateId } from "@lain/shared";
 import { loadConfig, loadCredentials, createProviderFromCredentials } from "./config-loader.js";
 import { GraphView } from "./graph-view.js";
 import * as fs from "fs";
 import * as path from "path";
+
+/** Human-readable labels for the agentic "thinking" feed. */
+const TOOL_LABELS: Record<string, string> = {
+  outline: "scanning the whole graph",
+  read_node: "reading a related branch",
+  search_nodes: "searching other nodes",
+  search_corpus: "consulting source material",
+  list_corpus_sources: "reviewing sources",
+  read_findings: "reading shared findings",
+  note_finding: "recording a finding",
+  link_to_node: "linking to a branch",
+  coin_names: "coining in-world names",
+  submit_node: "writing the node",
+};
+function toolLabel(name: string): string {
+  if (TOOL_LABELS[name]) return TOOL_LABELS[name];
+  if (name.startsWith("mcp_")) return `calling ${name.replace(/^mcp_/, "").replace(/_/g, " ")}`;
+  return name;
+}
+const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 import { c } from "./theme.js";
 import { renderMarkdown } from "./markdown.js";
@@ -351,13 +372,13 @@ export async function createApp(dbPathArg?: string): Promise<void> {
   createParamsRow.add(createExtDisplay);
 
   function updateExtDisplay(focused = false) {
-    const parts = availableExtensions.map((ext, i) => {
-      if (i === createExtIdx) {
-        return focused ? fg(c.accent)(`▸${ext}`) : fg(c.bright)(`▸${ext}`);
-      }
-      return dim(` ${ext}`);
-    });
-    createExtDisplay.content = t`${parts.join(" ")}`;
+    // Plain string (styled-text objects can't be joined — they stringify to
+    // "[object Object]"); the selected lens is bracketed and the whole field is
+    // colored to signal focus.
+    const label = availableExtensions
+      .map((ext, i) => (i === createExtIdx ? `‹${ext}›` : ext))
+      .join("  ");
+    createExtDisplay.content = focused ? fg(c.accent)(label) : fg(c.bright)(label);
   }
   updateExtDisplay();
 
@@ -1157,62 +1178,47 @@ Using extension: ${bold(useExt)}.
 
     let nodesGenerated = 0;
     let totalExpected = 0;
-    let streamingBuffers = new Map<string, string>(); // per-node buffers
-    let activeStreamNodeId = "";
-    let streamingNodeTitle = "";
     for (let d = 1; d <= useM; d++) totalExpected += Math.pow(useN, d);
+
+    // Live "thinking" feed (newest last). Plain strings so they compose into `t`.
+    const feed: string[] = [];
+    const pushFeed = (line: string) => { feed.push(line); if (feed.length > 200) feed.shift(); };
+    let spin = 0;
+
+    const renderProgress = () => {
+      const frame = SPINNER[spin % SPINNER.length];
+      expHeaderText.content = t`  ${fg(c.accent)("lain")}  ${dim(shortName)}  ${fg(c.muted)("·")}  ${fg(c.yellow)(`${frame} ${nodesGenerated}/${totalExpected}`)}  ${fg(c.muted)("·")}  ${fg(c.green)("agentic")}  ${fg(c.muted)("·")}  ${dim(`n=${useN} m=${useM}`)}`;
+      const visible = feed.slice(-18).join("\n");
+      nodeText.content = t`${bold(fg(c.bright)(seed))}
+${fg(c.muted)("─".repeat(Math.min(50, seed.length)))}
+
+${fg(c.yellow)(`${frame} weaving the graph`)}  ${dim(`${nodesGenerated}/${totalExpected} nodes`)}
+
+${dim(visible)}`;
+    };
+    const spinner = setInterval(() => { spin++; renderProgress(); }, 90);
+    renderProgress();
+
+    const extensions = buildExtensionRegistry();
+    const mcpPool = await connectMcpServers(config.mcpServers);
+    if (mcpPool.tools.length > 0) pushFeed(`mcp: ${mcpPool.tools.length} tool(s) from ${mcpPool.connections.length} server(s)`);
 
     try {
       const orchestrator = new Orchestrator({
-        dbPath: newDbPath, agent, concurrency: 5, streaming: true,
+        dbPath: newDbPath, agent, concurrency: 5, agentic: true, extensions, extraTools: mcpPool.tools,
         onEvent: (event) => {
-          if (event.type === "node:content-chunk") {
-            const chunkData = event.data as { chunk?: string; nodeId?: string } | undefined;
-            const nodeId = event.nodeId || "";
-            if (chunkData?.chunk) {
-              const buf = (streamingBuffers.get(nodeId) || "") + chunkData.chunk;
-              streamingBuffers.set(nodeId, buf);
-              // Only display the first active stream to avoid interleaving
-              if (!activeStreamNodeId || activeStreamNodeId === nodeId) {
-                activeStreamNodeId = nodeId;
-                if (chunkData.chunk.includes("\n") || buf.length < 50) {
-                  const lines = buf.split("\n");
-                  const visibleLines = lines.slice(-20).join("\n");
-                  nodeText.content = t`${bold(fg(c.bright)(seed))}
-
-${fg(c.yellow)(`Generating... ${nodesGenerated}/${totalExpected} nodes complete`)}
-${dim(`current: ${streamingNodeTitle || "..."}`)}
-
-${visibleLines}`;
-                }
-              }
-            }
-          }
-          if (event.type === "node:generating") {
-            streamingNodeTitle = event.nodeId || "";
-          }
-          if (event.type === "node:complete") {
+          if (event.type === "plan:complete") {
+            const d = event.data as { directions?: string[] } | undefined;
+            if (d?.directions) pushFeed(`✦ planned ${d.directions.length} directions from ${event.nodeId}`);
+          } else if (event.type === "node:agent-step") {
+            const step = event.data as { kind?: string; name?: string } | undefined;
+            if (step?.kind === "tool_call") pushFeed(`  ↳ ${event.nodeId}  ${toolLabel(step.name || "")}`);
+          } else if (event.type === "node:complete") {
             nodesGenerated++;
-            const nodeId = event.nodeId || "";
-            streamingBuffers.delete(nodeId);
-            if (activeStreamNodeId === nodeId) {
-              // Switch to next active stream if any
-              const nextActive = streamingBuffers.keys().next().value;
-              activeStreamNodeId = nextActive || "";
-            }
             const data = event.data as { title?: string } | undefined;
-            const title = data?.title || "untitled";
-            streamingNodeTitle = title;
-            const short = title.length > 30 ? title.slice(0, 29) + "…" : title;
-            // Update the generating view with progress
-            expHeaderText.content = t`  ${fg(c.accent)("lain")}  ${dim(shortName)}  ${fg(c.muted)("·")}  ${fg(c.yellow)(`generating ${nodesGenerated}/${totalExpected}`)}  ${fg(c.muted)("·")}  ${dim(`n=${useN} m=${useM}`)}`;
-            nodeText.content = t`${bold(fg(c.bright)(seed))}
-
-${fg(c.yellow)(`Generating... ${nodesGenerated}/${totalExpected} nodes complete`)}
-
-Latest: ${short}
-`;
+            pushFeed(`✓ ${event.nodeId}  ${data?.title || "untitled"}`);
           }
+          renderProgress();
         },
       });
       await orchestrator.explore({
@@ -1223,11 +1229,15 @@ Latest: ${short}
         extension: useExt,
       });
       orchestrator.close();
+      await mcpPool.close();
+      clearInterval(spinner);
       generating = false;
       toast.success("Exploration complete!");
       refreshHomeScreen();
       openExploration(newDbPath, expId);
     } catch (err: any) {
+      clearInterval(spinner);
+      await mcpPool.close();
       generating = false;
       toast.error(`Create failed: ${err.message}`);
       mode = "home";
