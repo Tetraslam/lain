@@ -20,11 +20,14 @@ interface Item {
 
 const GLYPH: Record<Kind, string> = { success: "✓", error: "✗", warning: "!", info: "·", loading: "…" };
 const COLOR: Record<Kind, string> = { success: c.green, error: c.red, warning: c.yellow, info: c.blue, loading: c.accent };
+const SPIN = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 let box: BoxRenderable | null = null;
 let text: TextRenderable | null = null;
 let items: Item[] = [];
 let counter = 0;
+let spinTimer: ReturnType<typeof setInterval> | null = null;
+let spin = 0;
 
 function render(): void {
   if (!box || !text) return;
@@ -34,8 +37,20 @@ function render(): void {
     return;
   }
   const it = items[items.length - 1];
+  const glyph = it.kind === "loading" ? SPIN[spin % SPIN.length] : GLYPH[it.kind];
   box.visible = true;
-  text.content = t`${fg(COLOR[it.kind])(GLYPH[it.kind])}  ${fg(c.bright)(it.msg)}`;
+  text.content = t`${fg(COLOR[it.kind])(glyph)}  ${fg(c.bright)(it.msg)}`;
+}
+
+/** Run a spinner animation only while a loading toast is showing. */
+function syncSpinner(): void {
+  const hasLoading = items.some((i) => i.kind === "loading");
+  if (hasLoading && !spinTimer) {
+    spinTimer = setInterval(() => { spin++; render(); }, 90);
+  } else if (!hasLoading && spinTimer) {
+    clearInterval(spinTimer);
+    spinTimer = null;
+  }
 }
 
 /** Create the toast overlay. Call once after the renderer exists. */
@@ -62,6 +77,7 @@ function push(kind: Kind, msg: string, sticky = false): number {
   items.push(item);
   if (items.length > 4) items.shift();
   if (!sticky) item.timer = setTimeout(() => dismiss(id), 2600);
+  syncSpinner();
   render();
   return id;
 }
@@ -75,6 +91,7 @@ export function dismiss(id?: number): void {
     if (i?.timer) clearTimeout(i.timer);
     items = items.filter((x) => x.id !== id);
   }
+  syncSpinner();
   render();
 }
 

@@ -5,7 +5,7 @@ import * as os from "os";
 import { execFileSync } from "child_process";
 import { fileURLToPath } from "url";
 import { Orchestrator } from "@lain/core";
-import { Storage, Graph, Sync, Exporter, CanvasExporter, SynthesisEngine, Watcher, Corpus, connectMcpServers, deriveIntentContract, CURRENT_SCHEMA_VERSION, checkForUpdate } from "@lain/core";
+import { Storage, Graph, Sync, Exporter, CanvasExporter, SynthesisEngine, Watcher, Corpus, connectMcpServers, deriveIntentContract, CURRENT_SCHEMA_VERSION, checkForUpdate, addRecentDb } from "@lain/core";
 import {
   buildExtensionRegistry,
 } from "@lain/extensions";
@@ -474,6 +474,7 @@ async function runShow(args: ParsedArgs): Promise<void> {
   if (!nodeId) throw new Error("Usage: lain show <node-id> [--db file.db]");
 
   const dbFile = getFlag(args.flags, "db") || findDb();
+  addRecentDb(path.resolve(dbFile));
   const storage = new Storage(dbFile);
   const graph = new Graph(storage);
 
@@ -509,6 +510,7 @@ async function runShow(args: ParsedArgs): Promise<void> {
 async function runTree(args: ParsedArgs): Promise<void> {
   const explorationId = args.positional[0];
   const dbFile = getFlag(args.flags, "db") || findDb();
+  addRecentDb(path.resolve(dbFile));
   const storage = new Storage(dbFile);
   const graph = new Graph(storage);
 

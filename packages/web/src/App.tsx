@@ -22,6 +22,9 @@ export function App() {
   const [loading, setLoading] = useState(true);
   const [selectedIdx, setSelectedIdx] = useState(0);
   const [updateRemote, setUpdateRemote] = useState<string | null>(null);
+  const [dirs, setDirs] = useState<string[]>([]);
+  const [dirInput, setDirInput] = useState("");
+  const [dirError, setDirError] = useState("");
 
   useEffect(() => {
     fetch("/api/version")
@@ -39,6 +42,31 @@ export function App() {
   }, []);
 
   useEffect(() => { fetchDbs(); }, [fetchDbs]);
+
+  const fetchDirs = useCallback(async () => {
+    try { const r = await fetch("/api/dirs"); const d = await r.json(); setDirs(d.dirs ?? []); } catch {}
+  }, []);
+  useEffect(() => { fetchDirs(); }, [fetchDirs]);
+
+  const addDir = useCallback(async () => {
+    const dir = dirInput.trim();
+    if (!dir) return;
+    setDirError("");
+    try {
+      const r = await fetch("/api/dirs", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ dir }) });
+      const d = await r.json();
+      if (d.error) { setDirError(d.error); return; }
+      setDirs(d.dirs ?? []); setDirInput(""); fetchDbs();
+    } catch (e: any) { setDirError(e.message); }
+  }, [dirInput, fetchDbs]);
+
+  const removeDir = useCallback(async (dir: string) => {
+    try {
+      const r = await fetch("/api/dirs", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ dir }) });
+      const d = await r.json();
+      setDirs(d.dirs ?? []); fetchDbs();
+    } catch {}
+  }, [fetchDbs]);
 
   // Keyboard navigation on home screen
   useEffect(() => {
@@ -123,6 +151,30 @@ export function App() {
           </button>
         </div>
       )}
+
+      <div className="scan-dirs">
+        <div className="scan-row">
+          <input
+            className="form-input scan-input"
+            placeholder="add a folder to scan for explorations (e.g. ~/ideas)…"
+            value={dirInput}
+            onChange={(e) => setDirInput(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") addDir(); }}
+          />
+          <button className="btn" onClick={addDir} disabled={!dirInput.trim()}>Add folder</button>
+        </div>
+        {dirError && <div className="scan-error">{dirError}</div>}
+        {dirs.length > 0 && (
+          <div className="scan-chips">
+            {dirs.map((d) => (
+              <span key={d} className="scan-chip" title={d}>
+                {d.replace(/^.*\//, "▸ ")}
+                <button className="chip-x" onClick={() => removeDir(d)}>×</button>
+              </span>
+            ))}
+          </div>
+        )}
+      </div>
 
       {showCreate && (
         <CreateModal

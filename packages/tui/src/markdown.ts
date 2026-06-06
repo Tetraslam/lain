@@ -1,130 +1,116 @@
-// Markdown → terminal-text renderer for the TUI.
+// Markdown → styled terminal text for the TUI.
 //
-// OpenTUI's MarkdownRenderable doesn't work (tree-sitter grammars fail to
-// load), so we render markdown to plain text with box-drawing affordances.
-// Pure string-in/string-out — no renderer or theme dependencies.
+// OpenTUI's MarkdownRenderable doesn't work (tree-sitter grammars fail to load),
+// so we render markdown into a StyledText: headings, bold, italic, inline code,
+// code blocks, lists, blockquotes, rules, and links each get real color/weight
+// within terminal constraints. No leading indent on body text.
 
-/**
- * Render markdown content into terminal text.
- * Handles: headings, bold, italic, strikethrough, inline code, code blocks,
- * lists, blockquotes, horizontal rules, and links.
- */
-export function renderMarkdown(md: string): string {
-  if (!md) return "";
-  const lines = md.split("\n");
-  const output: string[] = [];
-  let inCodeBlock = false;
-  let codeBlockLang = "";
-  let codeLines: string[] = [];
+import { fg, bold, italic, dim, strikethrough, stringToStyledText, StyledText } from "@opentui/core";
+import type { TextChunk } from "@opentui/core";
+import { c } from "./theme.js";
 
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-
-    // Code block fence
-    if (line.trimStart().startsWith("```")) {
-      if (!inCodeBlock) {
-        inCodeBlock = true;
-        codeBlockLang = line.trimStart().slice(3).trim();
-        codeLines = [];
-      } else {
-        output.push(`  ┌─${codeBlockLang ? ` ${codeBlockLang} ` : ""}${"─".repeat(Math.max(0, 36 - codeBlockLang.length))}`);
-        for (const cl of codeLines) {
-          output.push(`  │ ${cl}`);
-        }
-        output.push(`  └${"─".repeat(40)}`);
-        inCodeBlock = false;
-        codeBlockLang = "";
-      }
-      continue;
-    }
-
-    if (inCodeBlock) {
-      codeLines.push(line);
-      continue;
-    }
-
-    // Horizontal rule
-    if (/^---+$|^\*\*\*+$|^___+$/.test(line.trim())) {
-      output.push("  ─────────────────────────────────────────");
-      continue;
-    }
-
-    // Headings
-    const h1Match = line.match(/^# (.+)/);
-    if (h1Match) {
-      const text = renderInline(h1Match[1]);
-      output.push("");
-      output.push(`  ${text}`);
-      output.push(`  ${"━".repeat(Math.min(50, h1Match[1].length))}`);
-      output.push("");
-      continue;
-    }
-    const h2Match = line.match(/^## (.+)/);
-    if (h2Match) {
-      output.push("");
-      output.push(`  ${renderInline(h2Match[1])}`);
-      output.push("");
-      continue;
-    }
-    const h3Match = line.match(/^### (.+)/);
-    if (h3Match) {
-      output.push(`  ${renderInline(h3Match[1])}`);
-      continue;
-    }
-
-    // Blockquote
-    if (line.startsWith("> ") || line === ">") {
-      const content = line.slice(2);
-      output.push(`  ▐ ${renderInline(content)}`);
-      continue;
-    }
-
-    // Unordered list
-    const ulMatch = line.match(/^(\s*)[*\-+] (.+)/);
-    if (ulMatch) {
-      const indent = "  ".repeat(Math.floor(ulMatch[1].length / 2));
-      output.push(`  ${indent}• ${renderInline(ulMatch[2])}`);
-      continue;
-    }
-
-    // Ordered list
-    const olMatch = line.match(/^(\s*)(\d+)\. (.+)/);
-    if (olMatch) {
-      const indent = "  ".repeat(Math.floor(olMatch[1].length / 2));
-      output.push(`  ${indent}${olMatch[2]}. ${renderInline(olMatch[3])}`);
-      continue;
-    }
-
-    // Regular paragraph line
-    if (line.trim() === "") {
-      output.push("");
-    } else {
-      output.push(`  ${renderInline(line)}`);
-    }
-  }
-
-  // Handle unclosed code block
-  if (inCodeBlock && codeLines.length > 0) {
-    output.push(`  ┌─${codeBlockLang ? ` ${codeBlockLang} ` : ""}${"─".repeat(Math.max(0, 36 - codeBlockLang.length))}`);
-    for (const cl of codeLines) output.push(`  │ ${cl}`);
-    output.push(`  └${"─".repeat(40)}`);
-  }
-
-  return output.join("\n");
+/** Wrap raw text as chunks (no styling). */
+function raw(s: string): TextChunk[] {
+  return s ? stringToStyledText(s).chunks : [];
 }
 
-/**
- * Render inline markdown: bold, italic, strikethrough, inline code, links.
- */
-export function renderInline(text: string): string {
-  return text
-    .replace(/`([^`]+)`/g, "‹$1›")
-    .replace(/\*\*\*(.+?)\*\*\*/g, "$1")
-    .replace(/___(.+?)___/g, "$1")
-    .replace(/\*\*(.+?)\*\*/g, "$1")
-    .replace(/__(.+?)__/g, "$1")
-    .replace(/\*(.+?)\*/g, "$1")
-    .replace(/_(.+?)_/g, "$1")
-    .replace(/~~(.+?)~~/g, "$1")
-    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, "$1 ‹$2›");
+/** Concatenate StyledText / strings into one StyledText. */
+export function joinStyled(...parts: (StyledText | string)[]): StyledText {
+  const chunks: TextChunk[] = [];
+  for (const p of parts) chunks.push(...(typeof p === "string" ? raw(p) : p.chunks));
+  return new StyledText(chunks);
+}
+
+/** Tokenize inline markdown (code, bold, italic, strike, links) into chunks. */
+function renderInlineChunks(text: string): TextChunk[] {
+  const out: TextChunk[] = [];
+  const re =
+    /(`[^`]+`)|(\*\*\*[^*]+\*\*\*|___[^_]+___)|(\*\*[^*]+\*\*|__[^_]+__)|(~~[^~]+~~)|(\[[^\]]+\]\([^)]+\))|(\*[^*\s][^*]*\*|(?<![A-Za-z0-9])_[^_\s][^_]*_(?![A-Za-z0-9]))/;
+  let rest = text;
+  let guard = 0;
+  while (rest.length && guard++ < 5000) {
+    const m = re.exec(rest);
+    if (!m) { out.push(...raw(rest)); break; }
+    if (m.index > 0) out.push(...raw(rest.slice(0, m.index)));
+    const tok = m[0];
+    if (tok.startsWith("`")) {
+      out.push(fg(c.green)(tok.slice(1, -1)));
+    } else if (/^(\*\*\*|___)/.test(tok)) {
+      out.push(bold(italic(fg(c.bright)(tok.slice(3, -3)))));
+    } else if (/^(\*\*|__)/.test(tok)) {
+      out.push(bold(fg(c.bright)(tok.slice(2, -2))));
+    } else if (tok.startsWith("~~")) {
+      out.push(strikethrough(dim(tok.slice(2, -2))));
+    } else if (tok.startsWith("[")) {
+      const mm = /\[([^\]]+)\]\(([^)]+)\)/.exec(tok)!;
+      out.push(fg(c.blue)(mm[1]), fg(c.muted)(` ‹${mm[2]}›`));
+    } else {
+      out.push(italic(tok.slice(1, -1)));
+    }
+    rest = rest.slice(m.index + tok.length);
+  }
+  return out;
+}
+
+export function renderMarkdown(md: string): StyledText {
+  if (!md) return new StyledText([]);
+  const lines = md.split("\n");
+  const out: TextChunk[] = [];
+  let first = true;
+  const line = (chunks: TextChunk[]) => {
+    if (!first) out.push(...raw("\n"));
+    first = false;
+    out.push(...chunks);
+  };
+
+  let inCode = false;
+  let codeLang = "";
+
+  for (const ln of lines) {
+    const trimmed = ln.trimStart();
+
+    // Code fence
+    if (trimmed.startsWith("```")) {
+      if (!inCode) { inCode = true; codeLang = trimmed.slice(3).trim(); line([fg(c.muted)(`┌─${codeLang ? ` ${codeLang} ` : "─"}${"─".repeat(Math.max(0, 30 - codeLang.length))}`)]); }
+      else { inCode = false; codeLang = ""; line([fg(c.muted)("└" + "─".repeat(32))]); }
+      continue;
+    }
+    if (inCode) { line([fg(c.muted)("│ "), fg(c.green)(ln)]); continue; }
+
+    // Horizontal rule
+    if (/^(---+|\*\*\*+|___+)$/.test(ln.trim())) { line([fg(c.muted)("─".repeat(42))]); continue; }
+
+    // Headings
+    let m: RegExpMatchArray | null;
+    if ((m = ln.match(/^#\s+(.+)/))) { line([]); line([bold(fg(c.accent)(m[1].toUpperCase()))]); continue; }
+    if ((m = ln.match(/^##\s+(.+)/))) { line([]); line([bold(fg(c.bright)(m[1]))]); continue; }
+    if ((m = ln.match(/^###\s+(.+)/))) { line([bold(fg(c.blue)(m[1]))]); continue; }
+    if ((m = ln.match(/^#{4,6}\s+(.+)/))) { line([fg(c.blue)(m[1])]); continue; }
+
+    // Blockquote
+    if (ln.startsWith(">")) {
+      const content = ln.replace(/^>\s?/, "");
+      line([fg(c.accent)("▏ "), ...renderInlineChunks(content).map((ch) => dim(ch))]);
+      continue;
+    }
+
+    // Lists (preserve relative nesting indent only)
+    if ((m = ln.match(/^(\s*)[*\-+]\s+(.+)/))) {
+      const pad = " ".repeat(Math.floor(m[1].length / 2) * 2);
+      line([...raw(pad), fg(c.accent)("• "), ...renderInlineChunks(m[2])]);
+      continue;
+    }
+    if ((m = ln.match(/^(\s*)(\d+)\.\s+(.+)/))) {
+      const pad = " ".repeat(Math.floor(m[1].length / 2) * 2);
+      line([...raw(pad), fg(c.accent)(`${m[2]}. `), ...renderInlineChunks(m[3])]);
+      continue;
+    }
+
+    // Paragraph / blank
+    if (ln.trim() === "") line([]);
+    else line(renderInlineChunks(ln));
+  }
+
+  if (inCode) line([fg(c.muted)("└" + "─".repeat(32))]);
+  return new StyledText(out);
 }

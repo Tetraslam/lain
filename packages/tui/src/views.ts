@@ -2,13 +2,13 @@
 // node content, and the help reference. Extracted from app.ts to shrink the
 // main module; these have no renderer/state dependencies.
 
-import { Storage, Graph } from "@lain/core";
+import { Storage, Graph, collectDbFiles } from "@lain/core";
 import type { LainNode } from "@lain/shared";
 import { t, fg, dim, bold, type StyledText } from "@opentui/core";
 import * as fs from "fs";
 import * as path from "path";
 import { c } from "./theme.js";
-import { renderMarkdown } from "./markdown.js";
+import { renderMarkdown, joinStyled } from "./markdown.js";
 
 export interface DbInfo {
   path: string;
@@ -32,33 +32,24 @@ export interface PaletteAction {
 /** Discover .db files containing explorations, walking up to 4 dirs from startDir. */
 export function discoverDbs(startDir: string): DbInfo[] {
   const results: DbInfo[] = [];
-  let dir = startDir;
-  for (let i = 0; i < 4; i++) {
+  // cwd (+parents) + configured dirs + recently-opened dbs (deduped).
+  for (const full of collectDbFiles(startDir)) {
     try {
-      for (const entry of fs.readdirSync(dir)) {
-        if (!entry.endsWith(".db")) continue;
-        const full = path.join(dir, entry);
-        try {
-          const s = new Storage(full);
-          const g = new Graph(s);
-          const exps = g.getAllExplorations();
-          if (exps.length > 0) {
-            results.push({
-              path: full,
-              name: entry,
-              explorations: exps.map((e) => ({
-                id: e.id, name: e.name, seed: e.seed, n: e.n, m: e.m, ext: e.extension,
-                nodeCount: g.getAllNodes(e.id).filter((n) => n.status !== "pruned").length,
-              })),
-            });
-          }
-          s.close();
-        } catch {}
+      const s = new Storage(full);
+      const g = new Graph(s);
+      const exps = g.getAllExplorations();
+      if (exps.length > 0) {
+        results.push({
+          path: full,
+          name: path.basename(full),
+          explorations: exps.map((e) => ({
+            id: e.id, name: e.name, seed: e.seed, n: e.n, m: e.m, ext: e.extension,
+            nodeCount: g.getAllNodes(e.id).filter((n) => n.status !== "pruned").length,
+          })),
+        });
       }
+      s.close();
     } catch {}
-    const parent = path.dirname(dir);
-    if (parent === dir) break;
-    dir = parent;
   }
   return results;
 }
@@ -123,13 +114,14 @@ export function buildNodeContent(node: LainNode, graph: Graph, allNodes: LainNod
   const titleStr = node.title || node.id;
   const sep = "─".repeat(Math.min(50, titleStr.length));
 
-  return t`${breadcrumb ? `${breadcrumb}\n\n` : ""}${bold(fg(c.bright)(titleStr))}
+  const head = t`${breadcrumb ? `${breadcrumb}\n\n` : ""}${bold(fg(c.bright)(titleStr))}
 ${fg(c.muted)(sep)}
 
 ${fg(c.blue)("id")}  ${node.id}  ${fg(c.muted)("·")}  ${fg(c.blue)("depth")}  ${String(node.depth)}  ${fg(c.muted)("·")}  ${fg(c.blue)("branch")}  ${String(node.branchIndex)}  ${fg(c.muted)("·")}  ${fg(statusColor)(node.status)}
 ${metaExtraStr}
-${node.content ? renderMarkdown(node.content) : dim("(no content)")}
-${crosslinksStr}${notesStr}${childrenStr}`;
+`;
+  const body = node.content ? renderMarkdown(node.content) : t`${dim("(no content)")}`;
+  return joinStyled(head, body, `${crosslinksStr}${notesStr}${childrenStr}`);
 }
 
 /** Build the keyboard reference shown in help mode. */

@@ -13,7 +13,7 @@ import {
 import { t, fg, dim, bold, italic, underline, strikethrough, cyan, green, yellow, magenta } from "@opentui/core";
 import type { KeyEvent, SelectOption } from "@opentui/core";
 import { toast, mountToaster } from "./toast.js";
-import { Storage, Graph, Orchestrator, Sync, Exporter, CanvasExporter, SynthesisEngine, Corpus, connectMcpServers, checkForUpdate, deriveIntentContract } from "@lain/core";
+import { Storage, Graph, Orchestrator, Sync, Exporter, CanvasExporter, SynthesisEngine, Corpus, connectMcpServers, checkForUpdate, deriveIntentContract, addRecentDb } from "@lain/core";
 import { buildExtensionRegistry } from "@lain/extensions";
 import { fileURLToPath } from "url";
 import type { LainNode, Exploration, Strategy, PlanDetail } from "@lain/shared";
@@ -44,7 +44,7 @@ function toolLabel(name: string): string {
 const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 import { c } from "./theme.js";
-import { renderMarkdown } from "./markdown.js";
+import { renderMarkdown, joinStyled } from "./markdown.js";
 import {
   discoverDbs,
   buildTreeItems,
@@ -686,6 +686,7 @@ ${annotation.merged ? dim("Already merged.") : dim("m — merge  ·  d — dismi
   function openExploration(openDbPath: string, expId?: string) {
     if (storage) storage.close();
     dbPath = openDbPath;
+    addRecentDb(openDbPath);
     storage = new Storage(dbPath);
     graph = new Graph(storage);
     const exps = graph.getAllExplorations();
@@ -1051,24 +1052,27 @@ ${annotation.merged ? dim("Already merged.") : dim("m — merge  ·  d — dismi
     const node = selectedNode();
     if (!node || !exploration) return;
     if (node.status !== "complete") { toast.warning("Can only extend complete nodes"); return; }
-    toast.loading("Extending...");
+    const hasCorpus = storage ? new Corpus(storage).listSources(exploration.id).length > 0 : false;
+    const loadingId = toast.loading(hasCorpus ? `Extending ${node.id} (grounding in corpus)…` : `Extending ${node.id}…`);
     try {
       const config = loadConfig();
       const credentials = loadCredentials();
       const agent = createProviderFromCredentials(config, credentials);
-      const hasCorpus = storage ? new Corpus(storage).listSources(exploration.id).length > 0 : false;
-      if (hasCorpus) toast.loading("Extending (agentic — grounding in corpus)...");
       const orchestrator = new Orchestrator({ dbPath, agent, agentic: hasCorpus });
-      await orchestrator.extendNode(exploration.id, node.id, exploration.n);
+      const children = await orchestrator.extendNode(exploration.id, node.id, exploration.n);
       orchestrator.close();
       if (storage) storage.close();
       storage = new Storage(dbPath);
       graph = new Graph(storage);
-      toast.success(`Extended with ${exploration.n} children`);
+      toast.dismiss(loadingId);
+      toast.success(`Added ${children.length} ${children.length === 1 ? "child" : "children"} to ${node.id}`);
       refreshTree();
       const current = selectedNode();
       if (current) showNode(current);
-    } catch (err: any) { toast.error(`Extend failed: ${err.message}`); }
+    } catch (err: any) {
+      toast.dismiss(loadingId);
+      toast.error(`Extend failed: ${err.message}`);
+    }
   }
 
   async function doRedirect() {
@@ -1567,7 +1571,7 @@ ${dim(visible)}`;
                 const parentTitle = graph?.getNode(preview.parentId)?.title || preview.parentId;
                 const typeLabel = annotation.type === "contradiction" ? "Resolution" : "Synthesis";
 
-                synthDetailText.content = t`${bold(fg(c.accent)(typeLabel))}
+                synthDetailText.content = joinStyled(t`${bold(fg(c.accent)(typeLabel))}
 
 ${dim("involved nodes")}
   ${dim("from")}  ${sourceTitle}
@@ -1581,10 +1585,10 @@ ${dim("will create")}
 
 ${fg(c.muted)("─".repeat(40))}
 
-${renderMarkdown(preview.content)}
+`, renderMarkdown(preview.content), t`
 
 ${fg(c.muted)("─".repeat(40))}
-  ${fg(c.yellow)("y")} accept  ${fg(c.muted)("·")}  ${fg(c.yellow)("n")} reject`;
+  ${fg(c.yellow)("y")} accept  ${fg(c.muted)("·")}  ${fg(c.yellow)("n")} reject`);
                 synthFooterText.content = t`  ${dim("y")} accept  ${fg(c.muted)("·")}  ${dim("n")} reject`;
                 pendingMergePreview = { annotationId: annotation.id, explorationId: exploration.id, preview };
               } catch (err: any) {

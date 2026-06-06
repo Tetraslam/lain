@@ -560,6 +560,19 @@ a:hover { color: var(--accent-hover); }
 .corpus-drop:hover { border-color: var(--accent); color: var(--fg-dim); }
 .corpus-drop.dragging { border-color: var(--accent); color: var(--accent); background: rgba(180, 160, 224, 0.08); }
 
+/* ---- Scan folders (home) ---- */
+.scan-dirs { max-width: 640px; margin: 24px auto 0; width: 100%; }
+.scan-row { display: flex; gap: 8px; }
+.scan-input { flex: 1; font-size: 12px; }
+.scan-error { color: var(--red, #f7768e); font-size: 11px; margin-top: 6px; font-family: var(--font-mono); }
+.scan-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.scan-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 11px; font-family: var(--font-mono); color: var(--fg-dim);
+  background: var(--bg-elevated); border: 1px solid var(--border);
+  border-radius: 6px; padding: 3px 8px;
+}
+
 /* ---- Update pill ---- */
 .update-pill {
   position: fixed; bottom: 14px; right: 16px;

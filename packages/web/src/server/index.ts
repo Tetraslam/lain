@@ -3,7 +3,7 @@
  * Serves REST endpoints + SSE for streaming.
  * Run with: bun run src/server/index.ts
  */
-import { Storage, Graph, Orchestrator, Sync, Exporter, SynthesisEngine, Corpus, checkForUpdate } from "@lain/core";
+import { Storage, Graph, Orchestrator, Sync, Exporter, SynthesisEngine, Corpus, checkForUpdate, collectDbFiles, addRecentDb, getDiscoveryDirs, addDiscoveryDir, removeDiscoveryDir } from "@lain/core";
 import { createProvider } from "@lain/agents";
 import { buildExtensionRegistry } from "@lain/extensions";
 import { generateId, loadConfig, loadCredentials, type Strategy, type PlanDetail, type Provider, type Credentials, type LainConfig } from "@lain/shared";
@@ -40,22 +40,19 @@ function makeAgent(config: LainConfig, credentials: Credentials) {
 // Find all .db files
 function discoverDbs(): { path: string; name: string; explorations: any[] }[] {
   const results: any[] = [];
-  try {
-    for (const entry of fs.readdirSync(CWD)) {
-      if (!entry.endsWith(".db")) continue;
-      const full = path.join(CWD, entry);
-      try {
-        const s = new Storage(full);
-        const g = new Graph(s);
-        const exps = g.getAllExplorations().map((e) => ({
-          ...e,
-          nodeCount: g.getAllNodes(e.id).filter((n) => n.status !== "pruned").length,
-        }));
-        s.close();
-        if (exps.length > 0) results.push({ path: full, name: entry, explorations: exps });
-      } catch {}
-    }
-  } catch {}
+  // CWD (+parents) + user-configured dirs + recently-opened dbs.
+  for (const full of collectDbFiles(CWD)) {
+    try {
+      const s = new Storage(full);
+      const g = new Graph(s);
+      const exps = g.getAllExplorations().map((e) => ({
+        ...e,
+        nodeCount: g.getAllNodes(e.id).filter((n) => n.status !== "pruned").length,
+      }));
+      s.close();
+      if (exps.length > 0) results.push({ path: full, name: path.basename(full), explorations: exps });
+    } catch {}
+  }
   return results;
 }
 
@@ -83,11 +80,15 @@ function cors() {
  * Returns the resolved path or null if invalid.
  */
 function safeDbPath(dbFile: string): string | null {
-  const resolved = path.resolve(CWD, dbFile);
-  if (!resolved.startsWith(CWD)) return null;
-  if (!resolved.endsWith(".db")) return null;
-  if (!fs.existsSync(resolved)) return null;
-  return resolved;
+  if (!dbFile.endsWith(".db")) return null;
+  // 1) Within the CWD subtree (where new explorations are written).
+  const inCwd = path.resolve(CWD, dbFile);
+  if (inCwd.startsWith(CWD) && fs.existsSync(inCwd)) return inCwd;
+  // 2) A discovered db (recents / configured dirs), matched by abs path or basename.
+  const known = collectDbFiles(CWD);
+  const abs = path.resolve(dbFile);
+  if (known.includes(abs)) return abs;
+  return known.find((f) => path.basename(f) === path.basename(dbFile)) ?? null;
 }
 
 // ============================================================================
@@ -114,11 +115,29 @@ Bun.serve({
       return json({ update });
     }
 
+    // ---- Discovery directories ----
+    if (p === "/api/dirs" && req.method === "GET") {
+      return json({ dirs: getDiscoveryDirs(), cwd: CWD });
+    }
+    if (p === "/api/dirs" && req.method === "POST") {
+      const { dir } = await req.json() as { dir: string };
+      if (!dir?.trim()) return json({ error: "dir required" }, 400);
+      const resolved = addDiscoveryDir(dir.trim());
+      if (!fs.existsSync(resolved)) { removeDiscoveryDir(resolved); return json({ error: `Not found: ${resolved}` }, 400); }
+      return json({ ok: true, dirs: getDiscoveryDirs() });
+    }
+    if (p === "/api/dirs" && req.method === "DELETE") {
+      const { dir } = await req.json() as { dir: string };
+      removeDiscoveryDir(dir);
+      return json({ ok: true, dirs: getDiscoveryDirs() });
+    }
+
     // ---- Get exploration data ----
     if (p.match(/^\/api\/exploration\/[^/]+$/) && req.method === "GET") {
       const dbFile = decodeURIComponent(p.split("/").pop()!);
       const dbPath = safeDbPath(dbFile);
       if (!dbPath) return json({ error: "Not found" }, 404);
+      addRecentDb(dbPath);
 
       const s = new Storage(dbPath);
       const g = new Graph(s);
@@ -537,21 +556,28 @@ Bun.serve({
       ".json": "application/json", ".woff": "font/woff", ".woff2": "font/woff2",
     };
 
-    // Try to serve from dist
+    // Try to serve from dist. index.html must NEVER be cached — otherwise a
+    // browser keeps serving a stale app that points at old (now-gone) asset
+    // hashes after an update. Content-hashed assets (js/css) are immutable, so
+    // they can be cached aggressively.
+    const isHtml = p === "/" || p.endsWith(".html");
+    const cacheHeader = isHtml
+      ? "no-cache, no-store, must-revalidate"
+      : "public, max-age=31536000, immutable";
     let filePath = path.join(DIST_DIR, p === "/" ? "index.html" : p);
     if (fs.existsSync(filePath) && fs.statSync(filePath).isFile()) {
       const ext = path.extname(filePath);
       const contentType = MIME_TYPES[ext] || "application/octet-stream";
       return new Response(fs.readFileSync(filePath), {
-        headers: { "Content-Type": contentType, "Cache-Control": "public, max-age=3600" },
+        headers: { "Content-Type": contentType, "Cache-Control": cacheHeader },
       });
     }
 
-    // SPA fallback: serve index.html for non-API routes
+    // SPA fallback: serve index.html for non-API routes (never cached).
     const indexPath = path.join(DIST_DIR, "index.html");
     if (!p.startsWith("/api/") && fs.existsSync(indexPath)) {
       return new Response(fs.readFileSync(indexPath), {
-        headers: { "Content-Type": "text/html" },
+        headers: { "Content-Type": "text/html", "Cache-Control": "no-cache, no-store, must-revalidate" },
       });
     }
 
