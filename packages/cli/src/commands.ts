@@ -1444,9 +1444,10 @@ function lainVersion(): string {
 }
 
 function gitInfo(root: string): { commit: string; branch: string } | null {
+  const opts = { encoding: "utf-8" as const, stdio: ["ignore", "pipe", "ignore"] as const };
   try {
-    const commit = execFileSync("git", ["-C", root, "rev-parse", "--short", "HEAD"], { encoding: "utf-8" }).trim();
-    const branch = execFileSync("git", ["-C", root, "rev-parse", "--abbrev-ref", "HEAD"], { encoding: "utf-8" }).trim();
+    const commit = execFileSync("git", ["-C", root, "rev-parse", "--short", "HEAD"], opts).trim();
+    const branch = execFileSync("git", ["-C", root, "rev-parse", "--abbrev-ref", "HEAD"], opts).trim();
     return { commit, branch };
   } catch {
     return null;

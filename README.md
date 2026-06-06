@@ -1,192 +1,101 @@
+<div align="center">
+
 # lain
 
-> a graph-based ideation engine. plant a seed idea, and watch a graph of
-> tool-using agents branch, research, and build on each other until something
-> extraordinary emerges.
+**a graph-based ideation engine**
 
-Named after Lain Iwakura. Everything is connected.
+plant a seed. watch a graph of tool-using agents branch, research,
+and build on one another — until something extraordinary emerges.
 
-lain takes a seed, branches it into `n` directions, recurses to depth `m`, and
-expands each node with an **agent** — not a one-shot completion. Each node-agent
-can read any other node in the graph, retrieve from a corpus of *your* source
-material (PDFs, notes, CSVs, images), call remote tools over MCP (web search,
-scraping, …), record findings other branches build on, and link across the
-graph. A **mission** gives the whole thing a goal and a success rubric. The
-result is a DAG of developed ideas you can explore in the CLI, a TUI, or a web
-UI, and sync to Obsidian.
+[![CI](https://github.com/Tetraslam/lain/actions/workflows/ci.yml/badge.svg)](https://github.com/Tetraslam/lain/actions/workflows/ci.yml)
+
+</div>
 
 ---
 
-## Install
-
-Requires [Bun](https://bun.sh) and [pnpm](https://pnpm.io).
-
 ```bash
-git clone https://github.com/Tetraslam/lain
-cd lain
-bash install.sh          # builds everything + puts `lain` on your PATH (~/.local/bin)
+curl -fsSL https://raw.githubusercontent.com/Tetraslam/lain/main/bootstrap.sh | bash
 ```
 
-Then configure a provider:
-
 ```bash
-lain init                # interactive: pick provider (bedrock / anthropic / openai / openrouter) + key
-lain doctor              # verify install, config, credentials
-```
-
-Non-interactive setup (for scripts/agents):
-
-```bash
-lain init --non-interactive --provider bedrock   --api-key ABSK... --region us-west-2
-lain init --non-interactive --provider anthropic --api-key sk-ant-...
-lain init --non-interactive --provider openrouter --api-key sk-or-...
-lain init --non-interactive --provider openai    --api-key sk-... --base-url http://localhost:11434/v1
-```
-
-Update or remove later:
-
-```bash
-lain update              # git pull + rebuild — your explorations (.db) and config are never touched
-lain uninstall           # how to remove (or: bash uninstall.sh)
-```
-
----
-
-## Quickstart
-
-```bash
-# the simplest thing: branch an idea (fast, one-shot per node)
-lain "what if cities were grown instead of built" -n 3 -m 2
-
-# go agentic: nodes become tool-using agents that read the graph + collaborate
+lain init                              # pick a provider, paste a key
 lain "a religion that worships entropy" --mission
-
-# ground it in YOUR world: drop in files; agents retrieve from them
-lain "the politics of my setting" --corpus ./worldbuilding/
-
-# give agents the web (via a remote MCP server)
-lain mcp add firecrawl https://mcp.firecrawl.dev/<your-key>/v2/mcp
-lain "the state of AI agent frameworks in 2026" --agentic
-
-# look at what you made
-lain tree                          # tree of the most recent exploration
-lain show root-1                   # read a node
-lain mission                       # the intent contract + shared findings
-lain tui                           # interactive terminal UI
-lain serve                         # web UI at http://localhost:3001
 ```
 
-Every exploration is a single portable `.db` file in your current directory.
+That's it. The installer brings its own prerequisites; `lain init` takes a
+minute; the second line gives you a graph of developed ideas.
 
 ---
 
-## The ideas that make lain different
+## What it does
 
-### Nodes are agents (the substrate)
-Each node is expanded by an agent with a toolbelt, not a single prompt. By
-default (in `--agentic` mode) every node-agent can:
+You give lain a seed. It branches into `n` directions, recurses to depth `m`,
+and expands every node with an **agent** — not a one-shot completion. Each
+node-agent can:
 
-- `outline` / `read_node` / `search_nodes` — see and study the whole graph
-- `search_corpus` — retrieve from your ingested source material
-- `read_findings` / `note_finding` — the **shared knowledge library**: a
-  discovery in one branch becomes available to all others
-- `link_to_node` — wire a cross-link to a related branch
-- plus any tools from **extensions** and **MCP servers**
+- **read the whole graph** — study, diverge from, and build on other branches
+- **retrieve from your corpus** — drop in PDFs, notes, CSVs, images; it grounds
+  ideas in *your* material instead of generic ones
+- **share findings** — a discovery in one branch becomes available to all the
+  others, so branches genuinely collaborate
+- **call tools** — extension tools and any remote **MCP** server (web search,
+  scraping, databases, …)
+- **link across branches** — the graph wires itself together
 
-This is why branches *collaborate* instead of merely coexisting.
+A **mission** gives the whole run a goal and a checklist of success criteria. A
+**synthesis** pass then surfaces the connections, contradictions, and emergent
+patterns across the finished graph.
 
-### Corpus — ground agents in your world
-`--corpus <file|dir>` (or `lain corpus add ...`) ingests text, markdown, CSV,
-JSON, **PDF** (real text extraction), and **images** (kept for multimodal use).
-Retrieval is BM25 over chunked text. Agents consult it before writing, so output
-is grounded in *your* material, not generic.
+Explore it in the **CLI**, a keyboard-driven **TUI**, or a **web** UI — and sync
+the whole thing to Obsidian. Every exploration is one portable `.db` file.
 
-```bash
-lain corpus add ./notes ./data.csv ./map.png --db myidea.db
-lain corpus list
-lain corpus search "trade routes"
-```
-
-### Missions — a goal, not just a topic
-`--mission` derives an explicit **intent** and a finite checklist of **success
-criteria** from your seed, injects them into every node-agent, and records a
-shared findings library as the graph grows.
+## A taste
 
 ```bash
-lain "a heist in zero gravity" --mission
-lain "a heist in zero gravity" --mission "focus on the crew's interpersonal fractures"
-lain mission                      # view the contract + findings
+lain "what if cities were grown" -n 3 -m 2        # branch an idea
+lain "the myth of my setting" --corpus ./lore/    # ground it in your files
+lain "the state of AI agents in 2026" --agentic   # + web tools via MCP
+lain tui                                          # watch the agents think
+lain serve                                        # web UI at :3001
 ```
-
-### Remote MCP — borrow the whole tool ecosystem
-Add any remote [MCP](https://modelcontextprotocol.io) server; its tools join the
-agentic toolbelt automatically.
 
 ```bash
-lain mcp add <name> <url> --bearer <token>        # or --api-key, or --header 'K: V'
-lain mcp test <name>                              # connect + list its tools
-lain mcp list                                     # secrets redacted
+lain tree            lain show root-1            lain mission
+lain synthesize      lain export idea.db         lain sync idea.db
 ```
 
-### Synthesis — find the connections
-After generating, `lain synthesize` traverses the whole graph for cross-links,
-contradictions, and emergent patterns, producing **staged** annotations you
-review and merge.
+## Tools beyond the graph
 
 ```bash
-lain synthesize                   # stage annotations
-lain merge-synthesis <id>         # apply (or --auto-merge when synthesizing)
+# add any remote MCP server — its tools join the agents' toolbelt
+lain mcp add firecrawl https://mcp.firecrawl.dev/<key>/v2/mcp
+lain mcp test firecrawl
 ```
-
-### Obsidian sync
-Explorations round-trip to a folder of markdown with frontmatter + wikilinks.
-
-```bash
-lain export myidea.db --out ~/vault/lain/    # one-shot
-lain sync myidea.db                          # bidirectional (edit in Obsidian, sync back)
-lain export myidea.db --canvas               # Obsidian .canvas (radial layout)
-```
-
----
-
-## Surfaces
-
-All three speak the same engine and support agentic generation + corpus:
-
-- **CLI** — `lain ...` (fully scriptable; every interactive command has flags)
-- **TUI** — `lain tui` (keyboard-driven graph explorer; `?` for shortcuts)
-- **Web** — `lain serve` then open `http://localhost:3001` (editorial layout,
-  graph overlay, corpus drag-drop, a live "thinking" feed while agents work)
 
 ## Providers
 
-First-class: **Amazon Bedrock** (bearer-token), **Anthropic**, **OpenAI**,
-**OpenRouter**, and any **OpenAI-compatible** endpoint (ollama, together, groq,
-vLLM) via `--base-url`. Configure with `lain init` or `lain config set`.
+Bedrock · Anthropic · OpenAI · OpenRouter · any OpenAI-compatible endpoint
+(ollama, together, groq, vLLM) via `--base-url`. Set with `lain init`.
 
-## Extensions
-
-Lenses that shape generation and add domain tools: `freeform` (default),
-`worldbuilding` (coins in-world names via a corpus-grounded sub-agent),
-`debate`, `research`. Select with `--ext <name>`; list with `lain extensions`.
-
----
-
-## How it's built
-
-A Bun + pnpm + turborepo monorepo:
-
-| package | role |
-|---------|------|
-| `shared` | types, config, agent wire-protocol |
-| `core` | graph + SQLite storage, orchestrator, **corpus**, **mcp**, **mission**, agentic loop, tools, synthesis, sync, export |
-| `agents` | provider abstraction (Bedrock/Anthropic/OpenAI/OpenRouter) + the `AgentRunner` tool loop |
-| `extensions` | plugin system + built-in lenses |
-| `cli` / `tui` / `web` | the three surfaces |
+## Lifecycle
 
 ```bash
-pnpm build      # build all packages
-pnpm test       # run the test suite
+lain doctor          # check install, config, credentials
+lain update          # pull + rebuild — your .db files and config are untouched
+lain uninstall
 ```
 
-See [`AGENTS.md`](./AGENTS.md) for the contributor/architecture deep-dive.
+## Build from source
+
+Requires [bun](https://bun.sh). Clone, then:
+
+```bash
+bash install.sh      # build + put `lain` on your PATH
+pnpm test            # 160+ tests
+```
+
+Architecture and internals live in [`AGENTS.md`](./AGENTS.md).
+
+<div align="center">
+<sub>named after lain iwakura. everything is connected.</sub>
+</div>
