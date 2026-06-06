@@ -2,7 +2,7 @@ import * as p from "@clack/prompts";
 import * as fs from "fs";
 import * as path from "path";
 import { Orchestrator } from "@lain/core";
-import { Storage, Graph, Sync, Exporter, CanvasExporter, SynthesisEngine, Watcher, Corpus, connectMcpServers } from "@lain/core";
+import { Storage, Graph, Sync, Exporter, CanvasExporter, SynthesisEngine, Watcher, Corpus, connectMcpServers, deriveIntentContract } from "@lain/core";
 import {
   buildExtensionRegistry,
 } from "@lain/extensions";
@@ -79,6 +79,8 @@ export async function run(args: ParsedArgs): Promise<void> {
       return runCorpus(args);
     case "mcp":
       return runMcp(args);
+    case "mission":
+      return runMission(args);
     case "help":
       return runHelp();
     default:
@@ -265,7 +267,10 @@ async function runExplore(args: ParsedArgs): Promise<void> {
   const concurrency = getNumFlag(args.flags, "concurrency", "c") ?? 5;
   const streaming = getBoolFlag(args.flags, "stream");
   const corpusPath = getFlag(args.flags, "corpus");
-  const agentic = getBoolFlag(args.flags, "agentic", "agent") || !!corpusPath;
+  const missionRaw = args.flags["mission"];
+  const missionEnabled = missionRaw !== undefined && missionRaw !== false;
+  const missionRefinement = typeof missionRaw === "string" ? missionRaw : undefined;
+  const agentic = getBoolFlag(args.flags, "agentic", "agent") || !!corpusPath || missionEnabled;
   const agentMaxSteps = getNumFlag(args.flags, "max-steps") ?? 10;
 
   // Generate a name from the seed
@@ -373,19 +378,29 @@ async function runExplore(args: ParsedArgs): Promise<void> {
       planDetail,
       extension: ext,
       beforeExpand: async (exp) => {
-        if (!corpusPath) return;
-        const corpus = orchestrator.getCorpus();
-        if (!corpus) return;
-        const resolved = path.resolve(corpusPath);
-        if (!fs.existsSync(resolved)) {
-          console.warn(`  Corpus path not found, skipping: ${corpusPath}`);
-          return;
+        // Mission: derive an intent contract before generating.
+        if (missionEnabled) {
+          process.stdout.write("  Defining mission (intent + success criteria)...");
+          const mission = await deriveIntentContract(agent, exp.id, seed, { extension: ext, refinement: missionRefinement });
+          orchestrator.getStorage().upsertMission(mission);
+          console.log(" done");
+          console.log(`  Intent: ${truncateStr(mission.intent, 100)}`);
+          for (const cr of mission.criteria) console.log(`    ✓ ${cr}`);
         }
-        const results = fs.statSync(resolved).isDirectory()
-          ? await corpus.ingestDirectory(exp.id, resolved)
-          : [await corpus.ingestFile(exp.id, resolved)];
-        const chunks = results.reduce((a, r) => a + r.chunkCount, 0);
-        console.log(`  Ingested ${results.length} source(s), ${chunks} chunk(s) into corpus.`);
+        // Corpus ingestion.
+        if (corpusPath) {
+          const corpus = orchestrator.getCorpus();
+          const resolved = path.resolve(corpusPath);
+          if (corpus && fs.existsSync(resolved)) {
+            const results = fs.statSync(resolved).isDirectory()
+              ? await corpus.ingestDirectory(exp.id, resolved)
+              : [await corpus.ingestFile(exp.id, resolved)];
+            const chunks = results.reduce((a, r) => a + r.chunkCount, 0);
+            console.log(`  Ingested ${results.length} source(s), ${chunks} chunk(s) into corpus.`);
+          } else if (corpus) {
+            console.warn(`  Corpus path not found, skipping: ${corpusPath}`);
+          }
+        }
       },
     });
 
@@ -1188,6 +1203,44 @@ async function runExtensions(args: ParsedArgs): Promise<void> {
 }
 
 // ============================================================================
+// Mission — intent contract + shared knowledge library
+// ============================================================================
+
+async function runMission(args: ParsedArgs): Promise<void> {
+  const dbFile = getFlag(args.flags, "db") ?? args.positional[0] ?? findDb();
+  const dbPath = path.resolve(dbFile);
+  if (!fs.existsSync(dbPath)) throw new Error(`Database not found: ${dbFile}`);
+  const storage = new Storage(dbPath);
+  try {
+    const graph = new Graph(storage);
+    const exp = graph.getAllExplorations()[0];
+    if (!exp) throw new Error("No explorations in this database.");
+    const mission = storage.getMission(exp.id);
+    const findings = storage.getFindings(exp.id);
+
+    if (!mission) {
+      console.log(`No mission set for "${exp.name}". Create one with \`lain "<seed>" --mission\`.`);
+    } else {
+      console.log(`Mission — ${exp.name}\n`);
+      console.log(`Intent:\n  ${mission.intent}\n`);
+      console.log(`Success criteria:`);
+      for (const cr of mission.criteria) console.log(`  ✓ ${cr}`);
+    }
+
+    console.log(`\nShared knowledge library (${findings.length} findings):`);
+    if (findings.length === 0) {
+      console.log("  (none yet)");
+    } else {
+      for (const f of findings) {
+        console.log(`  • ${f.content}${f.tags.length ? `  [${f.tags.join(", ")}]` : ""}${f.nodeId ? `  (${f.nodeId})` : ""}`);
+      }
+    }
+  } finally {
+    storage.close();
+  }
+}
+
+// ============================================================================
 // MCP — remote Model Context Protocol servers (extra agent tools)
 // ============================================================================
 
@@ -1375,8 +1428,9 @@ Options:
   --db <file>            Database file to use
   -o, --output <file>    Output database filename
   -c, --concurrency <n>  Max parallel agent calls (default: 5)
-  --agentic              Expand nodes as tool-using agents (graph + corpus + linking)
+  --agentic              Expand nodes as tool-using agents (graph + corpus + findings + linking)
   --corpus <path>        Ingest a file/dir as source material before generating (implies --agentic)
+  --mission [intent]     Derive a goal + success criteria and pursue it (implies --agentic)
   --max-steps <n>        Max agent tool round-trips per node (default: 10)
 
 Commands:
@@ -1404,6 +1458,7 @@ Commands:
   mcp list               List configured MCP servers
   mcp test [name]        Connect + list a server's tools
   mcp remove <name>      Remove an MCP server
+  mission [file.db]      Show the intent contract + shared knowledge library
   tui [file.db]          Launch interactive TUI
   serve [dir]            Start web API server (--port <n>, default 3001)
   help                   Show this help

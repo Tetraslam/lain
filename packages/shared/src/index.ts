@@ -160,6 +160,40 @@ export interface SyncState {
 }
 
 // ============================================================================
+// Mission Types (intent contract + shared knowledge library)
+// ============================================================================
+
+/**
+ * A mission elevates an exploration from "branch a seed" to "pursue a goal":
+ * an explicit intent + a checklist of success criteria the graph should satisfy.
+ * Derived from the seed (and optional user refinement) at exploration start,
+ * injected into every node-agent, and used by synthesis as a validation rubric.
+ */
+export interface Mission {
+  explorationId: string;
+  /** Refined one-paragraph statement of what this exploration is really after. */
+  intent: string;
+  /** Finite checklist of testable success criteria. */
+  criteria: string[];
+  createdAt: string;
+}
+
+/**
+ * A finding is a unit of shared knowledge written by one node-agent and
+ * readable by all others — the substrate that lets branches collaborate
+ * (discoveries, constraints, recurring motifs) rather than merely coexist.
+ */
+export interface Finding {
+  id: string;
+  explorationId: string;
+  /** Node that recorded it (null if mission-level). */
+  nodeId: string | null;
+  content: string;
+  tags: string[];
+  createdAt: string;
+}
+
+// ============================================================================
 // Corpus Types (multimodal source material the agents can retrieve from)
 // ============================================================================
 

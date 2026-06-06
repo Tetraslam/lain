@@ -20,3 +20,4 @@ export {
   type McpConnection,
   type McpPool,
 } from "./mcp.js";
+export { deriveIntentContract, parseContract } from "./mission.js";

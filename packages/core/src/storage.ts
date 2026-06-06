@@ -10,6 +10,8 @@ import type {
   NodeStatus,
   CorpusSource,
   CorpusChunk,
+  Mission,
+  Finding,
 } from "@lain/shared";
 
 const SCHEMA = `
@@ -126,6 +128,23 @@ CREATE TABLE IF NOT EXISTS corpus_chunk (
 );
 CREATE INDEX IF NOT EXISTS idx_corpus_chunk_exploration ON corpus_chunk(exploration_id);
 CREATE INDEX IF NOT EXISTS idx_corpus_chunk_source ON corpus_chunk(source_id);
+
+CREATE TABLE IF NOT EXISTS mission (
+  exploration_id TEXT PRIMARY KEY REFERENCES exploration(id),
+  intent TEXT NOT NULL,
+  criteria TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS finding (
+  id TEXT PRIMARY KEY,
+  exploration_id TEXT NOT NULL REFERENCES exploration(id),
+  node_id TEXT,
+  content TEXT NOT NULL,
+  tags TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_finding_exploration ON finding(exploration_id);
 `;
 
 export class Storage {
@@ -772,6 +791,67 @@ export class Storage {
       seq: r.seq as number,
       text: r.text as string,
       tokenEstimate: (r.token_estimate as number) ?? null,
+      createdAt: r.created_at as string,
+    };
+  }
+
+  // ---- Mission (intent contract) ----
+
+  upsertMission(mission: Mission): void {
+    this.db
+      .prepare(
+        `INSERT INTO mission (exploration_id, intent, criteria, created_at)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(exploration_id) DO UPDATE SET intent = excluded.intent, criteria = excluded.criteria`
+      )
+      .run(mission.explorationId, mission.intent, JSON.stringify(mission.criteria), mission.createdAt);
+  }
+
+  getMission(explorationId: string): Mission | null {
+    const row = this.db.prepare("SELECT * FROM mission WHERE exploration_id = ?").get(explorationId) as
+      | Record<string, unknown>
+      | undefined;
+    if (!row) return null;
+    return {
+      explorationId: row.exploration_id as string,
+      intent: row.intent as string,
+      criteria: row.criteria ? (JSON.parse(row.criteria as string) as string[]) : [],
+      createdAt: row.created_at as string,
+    };
+  }
+
+  // ---- Findings (shared knowledge library) ----
+
+  createFinding(finding: Finding): void {
+    this.db
+      .prepare(
+        `INSERT INTO finding (id, exploration_id, node_id, content, tags, created_at)
+         VALUES (?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        finding.id,
+        finding.explorationId,
+        finding.nodeId,
+        finding.content,
+        finding.tags.length ? JSON.stringify(finding.tags) : null,
+        finding.createdAt
+      );
+  }
+
+  getFindings(explorationId: string): Finding[] {
+    const rows = this.db
+      .prepare("SELECT * FROM finding WHERE exploration_id = ? ORDER BY created_at")
+      .all(explorationId) as Record<string, unknown>[];
+    return rows.map((r) => this.rowToFinding(r));
+  }
+
+  private rowToFinding(r: Record<string, unknown>): Finding {
+    return {
+      id: r.id as string,
+      explorationId: r.exploration_id as string,
+      nodeId: (r.node_id as string) ?? null,
+      content: r.content as string,
+      tags: r.tags ? (JSON.parse(r.tags as string) as string[]) : [],
       createdAt: r.created_at as string,
     };
   }

@@ -39,6 +39,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
     "extensions",
     "corpus",
     "mcp",
+    "mission",
     "watch",
     "tui",
     "serve",

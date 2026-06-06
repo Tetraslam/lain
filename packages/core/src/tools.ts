@@ -8,12 +8,15 @@
 // the same `LainTool` shape.
 
 import { Graph } from "./graph.js";
+import { Storage } from "./storage.js";
 import { Corpus, tokenize } from "./corpus.js";
-import type { Exploration, LainNode, ToolSpec, ToolResultBlock } from "@lain/shared";
+import type { Exploration, Finding, LainNode, ToolSpec, ToolResultBlock } from "@lain/shared";
+import { generateId, nowISO } from "@lain/shared";
 
 /** Everything a tool handler can reach. */
 export interface LainToolContext {
   graph: Graph;
+  storage: Storage;
   corpus: Corpus | null;
   exploration: Exploration;
   /** The node currently being expanded (so tools can act relative to it). */
@@ -48,6 +51,7 @@ function snippet(s: string | null, n = 280): string {
  */
 export function buildToolContext(args: {
   graph: Graph;
+  storage: Storage;
   corpus: Corpus | null;
   exploration: Exploration;
   currentNodeId: string;
@@ -144,6 +148,51 @@ export function buildNodeTools(opts: { hasCorpus: boolean }): LainTool[] {
         if (target.id === ctx.currentNodeId) return { ...text("Cannot link a node to itself."), isError: true };
         ctx.graph.addCrosslink(ctx.currentNodeId, target.id, String(input.relationship), true);
         return text(`Linked ${ctx.currentNodeId} ↔ ${target.id} ("${input.relationship}").`);
+      },
+    },
+    {
+      spec: {
+        name: "read_findings",
+        description:
+          "Read the shared knowledge library — findings recorded by other node-agents in this exploration (discoveries, constraints, recurring motifs). Consult this so your node builds on what siblings learned instead of rediscovering it.",
+        inputSchema: { type: "object", properties: {}, additionalProperties: false },
+      },
+      async handler(_input, ctx) {
+        const findings = ctx.storage.getFindings(ctx.exploration.id).filter((f) => f.nodeId !== ctx.currentNodeId);
+        if (findings.length === 0) return text("(no shared findings yet — you may be the first)");
+        const out = findings
+          .slice(-30)
+          .map((f) => `• ${f.content}${f.tags.length ? `  [${f.tags.join(", ")}]` : ""}${f.nodeId ? ` (from ${f.nodeId})` : ""}`)
+          .join("\n");
+        return text(out);
+      },
+    },
+    {
+      spec: {
+        name: "note_finding",
+        description:
+          "Record a durable finding in the shared knowledge library for other node-agents to build on — a discovery, a constraint the world imposes, a recurring motif, or a decision. Keep it one or two crisp sentences.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            content: { type: "string" },
+            tags: { type: "array", items: { type: "string" }, description: "Optional short tags." },
+          },
+          required: ["content"],
+          additionalProperties: false,
+        },
+      },
+      async handler(input, ctx) {
+        const finding: Finding = {
+          id: generateId(),
+          explorationId: ctx.exploration.id,
+          nodeId: ctx.currentNodeId,
+          content: String(input.content),
+          tags: Array.isArray(input.tags) ? (input.tags as unknown[]).map(String) : [],
+          createdAt: nowISO(),
+        };
+        ctx.storage.createFinding(finding);
+        return text(`Recorded finding for the shared library.`);
       },
     },
   ];

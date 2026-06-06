@@ -443,8 +443,10 @@ export class Orchestrator {
         response = await generateNodeAgentic(node, {
           agent: this.agent,
           graph: this.graph,
+          storage: this.storage,
           corpus: this.corpus,
           exploration,
+          mission: this.storage.getMission(exploration.id),
           extensionSystemPrompt: extensionSystemPrompt || undefined,
           extraTools: this.extraTools,
           extensionTools: this.extensions?.getTools

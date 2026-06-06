@@ -208,6 +208,7 @@ describe("generateNodeAgentic", () => {
     const events: AgentStepEvent[] = [];
     const res = await generateNodeAgentic(target, {
       agent: provider,
+      storage,
       graph,
       corpus,
       exploration: graph.getExploration("exp")!,
@@ -266,6 +267,7 @@ describe("generateNodeAgentic", () => {
     const target = graph.getNode("root-2")!;
     const res = await generateNodeAgentic(target, {
       agent: provider,
+      storage,
       graph,
       corpus,
       exploration: graph.getExploration("exp")!,
@@ -286,6 +288,7 @@ describe("generateNodeAgentic", () => {
     const target = graph.getNode("root-2")!;
     await generateNodeAgentic(target, {
       agent: provider,
+      storage,
       graph,
       corpus, // empty
       exploration: graph.getExploration("exp")!,

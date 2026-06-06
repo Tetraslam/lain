@@ -15,19 +15,24 @@ import type {
   ExtensionToolContext,
   GenerateResponse,
   LainNode,
+  Mission,
   ToolResultBlock,
   ToolSpec,
 } from "@lain/shared";
 import { userText } from "@lain/shared";
 import { Graph } from "./graph.js";
+import { Storage } from "./storage.js";
 import { Corpus } from "./corpus.js";
 import { buildNodeTools, buildToolContext, type LainTool } from "./tools.js";
 
 export interface AgenticGenerateDeps {
   agent: AgentProvider;
   graph: Graph;
+  storage: Storage;
   corpus: Corpus | null;
   exploration: Exploration;
+  /** Optional mission (intent + success criteria) injected into the agent. */
+  mission?: Mission | null;
   /** Extension/mission system-prompt fragment. */
   extensionSystemPrompt?: string;
   /** Additional tools contributed by extensions / MCP servers. */
@@ -109,6 +114,7 @@ export async function generateNodeAgentic(
 
   const ctx = buildToolContext({
     graph: deps.graph,
+    storage: deps.storage,
     corpus: deps.corpus,
     exploration: deps.exploration,
     currentNodeId: node.id,
@@ -159,9 +165,14 @@ export async function generateNodeAgentic(
     return { content: outcome.content, isError: outcome.isError, summary: outcome.summary };
   };
 
-  const system = deps.extensionSystemPrompt
-    ? `${SUBSTRATE_SYSTEM}\n\n--- Domain guidance ---\n${deps.extensionSystemPrompt}`
-    : SUBSTRATE_SYSTEM;
+  let system = SUBSTRATE_SYSTEM;
+  if (deps.mission) {
+    const criteria = deps.mission.criteria.map((cr, i) => `  ${i + 1}. ${cr}`).join("\n");
+    system += `\n\n--- Mission ---\nThis exploration pursues a goal, not just a topic.\nIntent: ${deps.mission.intent}\nSuccess criteria for the whole graph:\n${criteria}\n\nAdvance one or more of these criteria with THIS node. Record durable discoveries with note_finding so other branches build on them, and read_findings before writing.`;
+  }
+  if (deps.extensionSystemPrompt) {
+    system += `\n\n--- Domain guidance ---\n${deps.extensionSystemPrompt}`;
+  }
 
   const toolSpecs = [...tools.map((t) => t.spec), submitTool];
   let messages = [userText(buildTaskMessage(node, deps.graph, deps.exploration))];
