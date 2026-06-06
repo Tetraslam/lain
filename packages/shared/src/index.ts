@@ -236,6 +236,16 @@ export interface SynthesisConfig {
   autoMerge: boolean;
 }
 
+/** A remote MCP (Model Context Protocol) server that contributes tools. */
+export interface McpServerConfig {
+  /** Streamable HTTP endpoint URL (may embed an auth token). */
+  url: string;
+  /** Extra headers (e.g. Authorization). */
+  headers?: Record<string, string>;
+  /** Disable without removing. */
+  disabled?: boolean;
+}
+
 export interface LainConfig {
   defaultModel: string;
   defaultProvider: Provider;
@@ -247,6 +257,8 @@ export interface LainConfig {
   defaultExtension: string;
   watch: WatchConfig;
   synthesis: SynthesisConfig;
+  /** Remote MCP servers, keyed by a short local name. */
+  mcpServers?: Record<string, McpServerConfig>;
 }
 
 export const DEFAULT_CONFIG: LainConfig = {
@@ -265,6 +277,7 @@ export const DEFAULT_CONFIG: LainConfig = {
   synthesis: {
     autoMerge: false,
   },
+  mcpServers: {},
 };
 
 // ============================================================================

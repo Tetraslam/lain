@@ -3,7 +3,7 @@ import type { Strategy, PlanDetail, Provider } from "@lain/shared";
 export interface ParsedArgs {
   command: string;
   positional: string[];
-  flags: Record<string, string | boolean>;
+  flags: Record<string, string | boolean | string[]>;
 }
 
 /**
@@ -16,7 +16,7 @@ export interface ParsedArgs {
  */
 export function parseArgs(argv: string[]): ParsedArgs {
   const positional: string[] = [];
-  const flags: Record<string, string | boolean> = {};
+  const flags: Record<string, string | boolean | string[]> = {};
   let command = "";
 
   const commands = new Set([
@@ -38,6 +38,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
     "config",
     "extensions",
     "corpus",
+    "mcp",
     "watch",
     "tui",
     "serve",
@@ -52,7 +53,11 @@ export function parseArgs(argv: string[]): ParsedArgs {
       const key = arg.slice(2);
       const next = argv[i + 1];
       if (next && !next.startsWith("--")) {
-        flags[key] = next;
+        // Collect repeated string flags (e.g. multiple --header) into an array.
+        const existing = flags[key];
+        if (typeof existing === "string") flags[key] = [existing, next];
+        else if (Array.isArray(existing)) existing.push(next);
+        else flags[key] = next;
         i += 2;
       } else {
         flags[key] = true;
@@ -92,15 +97,29 @@ export function parseArgs(argv: string[]): ParsedArgs {
   return { command, positional, flags };
 }
 
-export function getFlag(flags: Record<string, string | boolean>, ...keys: string[]): string | undefined {
+type FlagMap = Record<string, string | boolean | string[]>;
+
+export function getFlag(flags: FlagMap, ...keys: string[]): string | undefined {
   for (const key of keys) {
     const val = flags[key];
     if (typeof val === "string") return val;
+    if (Array.isArray(val) && val.length > 0) return val[0];
   }
   return undefined;
 }
 
-export function getBoolFlag(flags: Record<string, string | boolean>, ...keys: string[]): boolean {
+/** Return ALL values for a (possibly repeated) flag, e.g. multiple --header. */
+export function getMultiFlag(flags: FlagMap, ...keys: string[]): string[] {
+  const out: string[] = [];
+  for (const key of keys) {
+    const val = flags[key];
+    if (typeof val === "string") out.push(val);
+    else if (Array.isArray(val)) out.push(...val);
+  }
+  return out;
+}
+
+export function getBoolFlag(flags: FlagMap, ...keys: string[]): boolean {
   for (const key of keys) {
     if (flags[key] === true) return true;
     if (flags[key] === "true") return true;
@@ -108,9 +127,9 @@ export function getBoolFlag(flags: Record<string, string | boolean>, ...keys: st
   return false;
 }
 
-export function getNumFlag(flags: Record<string, string | boolean>, ...keys: string[]): number | undefined {
+export function getNumFlag(flags: FlagMap, ...keys: string[]): number | undefined {
   for (const key of keys) {
-    const val = flags[key];
+    const val = getFlag(flags, key);
     if (typeof val === "string") {
       const n = parseInt(val, 10);
       if (!isNaN(n)) return n;

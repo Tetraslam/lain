@@ -12,7 +12,7 @@
     }
   },
   "scripts": {
-    "build": "tsup src/index.ts --format esm --dts --external bun:sqlite --external chokidar --external gray-matter --external unpdf",
+    "build": "tsup src/index.ts --format esm --dts --external bun:sqlite --external chokidar --external gray-matter --external unpdf --external @modelcontextprotocol/sdk",
     "dev": "tsup src/index.ts --format esm --dts --watch",
     "test": "bun test",
     "clean": "rm -rf dist"
@@ -20,6 +20,7 @@
   "dependencies": {
     "@lain/agents": "workspace:*",
     "@lain/shared": "workspace:*",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "chokidar": "^5.0.0",
     "gray-matter": "^4.0.3",
     "unpdf": "^1.6.2"

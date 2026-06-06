@@ -2,7 +2,7 @@ import * as p from "@clack/prompts";
 import * as fs from "fs";
 import * as path from "path";
 import { Orchestrator } from "@lain/core";
-import { Storage, Graph, Sync, Exporter, CanvasExporter, SynthesisEngine, Watcher, Corpus } from "@lain/core";
+import { Storage, Graph, Sync, Exporter, CanvasExporter, SynthesisEngine, Watcher, Corpus, connectMcpServers } from "@lain/core";
 import {
   buildExtensionRegistry,
 } from "@lain/extensions";
@@ -17,7 +17,7 @@ import {
   type LainConfig,
 } from "@lain/shared";
 import type { ParsedArgs } from "./args.js";
-import { getFlag, getBoolFlag, getNumFlag } from "./args.js";
+import { getFlag, getBoolFlag, getNumFlag, getMultiFlag } from "./args.js";
 import {
   loadConfig,
   loadCredentials,
@@ -77,6 +77,8 @@ export async function run(args: ParsedArgs): Promise<void> {
       return runExtensions(args);
     case "corpus":
       return runCorpus(args);
+    case "mcp":
+      return runMcp(args);
     case "help":
       return runHelp();
     default:
@@ -298,6 +300,13 @@ async function runExplore(args: ParsedArgs): Promise<void> {
   const provider = config.defaultProvider;
   const agent = createProviderFromCredentials(provider, config, credentials);
 
+  // Connect any configured MCP servers (their tools join the agentic toolbelt).
+  const mcpPool = agentic ? await connectMcpServers(config.mcpServers) : null;
+  if (mcpPool) {
+    if (mcpPool.tools.length > 0) console.log(`MCP: ${mcpPool.tools.length} tool(s) from ${mcpPool.connections.length} server(s)`);
+    for (const e of mcpPool.errors) console.warn(`  MCP "${e.name}" unavailable: ${e.error}`);
+  }
+
   // Create orchestrator with extensions
   const extensions = buildExtensionRegistry();
   const orchestrator = new Orchestrator({
@@ -308,6 +317,7 @@ async function runExplore(args: ParsedArgs): Promise<void> {
     extensions,
     agentic,
     agentMaxSteps,
+    extraTools: mcpPool?.tools ?? [],
     onEvent: (event) => {
       switch (event.type) {
         case "node:generating":
@@ -383,6 +393,7 @@ async function runExplore(args: ParsedArgs): Promise<void> {
     console.log(`Run \`lain tree ${explorationId}\` or \`lain export ${dbFileName}\` to view.`);
   } finally {
     orchestrator.close();
+    if (mcpPool) await mcpPool.close();
   }
 }
 
@@ -1177,6 +1188,94 @@ async function runExtensions(args: ParsedArgs): Promise<void> {
 }
 
 // ============================================================================
+// MCP — remote Model Context Protocol servers (extra agent tools)
+// ============================================================================
+
+/** Redact any embedded secret-looking path segment / token for display. */
+function redactUrl(url: string): string {
+  return url
+    .replace(/(fc-|sk-|key-|tok_|Bearer\s+)[A-Za-z0-9_-]{6,}/gi, "$1***")
+    .replace(/\/[A-Za-z0-9_-]{24,}(\/|$)/g, "/***$1");
+}
+
+async function runMcp(args: ParsedArgs): Promise<void> {
+  const sub = args.positional[0] ?? "list";
+  const config = loadConfig();
+  const servers = config.mcpServers ?? {};
+
+  if (sub === "list") {
+    const names = Object.keys(servers);
+    if (names.length === 0) {
+      console.log("No MCP servers configured. Add one with `lain mcp add <name> <url>`.");
+      return;
+    }
+    console.log("MCP servers:");
+    for (const name of names) {
+      const s = servers[name];
+      const auth = s.headers && Object.keys(s.headers).length ? `  [auth: ${Object.keys(s.headers).join(", ")}]` : "";
+      console.log(`  ${name}${s.disabled ? " (disabled)" : ""}  ${redactUrl(s.url)}${auth}`);
+    }
+    return;
+  }
+
+  if (sub === "add") {
+    const name = args.positional[1];
+    const url = args.positional[2];
+    if (!name || !url) {
+      throw new Error(
+        "Usage: lain mcp add <name> <url> [--header 'K: V']... [--bearer <token>] [--api-key <key>] [--api-key-header <name>]"
+      );
+    }
+    const headers: Record<string, string> = {};
+    // Repeatable raw headers: --header "Authorization: Bearer xyz"
+    for (const h of getMultiFlag(args.flags, "header", "H")) {
+      const idx = h.indexOf(":");
+      if (idx > 0) headers[h.slice(0, idx).trim()] = h.slice(idx + 1).trim();
+    }
+    // Convenience: --bearer <token>  → Authorization: Bearer <token>
+    const bearer = getFlag(args.flags, "bearer", "token");
+    if (bearer) headers["Authorization"] = `Bearer ${bearer}`;
+    // Convenience: --api-key <key> [--api-key-header X-API-Key] (defaults to X-API-Key)
+    const apiKey = getFlag(args.flags, "api-key", "apikey");
+    if (apiKey) headers[getFlag(args.flags, "api-key-header") ?? "X-API-Key"] = apiKey;
+
+    const next = { ...servers, [name]: { url, ...(Object.keys(headers).length ? { headers } : {}) } };
+    saveConfig({ mcpServers: next });
+    const authNote = Object.keys(headers).length ? ` (auth: ${Object.keys(headers).join(", ")})` : "";
+    console.log(`Added MCP server "${name}"${authNote}. Test it with \`lain mcp test ${name}\`.`);
+    return;
+  }
+
+  if (sub === "remove") {
+    const name = args.positional[1];
+    if (!name || !servers[name]) throw new Error(`No MCP server named "${name}".`);
+    const next = { ...servers };
+    delete next[name];
+    saveConfig({ mcpServers: next });
+    console.log(`Removed MCP server "${name}".`);
+    return;
+  }
+
+  if (sub === "test") {
+    const name = args.positional[1];
+    const toTest = name ? { [name]: servers[name] } : servers;
+    if (name && !servers[name]) throw new Error(`No MCP server named "${name}".`);
+    if (Object.keys(toTest).length === 0) { console.log("No MCP servers to test."); return; }
+    console.log("Connecting to MCP server(s)...");
+    const pool = await connectMcpServers(toTest);
+    for (const conn of pool.connections) {
+      console.log(`\n${conn.name} — ${conn.tools.length} tools:`);
+      for (const t of conn.tools) console.log(`  ${t.spec.name}  ${truncateStr(t.spec.description, 70)}`);
+    }
+    for (const err of pool.errors) console.error(`  ✗ ${err.name}: ${err.error}`);
+    await pool.close();
+    return;
+  }
+
+  throw new Error(`Unknown mcp subcommand: ${sub}. Use: list, add, remove, test`);
+}
+
+// ============================================================================
 // Corpus — multimodal source material for agentic explorations
 // ============================================================================
 
@@ -1301,6 +1400,10 @@ Commands:
   corpus add <path>...   Ingest files/dirs as source material (--db, --id)
   corpus list            List corpus sources (--db, --id)
   corpus search <query>  Search the corpus (--db, --id, --limit)
+  mcp add <name> <url>   Add a remote MCP server (--header 'K: V')
+  mcp list               List configured MCP servers
+  mcp test [name]        Connect + list a server's tools
+  mcp remove <name>      Remove an MCP server
   tui [file.db]          Launch interactive TUI
   serve [dir]            Start web API server (--port <n>, default 3001)
   help                   Show this help

@@ -14,3 +14,9 @@ export {
   type LainToolContext,
 } from "./tools.js";
 export { generateNodeAgentic, type AgenticGenerateDeps } from "./agentic.js";
+export {
+  connectMcpServer,
+  connectMcpServers,
+  type McpConnection,
+  type McpPool,
+} from "./mcp.js";
