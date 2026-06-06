@@ -208,6 +208,64 @@ export class Orchestrator {
     return this.graph.getNode(nodeId)!;
   }
 
+  /**
+   * Resume an interrupted exploration: generate every node that isn't complete
+   * and create+generate any children that were never produced — so a killed run
+   * is never lossy. Idempotent: a no-op on a fully-complete exploration.
+   */
+  async resume(explorationId: string): Promise<{ generated: number; created: number }> {
+    const exploration = this.graph.getExploration(explorationId);
+    if (!exploration) throw new Error(`Exploration not found: ${explorationId}`);
+
+    let generated = 0;
+    let created = 0;
+
+    for (let depth = 0; depth <= exploration.m; depth++) {
+      const nodesAtDepth =
+        depth === 0
+          ? [this.graph.getNode("root")].filter((n): n is LainNode => !!n)
+          : this.graph.getNodesAtDepth(explorationId, depth);
+
+      // 1) Generate any incomplete (pending/generating) nodes at this depth.
+      const incomplete = nodesAtDepth.filter(
+        (n) => n.status !== "complete" && n.status !== "pruned"
+      );
+      if (incomplete.length > 0) {
+        await this.generateNodesBatch(incomplete, exploration);
+        generated += incomplete.length;
+      }
+
+      // 2) Below the last depth, ensure every complete node has its children.
+      if (depth < exploration.m) {
+        const parents = (
+          depth === 0
+            ? [this.graph.getNode("root")].filter((n): n is LainNode => !!n)
+            : this.graph.getNodesAtDepth(explorationId, depth)
+        ).filter((n) => n.status === "complete");
+
+        const needChildren = parents.filter(
+          (p) => this.storage.getChildren(p.id).filter((c) => c.status !== "pruned").length === 0
+        );
+
+        if (needChildren.length > 0) {
+          const planResults = await this.runConcurrent(
+            needChildren,
+            async (node) => ({ node, summaries: await this.planBranches(node, exploration, exploration.n) }),
+            this.concurrency
+          );
+          for (const { node, summaries } of planResults) {
+            const children = this.graph.createChildNodes(explorationId, node.id, exploration.n, summaries);
+            created += children.length;
+          }
+          // These children get generated when the loop reaches depth + 1.
+        }
+      }
+    }
+
+    this.emit({ type: "exploration:complete", explorationId });
+    return { generated, created };
+  }
+
   // ========================================================================
   // Breadth-First expansion
   // ========================================================================

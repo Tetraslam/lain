@@ -65,6 +65,8 @@ export async function run(args: ParsedArgs): Promise<void> {
       return runRedirect(args);
     case "extend":
       return runExtend(args);
+    case "resume":
+      return runResume(args);
     case "link":
       return runLink(args);
     case "synthesize":
@@ -630,6 +632,64 @@ async function runExtend(args: ParsedArgs): Promise<void> {
   );
   console.log(`Created ${newNodes.length} new children under ${nodeId}.`);
   orchestrator.close();
+}
+
+// ============================================================================
+// Resume (finish an interrupted exploration)
+// ============================================================================
+
+async function runResume(args: ParsedArgs): Promise<void> {
+  const config = loadConfig();
+  const credentials = loadCredentials();
+  const dbFile = getFlag(args.flags, "db") || args.positional[0] || findDb();
+  const dbPath = path.resolve(dbFile);
+  if (!fs.existsSync(dbPath)) throw new Error(`Database not found: ${dbFile}`);
+
+  // Probe the db to report progress and decide whether to resume agentically.
+  const probe = new Storage(dbPath);
+  const exp = new Graph(probe).getAllExplorations()[0];
+  if (!exp) { probe.close(); throw new Error("No explorations in this database."); }
+  const allNodes = new Graph(probe).getAllNodes(exp.id);
+  const pending = allNodes.filter((n) => n.status !== "complete" && n.status !== "pruned");
+  const hasMission = !!probe.getMission(exp.id);
+  const hasCorpus = probe.getCorpusSources(exp.id).length > 0;
+  probe.close();
+
+  const agentic = getBoolFlag(args.flags, "agentic", "agent") || hasMission || hasCorpus;
+  const tags = [agentic ? "agentic" : null, hasCorpus ? "corpus" : null, hasMission ? "mission" : null].filter(Boolean);
+  console.log(`Resuming "${exp.name}" — ${pending.length} incomplete node(s)${tags.length ? ` (${tags.join(", ")})` : ""}`);
+
+  const agent = createProviderFromCredentials(config.defaultProvider, config, credentials);
+  const mcpPool = agentic ? await connectMcpServers(config.mcpServers) : null;
+  if (mcpPool && mcpPool.tools.length > 0) console.log(`MCP: ${mcpPool.tools.length} tool(s) from ${mcpPool.connections.length} server(s)`);
+
+  const orchestrator = new Orchestrator({
+    dbPath,
+    agent,
+    concurrency: getNumFlag(args.flags, "concurrency", "c") ?? 5,
+    extensions: buildExtensionRegistry(),
+    agentic,
+    extraTools: mcpPool?.tools ?? [],
+    onEvent: (event) => {
+      if (event.type === "node:complete") {
+        const data = event.data as { title?: string } | undefined;
+        console.log(`  done ${event.nodeId} — "${data?.title || "untitled"}"`);
+      }
+    },
+  });
+
+  try {
+    const { generated, created } = await orchestrator.resume(exp.id);
+    if (generated === 0 && created === 0) {
+      console.log("Nothing to resume — this exploration is already complete.");
+    } else {
+      console.log(`\nResume complete: generated ${generated} node(s)${created ? `, created ${created} new child node(s)` : ""}.`);
+      console.log(`Run \`lain tree --db ${dbFile}\` to view.`);
+    }
+  } finally {
+    orchestrator.close();
+    if (mcpPool) await mcpPool.close();
+  }
 }
 
 // ============================================================================
@@ -1566,6 +1626,7 @@ Commands:
   prune <node-id>        Prune a node and descendants
   redirect <node-id>     Regenerate a node with fresh content
   extend <node-id>       Generate more children (--n <count>)
+  resume [file.db]       Finish an interrupted run (generates any pending nodes)
   link <node-a> <node-b> Add a cross-link (--label 'description')
   synthesize [file.db]   Run synthesis pass (--auto-merge to apply immediately)
   merge-synthesis <id>   Apply synthesis annotations (--annotation <id>, --dismiss)

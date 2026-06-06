@@ -28,6 +28,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
     "tree",
     "prune",
     "extend",
+    "resume",
     "redirect",
     "link",
     "synthesize",
