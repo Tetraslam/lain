@@ -13,7 +13,7 @@ import {
 import { t, fg, dim, bold, italic, underline, strikethrough, cyan, green, yellow, magenta } from "@opentui/core";
 import type { KeyEvent, SelectOption } from "@opentui/core";
 import { toast, mountToaster } from "./toast.js";
-import { Storage, Graph, Orchestrator, Sync, Exporter, CanvasExporter, SynthesisEngine, Corpus, connectMcpServers, checkForUpdate } from "@lain/core";
+import { Storage, Graph, Orchestrator, Sync, Exporter, CanvasExporter, SynthesisEngine, Corpus, connectMcpServers, checkForUpdate, deriveIntentContract } from "@lain/core";
 import { buildExtensionRegistry } from "@lain/extensions";
 import { fileURLToPath } from "url";
 import type { LainNode, Exploration, Strategy, PlanDetail } from "@lain/shared";
@@ -376,6 +376,7 @@ export async function createApp(dbPathArg?: string): Promise<void> {
   createParamsRow.add(createExtLabel);
   const availableExtensions = ["freeform", "worldbuilding", "debate", "research"];
   let createExtIdx = 0;
+  let createFocusIdx = 0;
   const createExtDisplay = new TextRenderable(renderer, {
     id: "create-ext-display", content: "", fg: c.fg,
   });
@@ -392,9 +393,34 @@ export async function createApp(dbPathArg?: string): Promise<void> {
   }
   updateExtDisplay();
 
+  // ---- Corpus (optional source material to ground the agents) ----
+  const createCorpusLabel = new TextRenderable(renderer, {
+    id: "create-corpus-label", content: "corpus — path to a file or folder to ground the agents (optional)", fg: c.dim,
+  });
+  createForm.add(createCorpusLabel);
+  const createCorpusInput = new InputRenderable(renderer, {
+    id: "create-corpus-input", width: "100%", placeholder: "./lore/   ·   ~/notes/world.md   ·   data.csv",
+  });
+  createForm.add(createCorpusInput);
+
+  // ---- Mission toggle (derive a goal + success criteria) ----
+  const createMissionRow = new BoxRenderable(renderer, {
+    id: "create-mission-row", width: "100%", flexDirection: "row", gap: 2,
+  });
+  createForm.add(createMissionRow);
+  createMissionRow.add(new TextRenderable(renderer, { id: "create-mission-label", content: "mission:", fg: c.blue }));
+  let createMission = false;
+  const createMissionDisplay = new TextRenderable(renderer, { id: "create-mission-display", content: "" });
+  createMissionRow.add(createMissionDisplay);
+  function updateMissionDisplay(focused = false) {
+    const label = createMission ? "‹on›" : "‹off›";
+    createMissionDisplay.content = focused ? t`${fg(c.accent)(label)}  ${dim("space toggles")}` : t`${fg(c.bright)(label)}`;
+  }
+  updateMissionDisplay();
+
   const createHint = new TextRenderable(renderer, {
     id: "create-hint",
-    content: "tab to switch fields  ·  enter to create  ·  esc to cancel",
+    content: "tab switches fields  ·  ←/→ select lens  ·  enter creates  ·  esc cancels",
     fg: c.dim,
   });
   createForm.add(createHint);
@@ -624,6 +650,11 @@ ${annotation.merged ? dim("Already merged.") : dim("m — merge  ·  d — dismi
       else rootBox.add(explorationContainer);
       rootBox.add(createBox);
       createSeedInput.value = "";
+      createCorpusInput.value = "";
+      createMission = false;
+      createFocusIdx = 0;
+      updateExtDisplay(false);
+      updateMissionDisplay(false);
       createSeedInput.focus();
     } else if (screen === "synthesis") {
       rootBox.add(synthContainer);
@@ -1149,7 +1180,7 @@ ${annotation.merged ? dim("Already merged.") : dim("m — merge  ·  d — dismi
     }
   }
 
-  async function doCreate(seed: string, n?: number, m?: number, ext?: string) {
+  async function doCreate(seed: string, n?: number, m?: number, ext?: string, opts: { corpusPath?: string; mission?: boolean } = {}) {
     if (!seed.trim()) { toast.warning("Seed cannot be empty"); return; }
     generating = true;
     const config = loadConfig();
@@ -1237,6 +1268,31 @@ ${dim(visible)}`;
         strategy: (config.defaultStrategy || "bf") as Strategy,
         planDetail: (config.defaultPlanDetail || "sentence") as PlanDetail,
         extension: useExt,
+        beforeExpand: async (exp) => {
+          if (opts.mission) {
+            pushFeed("◆ defining mission (intent + success criteria)…");
+            renderProgress();
+            const mission = await deriveIntentContract(agent, exp.id, seed, { extension: useExt });
+            orchestrator.getStorage().upsertMission(mission);
+            pushFeed(`✦ mission set — ${mission.criteria.length} success criteria`);
+          }
+          if (opts.corpusPath) {
+            const corpus = orchestrator.getCorpus();
+            const resolved = path.resolve(opts.corpusPath.replace(/^~/, process.env.HOME || "~"));
+            if (corpus && fs.existsSync(resolved)) {
+              pushFeed(`◆ ingesting corpus: ${opts.corpusPath}…`);
+              renderProgress();
+              const results = fs.statSync(resolved).isDirectory()
+                ? await corpus.ingestDirectory(exp.id, resolved)
+                : [await corpus.ingestFile(exp.id, resolved)];
+              const chunks = results.reduce((a, r) => a + r.chunkCount, 0);
+              pushFeed(`✦ corpus: ${results.length} source(s), ${chunks} chunk(s) grounded`);
+            } else {
+              pushFeed(`! corpus path not found: ${opts.corpusPath}`);
+            }
+          }
+          renderProgress();
+        },
       });
       orchestrator.close();
       await mcpPool.close();
@@ -1292,34 +1348,39 @@ ${dim(visible)}`;
         else showScreen("exploration");
         return;
       }
+      // Unified focus model over all create fields.
+      // zones: 0 seed, 1 n, 2 m, 3 ext (←/→), 4 corpus, 5 mission (space/←/→)
+      const inputs: Record<number, InputRenderable> = { 0: createSeedInput, 1: createNInput, 2: createMInput, 4: createCorpusInput };
+      const applyCreateFocus = () => {
+        for (const r of Object.values(inputs)) (r as any).blur();
+        updateExtDisplay(createFocusIdx === 3);
+        updateMissionDisplay(createFocusIdx === 5);
+        if (inputs[createFocusIdx]) inputs[createFocusIdx].focus();
+      };
       if (key.name === "tab") {
         key.stopPropagation();
-        // Cycle focus between seed, n, m fields (ext uses ←/→ when m is focused → tab goes to ext zone)
-        const createFields: any[] = [createSeedInput, createNInput, createMInput];
-        const currentFocus = createFields.findIndex((f) => f._focused);
-        if (currentFocus === 2) {
-          // From m, tab goes to ext "zone" — blur everything, ext is active
-          createFields.forEach((f: any) => f.blur());
+        createFocusIdx = (createFocusIdx + (key.shift ? 5 : 1)) % 6;
+        applyCreateFocus();
+        return;
+      }
+      const onInput = createFocusIdx === 0 || createFocusIdx === 1 || createFocusIdx === 2 || createFocusIdx === 4;
+      if (!onInput && (key.name === "left" || key.name === "right")) {
+        key.stopPropagation();
+        if (createFocusIdx === 3) {
+          createExtIdx = key.name === "right"
+            ? (createExtIdx + 1) % availableExtensions.length
+            : (createExtIdx - 1 + availableExtensions.length) % availableExtensions.length;
           updateExtDisplay(true);
-        } else if (currentFocus === -1) {
-          // From ext zone, tab wraps to seed
-          createFields[0].focus();
-          updateExtDisplay(false);
-        } else {
-          const next = (currentFocus + 1) % createFields.length;
-          createFields.forEach((f: any) => f.blur());
-          createFields[next].focus();
-          updateExtDisplay(false);
+        } else if (createFocusIdx === 5) {
+          createMission = !createMission;
+          updateMissionDisplay(true);
         }
         return;
       }
-      // When no input is focused (ext zone active), left/right cycles extensions
-      const anyInputFocused = (createSeedInput as any)._focused || (createNInput as any)._focused || (createMInput as any)._focused;
-      if (!anyInputFocused && (key.name === "left" || key.name === "right")) {
+      if (!onInput && createFocusIdx === 5 && key.name === "space") {
         key.stopPropagation();
-        if (key.name === "right") createExtIdx = (createExtIdx + 1) % availableExtensions.length;
-        else createExtIdx = (createExtIdx - 1 + availableExtensions.length) % availableExtensions.length;
-        updateExtDisplay(true);
+        createMission = !createMission;
+        updateMissionDisplay(true);
         return;
       }
       if (key.name === "return") {
@@ -1328,9 +1389,11 @@ ${dim(visible)}`;
         const n = Math.max(1, Math.min(10, parseInt(createNInput.value) || 3));
         const m = Math.max(1, Math.min(10, parseInt(createMInput.value) || 2));
         const ext = availableExtensions[createExtIdx];
+        const corpus = createCorpusInput.value.trim() || undefined;
+        const mission = createMission;
         mode = previousMode;
         try { rootBox.remove("create-box"); } catch {}
-        doCreate(seed, n, m, ext);
+        doCreate(seed, n, m, ext, { corpusPath: corpus, mission });
         return;
       }
       return;
