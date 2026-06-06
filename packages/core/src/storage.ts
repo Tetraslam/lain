@@ -145,7 +145,31 @@ CREATE TABLE IF NOT EXISTS finding (
   created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_finding_exploration ON finding(exploration_id);
+
+CREATE TABLE IF NOT EXISTS meta (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
 `;
+
+/**
+ * Current on-disk schema version. Bump when adding a migration step.
+ *   1 = original (exploration/node/crosslink/synthesis/sync/annotations)
+ *   2 = substrate (corpus, mission, finding tables)
+ * All tables use CREATE TABLE IF NOT EXISTS, so opening an older db with newer
+ * lain transparently adds missing tables; the version + migrations runner
+ * exists for future destructive/altering changes that IF NOT EXISTS can't cover.
+ */
+export const CURRENT_SCHEMA_VERSION = 2;
+
+/**
+ * Ordered, idempotent migrations for changes that additive CREATE-IF-NOT-EXISTS
+ * can't handle (column adds, backfills, …). Keyed by the version they upgrade
+ * TO. Each receives the raw db.
+ */
+const MIGRATIONS: Record<number, (db: Database) => void> = {
+  // 2: tables added via SCHEMA (IF NOT EXISTS); nothing extra to do.
+};
 
 export class Storage {
   private db: Database;
@@ -156,6 +180,30 @@ export class Storage {
     this.db.run("PRAGMA journal_mode = WAL");
     this.db.run("PRAGMA foreign_keys = ON");
     this.db.exec(SCHEMA);
+    this.migrate();
+  }
+
+  /** Apply any pending schema migrations and stamp the current version. */
+  private migrate(): void {
+    const stored = this.getSchemaVersion();
+    if (stored === CURRENT_SCHEMA_VERSION) return;
+    // Fresh db (no version row) or older: run migrations up to current.
+    const from = stored ?? CURRENT_SCHEMA_VERSION; // unstamped existing dbs are already at current shape (IF NOT EXISTS)
+    for (let v = from + 1; v <= CURRENT_SCHEMA_VERSION; v++) {
+      MIGRATIONS[v]?.(this.db);
+    }
+    this.db.prepare("INSERT INTO meta (key, value) VALUES ('schema_version', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+      .run(String(CURRENT_SCHEMA_VERSION));
+  }
+
+  /** Read the stored schema version, or null if unstamped. */
+  getSchemaVersion(): number | null {
+    try {
+      const row = this.db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get() as { value?: string } | undefined;
+      return row?.value ? Number(row.value) : null;
+    } catch {
+      return null;
+    }
   }
 
   close(): void {

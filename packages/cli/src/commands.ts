@@ -1,8 +1,11 @@
 import * as p from "@clack/prompts";
 import * as fs from "fs";
 import * as path from "path";
+import * as os from "os";
+import { execFileSync } from "child_process";
+import { fileURLToPath } from "url";
 import { Orchestrator } from "@lain/core";
-import { Storage, Graph, Sync, Exporter, CanvasExporter, SynthesisEngine, Watcher, Corpus, connectMcpServers, deriveIntentContract } from "@lain/core";
+import { Storage, Graph, Sync, Exporter, CanvasExporter, SynthesisEngine, Watcher, Corpus, connectMcpServers, deriveIntentContract, CURRENT_SCHEMA_VERSION } from "@lain/core";
 import {
   buildExtensionRegistry,
 } from "@lain/extensions";
@@ -29,6 +32,11 @@ import {
 import { findDb, createProviderFromCredentials, truncateStr } from "./commands/helpers.js";
 
 export async function run(args: ParsedArgs): Promise<void> {
+  // Global --version / -v
+  if ((args.command === "help" || args.command === "explore") && getBoolFlag(args.flags, "version", "v") && args.positional.length === 0) {
+    return runVersion();
+  }
+
   // Auto-init on first run (unless --non-interactive or this IS the init command)
   if (
     args.command !== "init" &&
@@ -81,6 +89,14 @@ export async function run(args: ParsedArgs): Promise<void> {
       return runMcp(args);
     case "mission":
       return runMission(args);
+    case "version":
+      return runVersion();
+    case "doctor":
+      return runDoctor();
+    case "update":
+      return runUpdate();
+    case "uninstall":
+      return runUninstall();
     case "help":
       return runHelp();
     default:
@@ -1409,6 +1425,109 @@ async function runCorpus(args: ParsedArgs): Promise<void> {
 }
 
 // ============================================================================
+// Distribution & lifecycle: version / doctor / update / uninstall
+// ============================================================================
+
+/** Resolve the lain repo root from this bundled file's location. */
+function repoRoot(): string {
+  // dist file lives at <repo>/packages/cli/dist/index.js
+  return path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
+}
+
+function lainVersion(): string {
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.join(repoRoot(), "packages/cli/package.json"), "utf-8"));
+    return pkg.version ?? "0.0.0";
+  } catch {
+    return "0.0.0";
+  }
+}
+
+function gitInfo(root: string): { commit: string; branch: string } | null {
+  try {
+    const commit = execFileSync("git", ["-C", root, "rev-parse", "--short", "HEAD"], { encoding: "utf-8" }).trim();
+    const branch = execFileSync("git", ["-C", root, "rev-parse", "--abbrev-ref", "HEAD"], { encoding: "utf-8" }).trim();
+    return { commit, branch };
+  } catch {
+    return null;
+  }
+}
+
+function runVersion(): void {
+  const root = repoRoot();
+  const git = gitInfo(root);
+  console.log(`lain ${lainVersion()}${git ? ` (${git.branch} ${git.commit})` : ""}`);
+  console.log(`db schema v${CURRENT_SCHEMA_VERSION}  ·  bun ${process.versions.bun ?? "?"}  ·  ${root}`);
+}
+
+function runDoctor(): void {
+  const root = repoRoot();
+  const ok = (b: boolean) => (b ? "✓" : "✗");
+  console.log("lain doctor\n");
+
+  const bunOk = !!process.versions.bun;
+  console.log(`  ${ok(bunOk)} bun runtime ${process.versions.bun ?? "(not running under bun!)"}`);
+
+  let pnpmOk = false;
+  try { execFileSync("pnpm", ["--version"], { stdio: "ignore" }); pnpmOk = true; } catch {}
+  console.log(`  ${ok(pnpmOk)} pnpm available`);
+
+  const distOk = fs.existsSync(path.join(root, "packages/cli/dist/index.js"));
+  console.log(`  ${ok(distOk)} build present (${distOk ? "dist/" : "run `lain update` or `pnpm build`"})`);
+
+  const cfgOk = configExists();
+  console.log(`  ${ok(cfgOk)} global config (${cfgOk ? "~/.config/lain/config.json" : "run `lain init`"})`);
+
+  if (cfgOk) {
+    const config = loadConfig();
+    const creds = loadCredentials();
+    const prov = config.defaultProvider;
+    const hasKey =
+      (prov === "bedrock" && (creds.bedrock?.apiKey || process.env.AWS_BEARER_TOKEN_BEDROCK)) ||
+      (prov === "anthropic" && (creds.anthropic?.apiKey || process.env.ANTHROPIC_API_KEY)) ||
+      (prov === "openai" && (creds.openai?.apiKey || process.env.OPENAI_API_KEY)) ||
+      (prov === "openrouter" && (creds.openrouter?.apiKey || process.env.OPENROUTER_API_KEY));
+    console.log(`  ${ok(!!hasKey)} ${prov} credentials (model: ${config.defaultModel})`);
+    const mcpCount = Object.keys(config.mcpServers ?? {}).length;
+    console.log(`  · ${mcpCount} MCP server(s) configured`);
+  }
+
+  const git = gitInfo(root);
+  console.log(`  · ${git ? `git ${git.branch} @ ${git.commit}` : "not a git checkout (self-update unavailable)"}`);
+  console.log(`\n  lain ${lainVersion()} · schema v${CURRENT_SCHEMA_VERSION}`);
+}
+
+function runUpdate(): void {
+  const root = repoRoot();
+  if (!gitInfo(root)) {
+    console.error("lain isn't a git checkout here, so `update` can't pull. Reinstall from source.");
+    return;
+  }
+  console.log("Updating lain (git pull + rebuild)...");
+  try {
+    console.log(execFileSync("git", ["-C", root, "pull", "--ff-only"], { encoding: "utf-8" }).trim());
+    execFileSync("pnpm", ["-C", root, "install"], { stdio: "inherit" });
+    execFileSync("pnpm", ["-C", root, "build"], { stdio: "inherit" });
+    console.log(`\nUpdated to ${lainVersion()}. Your explorations (.db) and config are untouched.`);
+  } catch (err: any) {
+    console.error(`Update failed: ${err.message}`);
+  }
+}
+
+function runUninstall(): void {
+  const binDir = process.env.LAIN_BIN_DIR || path.join(os.homedir(), ".local", "bin");
+  const launcher = path.join(binDir, "lain");
+  console.log("To uninstall lain:\n");
+  if (fs.existsSync(launcher)) {
+    console.log(`  rm ${launcher}            # remove the launcher`);
+  }
+  console.log(`  rm -rf ${repoRoot()}   # remove the source checkout (optional)`);
+  console.log(`  rm -rf ~/.config/lain      # remove config + credentials (optional — deletes your keys)`);
+  console.log(`\nYour exploration .db files live wherever you created them and are never touched.`);
+  console.log(`(Run \`bash ${path.join(repoRoot(), "uninstall.sh")}\` to remove the launcher automatically.)`);
+}
+
+// ============================================================================
 // Help
 // ============================================================================
 
@@ -1461,6 +1580,10 @@ Commands:
   mission [file.db]      Show the intent contract + shared knowledge library
   tui [file.db]          Launch interactive TUI
   serve [dir]            Start web API server (--port <n>, default 3001)
+  version                Show version, schema, and build info (also --version)
+  doctor                 Diagnose install, config, and credentials
+  update                 Update lain in place (git pull + rebuild; dbs untouched)
+  uninstall              How to remove lain
   help                   Show this help
 
 Extensions (use with --ext <name>):

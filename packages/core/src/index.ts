@@ -1,4 +1,4 @@
-export { Storage } from "./storage.js";
+export { Storage, CURRENT_SCHEMA_VERSION } from "./storage.js";
 export { Graph } from "./graph.js";
 export { Orchestrator } from "./orchestrator.js";
 export { Sync } from "./sync.js";

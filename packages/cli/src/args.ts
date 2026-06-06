@@ -43,6 +43,10 @@ export function parseArgs(argv: string[]): ParsedArgs {
     "watch",
     "tui",
     "serve",
+    "version",
+    "doctor",
+    "update",
+    "uninstall",
     "help",
   ]);
 
