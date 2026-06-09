@@ -30,6 +30,7 @@ import {
   configExists,
 } from "./config.js";
 import { findDb, createProviderFromCredentials, truncateStr } from "./commands/helpers.js";
+import { banner, rule, section, kv, icon, c, bold, dim } from "./style.js";
 
 export async function run(args: ParsedArgs): Promise<void> {
   // Global --version / -v
@@ -1573,27 +1574,32 @@ function gitInfo(root: string): { commit: string; branch: string } | null {
 function runVersion(): void {
   const root = repoRoot();
   const git = gitInfo(root);
-  console.log(`lain ${lainVersion()}${git ? ` (${git.branch} ${git.commit})` : ""}`);
-  console.log(`db schema v${CURRENT_SCHEMA_VERSION}  ·  bun ${process.versions.bun ?? "?"}  ·  ${root}`);
+  console.log(banner(lainVersion()));
+  console.log(kv("commit", git ? `${git.branch} ${c.cyan(git.commit)}` : dim("not a git checkout")));
+  console.log(kv("schema", `v${CURRENT_SCHEMA_VERSION}`));
+  console.log(kv("runtime", `bun ${process.versions.bun ?? "?"}`));
+  console.log(kv("source", dim(root)));
+  console.log("");
 }
 
 async function runDoctor(): Promise<void> {
   const root = repoRoot();
-  const ok = (b: boolean) => (b ? "✓" : "✗");
-  console.log("lain doctor\n");
+  const ok = (b: boolean) => (b ? icon.ok() : icon.err());
+  console.log(banner(lainVersion()));
+  console.log(rule("doctor"));
 
   const bunOk = !!process.versions.bun;
-  console.log(`  ${ok(bunOk)} bun runtime ${process.versions.bun ?? "(not running under bun!)"}`);
+  console.log(`  ${ok(bunOk)} bun runtime ${dim(process.versions.bun ?? "(not running under bun!)")}`);
 
   let pnpmOk = false;
   try { execFileSync("pnpm", ["--version"], { stdio: "ignore" }); pnpmOk = true; } catch {}
   console.log(`  ${ok(pnpmOk)} pnpm available`);
 
   const distOk = fs.existsSync(path.join(root, "packages/cli/dist/index.js"));
-  console.log(`  ${ok(distOk)} build present (${distOk ? "dist/" : "run `lain update` or `pnpm build`"})`);
+  console.log(`  ${ok(distOk)} build present ${dim(distOk ? "(dist/)" : "(run `lain update`)")}`);
 
   const cfgOk = configExists();
-  console.log(`  ${ok(cfgOk)} global config (${cfgOk ? "~/.config/lain/config.json" : "run `lain init`"})`);
+  console.log(`  ${ok(cfgOk)} global config ${dim(cfgOk ? "(~/.config/lain)" : "(run `lain init`)")}`);
 
   if (cfgOk) {
     const config = loadConfig();
@@ -1604,19 +1610,18 @@ async function runDoctor(): Promise<void> {
       (prov === "anthropic" && (creds.anthropic?.apiKey || process.env.ANTHROPIC_API_KEY)) ||
       (prov === "openai" && (creds.openai?.apiKey || process.env.OPENAI_API_KEY)) ||
       (prov === "openrouter" && (creds.openrouter?.apiKey || process.env.OPENROUTER_API_KEY));
-    console.log(`  ${ok(!!hasKey)} ${prov} credentials (model: ${config.defaultModel})`);
+    console.log(`  ${ok(!!hasKey)} ${c.accent(prov)} credentials ${dim(`(model: ${config.defaultModel})`)}`);
     const mcpCount = Object.keys(config.mcpServers ?? {}).length;
-    console.log(`  · ${mcpCount} MCP server(s) configured`);
+    console.log(`  ${icon.dot()} ${mcpCount} MCP server(s) configured`);
   }
 
   const git = gitInfo(root);
-  console.log(`  · ${git ? `git ${git.branch} @ ${git.commit}` : "not a git checkout (self-update unavailable)"}`);
+  console.log(`  ${icon.dot()} ${git ? `git ${git.branch} @ ${c.cyan(git.commit)}` : dim("not a git checkout (self-update unavailable)")}`);
 
   const update = await checkForUpdate(root);
-  if (update.available) console.log(`  ↑ update available (${update.remote}) — run \`lain update\``);
-  else if (git) console.log(`  ✓ up to date`);
-
-  console.log(`\n  lain ${lainVersion()} · schema v${CURRENT_SCHEMA_VERSION}`);
+  if (update.available) console.log(`  ${c.yellow("↑")} update available (${update.remote}) — run ${c.cyan("lain update")}`);
+  else if (git) console.log(`  ${icon.ok()} up to date`);
+  console.log("");
 }
 
 function runUpdate(): void {
@@ -1656,13 +1661,12 @@ function runUninstall(): void {
 // ============================================================================
 
 function runHelp(): void {
-  console.log(`lain — graph-based ideation engine
-
-Usage:
-  lain "<idea>" [options]         Start a new exploration
+  console.log(banner(lainVersion()));
+  console.log(`${section("Usage")}
+  ${c.accent('lain "<idea>"')} [options]         Start a new exploration
   lain explore --seed <file> [options]
 
-Options:
+${section("Options")}
   -n, --branches <n>     Branches per node (default: 3)
   -m, --depth <m>        Max depth (default: 3)
   --strategy <bf|df>     Breadth-first or depth-first (default: bf)
@@ -1673,10 +1677,11 @@ Options:
   -c, --concurrency <n>  Max parallel agent calls (default: 5)
   --agentic              Expand nodes as tool-using agents (graph + corpus + findings + linking)
   --corpus <path>        Ingest a file/dir as source material before generating (implies --agentic)
-  --mission [intent]     Derive a goal + success criteria and pursue it (implies --agentic)
+  --mission [intent]     Write a validation contract + pursue it autonomously (implies --agentic)
+  --mission-rounds <n>   Max validate→fix rounds for a mission (default: 2)
   --max-steps <n>        Max agent tool round-trips per node (default: 10)
 
-Commands:
+${section("Commands")}
   init                   Set up global config (--workspace for local, --non-interactive for agents)
   status                 Show explorations in current directory
   show <node-id>         Display a node
@@ -1711,7 +1716,7 @@ Commands:
   uninstall              How to remove lain
   help                   Show this help
 
-Extensions (use with --ext <name>):
+${section("Extensions")} ${dim("(use with --ext <name>)")}
   freeform               No constraints, pure divergent thinking (default)
   worldbuilding          Structured worldbuilding (geography, cultures, history, magic)
   debate                 Adversarial argumentation (pro/con/steelman/critique)
