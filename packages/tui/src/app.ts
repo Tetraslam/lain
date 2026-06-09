@@ -13,11 +13,11 @@ import {
 import { t, fg, bg, dim, bold, italic, underline, strikethrough, cyan, green, yellow, magenta } from "@opentui/core";
 import type { KeyEvent, SelectOption } from "@opentui/core";
 import { toast, mountToaster } from "./toast.js";
-import { Storage, Graph, Orchestrator, Sync, Exporter, CanvasExporter, SynthesisEngine, Corpus, connectMcpServers, checkForUpdate, planMission, interviewMission, addRecentDb, type InterviewTurn } from "@lain/core";
+import { Storage, Graph, Orchestrator, Sync, Exporter, CanvasExporter, SynthesisEngine, Corpus, connectMcpServers, buildToolCatalog, checkForUpdate, planMission, interviewMission, addRecentDb, type InterviewTurn } from "@lain/core";
 import { buildExtensionRegistry } from "@lain/extensions";
 import { fileURLToPath } from "url";
-import type { LainNode, Exploration, Strategy, PlanDetail, Mission, SettingField, LainConfig, Credentials } from "@lain/shared";
-import { generateId, SETTINGS_SECTIONS, SETTINGS_FIELDS, applySettings, resolveSettingValue, coerceSettingValue } from "@lain/shared";
+import type { LainNode, Exploration, Strategy, PlanDetail, Mission, SettingField, LainConfig, Credentials, ToolCatalog, ToolGroup, ToolSelection, McpServerConfig } from "@lain/shared";
+import { generateId, SETTINGS_SECTIONS, SETTINGS_FIELDS, applySettings, resolveSettingValue, coerceSettingValue, saveConfig, normalizeToolSelection, resolveDisabledToolIds, toggleGroup, toggleTool, isGroupEnabled, isToolEnabled, countActiveTools } from "@lain/shared";
 import { loadConfig, loadCredentials, createProviderFromCredentials } from "./config-loader.js";
 import { GraphView } from "./graph-view.js";
 import * as fs from "fs";
@@ -420,6 +420,25 @@ export async function createApp(dbPathArg?: string): Promise<void> {
   }
   updateMissionDisplay();
 
+  // Tools row — opens the per-run tool picker overlay.
+  const createToolsRow = new BoxRenderable(renderer, {
+    id: "create-tools-row", width: "100%", flexDirection: "row", gap: 2,
+  });
+  createForm.add(createToolsRow);
+  createToolsRow.add(new TextRenderable(renderer, { id: "create-tools-label", content: "tools:", fg: c.blue }));
+  let createToolSelection: ToolSelection | null = null;
+  const createToolsDisplay = new TextRenderable(renderer, { id: "create-tools-display", content: "" });
+  createToolsRow.add(createToolsDisplay);
+  function updateToolsRowDisplay(focused = false) {
+    const customized = !!createToolSelection && (createToolSelection.disabledGroups.length > 0 || createToolSelection.disabledTools.length > 0);
+    const label = customized ? "‹customized›" : "‹defaults›";
+    const hint = dim("choose which tools & MCP servers agents may use");
+    createToolsDisplay.content = focused
+      ? t`${fg(c.accent)(label)}  ${hint}  ${dim("· enter")}`
+      : t`${fg(c.bright)(label)}  ${hint}`;
+  }
+  updateToolsRowDisplay();
+
   const createHint = new TextRenderable(renderer, {
     id: "create-hint",
     content: "tab switches fields  ·  ←/→ select lens  ·  enter creates  ·  esc cancels",
@@ -480,6 +499,27 @@ export async function createApp(dbPathArg?: string): Promise<void> {
   settingsBox.add(settingsInput);
   const settingsFooter = new TextRenderable(renderer, { id: "settings-footer", content: "", width: "100%" });
   settingsBox.add(settingsFooter);
+
+  // ===========================================================================
+  // TOOLS VIEW (agent toolbelt catalog + selection)
+  // ===========================================================================
+  const toolsOverlay = new BoxRenderable(renderer, {
+    id: "tools-overlay", width: "100%", height: "100%",
+    position: "absolute", left: 0, top: 0,
+    justifyContent: "center", alignItems: "center",
+  });
+  const toolsBox = new BoxRenderable(renderer, {
+    id: "tools-box", width: 84, border: true, borderStyle: "rounded", borderColor: c.accent,
+    flexDirection: "column", backgroundColor: c.surface,
+    paddingLeft: 2, paddingRight: 2, paddingTop: 1, paddingBottom: 1, gap: 1,
+  });
+  toolsOverlay.add(toolsBox);
+  const toolsTitle = new TextRenderable(renderer, { id: "tools-title", content: "" });
+  toolsBox.add(toolsTitle);
+  const toolsBody = new TextRenderable(renderer, { id: "tools-body", content: "", width: "100%" });
+  toolsBox.add(toolsBody);
+  const toolsFooter = new TextRenderable(renderer, { id: "tools-footer", content: "", width: "100%" });
+  toolsBox.add(toolsFooter);
 
   // ===========================================================================
   // SYNTHESIS VIEW
@@ -662,7 +702,7 @@ ${annotation.merged ? dim("Already merged.") : dim("m — merge  ·  d — dismi
   // Screen management
   // ===========================================================================
 
-  function showScreen(screen: "home" | "exploration" | "palette" | "create" | "interview" | "settings" | "graph" | "synthesis") {
+  function showScreen(screen: "home" | "exploration" | "palette" | "create" | "interview" | "settings" | "tools" | "graph" | "synthesis") {
     try { rootBox.remove("home-container"); } catch {}
     try { rootBox.remove("exp-container"); } catch {}
     try { rootBox.remove("graph-container"); } catch {}
@@ -670,6 +710,7 @@ ${annotation.merged ? dim("Already merged.") : dim("m — merge  ·  d — dismi
     try { rootBox.remove("create-box"); } catch {}
     try { rootBox.remove("interview-overlay"); } catch {}
     try { rootBox.remove("settings-overlay"); } catch {}
+    try { rootBox.remove("tools-overlay"); } catch {}
     try { rootBox.remove("synth-container"); } catch {}
 
     if (screen === "home") {
@@ -710,9 +751,11 @@ ${annotation.merged ? dim("Already merged.") : dim("m — merge  ·  d — dismi
       createSeedInput.value = "";
       createCorpusInput.value = "";
       createMission = false;
+      createToolSelection = null;
       createFocusIdx = 0;
       updateExtDisplay(false);
       updateMissionDisplay(false);
+      updateToolsRowDisplay(false);
       createSeedInput.focus();
     } else if (screen === "interview") {
       rootBox.add(homeContainer); // dim backdrop
@@ -727,6 +770,16 @@ ${annotation.merged ? dim("Already merged.") : dim("m — merge  ·  d — dismi
       else if (exploration) rootBox.add(explorationContainer);
       else rootBox.add(homeContainer);
       rootBox.add(settingsOverlay);
+      homeSelect.focusable = false;
+      homeSelect.blur();
+      treeSelect.focusable = false;
+      treeSelect.blur();
+    } else if (screen === "tools") {
+      if (previousMode === "graph") rootBox.add(graphContainer);
+      else if (previousMode === "synthesis") rootBox.add(synthContainer);
+      else if (exploration) rootBox.add(explorationContainer);
+      else rootBox.add(homeContainer);
+      rootBox.add(toolsOverlay);
       homeSelect.focusable = false;
       homeSelect.blur();
       treeSelect.focusable = false;
@@ -947,6 +1000,7 @@ ${annotation.merged ? dim("Already merged.") : dim("m — merge  ·  d — dismi
       searchCorpus: () => toast.info("Search corpus via CLI: lain corpus search <query> --db " + path.basename(dbPath)),
       backToHome: () => { mode = "home"; showScreen("home"); },
       openSettings,
+      openTools,
       checkUpdate: doCheckUpdate,
       help: showHelpMode,
       quit: cleanup,
@@ -1657,7 +1711,161 @@ ${dim("↑↓")} ${fg(c.muted)("navigate")}   ${dim("↵")} ${fg(c.muted)("run")
     else { mode = "home"; showScreen("home"); }
   }
 
-  async function doCreate(seed: string, n?: number, m?: number, ext?: string, opts: { corpusPath?: string; mission?: boolean; prebuiltMission?: Mission | null } = {}) {
+  // ===========================================================================
+  // Tools overlay (catalog + selection) — config defaults or per-run override
+  // ===========================================================================
+  type ToolRow =
+    | { kind: "group"; group: ToolGroup }
+    | { kind: "tool"; group: ToolGroup; tool: { id: string; title: string; description: string } };
+  let toolsCatalog: ToolCatalog = { groups: [] };
+  let toolsSelection: ToolSelection = { disabledGroups: [], disabledTools: [] };
+  let toolsExpanded = new Set<string>();
+  let toolsRows: ToolRow[] = [];
+  let toolsCursor = 0;
+  let toolsScroll = 0;
+  let toolsRunMode = false;
+  let toolsResolve: ((sel: ToolSelection | null) => void) | null = null;
+  let toolsReturnTo: "create" | "back" = "back";
+  const TOOLS_WINDOW = 16;
+
+  async function buildTuiCatalog(): Promise<ToolCatalog> {
+    const config = loadConfig();
+    const registry = buildExtensionRegistry();
+    const { catalog, mcpPool } = await buildToolCatalog({
+      hasCorpus: true,
+      extensionGroups: registry.describeToolGroups(),
+      mcpServers: config.mcpServers,
+      probeMcp: true,
+    });
+    if (mcpPool) await mcpPool.close();
+    return catalog;
+  }
+
+  function rebuildToolRows() {
+    toolsRows = [];
+    for (const g of toolsCatalog.groups) {
+      toolsRows.push({ kind: "group", group: g });
+      if (toolsExpanded.has(g.id)) for (const tool of g.tools) toolsRows.push({ kind: "tool", group: g, tool });
+    }
+    if (toolsCursor >= toolsRows.length) toolsCursor = Math.max(0, toolsRows.length - 1);
+  }
+
+  function renderTools() {
+    const total = countActiveTools(toolsCatalog, toolsSelection);
+    toolsTitle.content = t`${bold(fg(c.accent)("tools"))}  ${dim(toolsRunMode ? "— this run only (d saves as default)" : "— default toolbelt for new runs")}  ${fg(c.muted)("·")}  ${fg(c.green)(`${total} active`)}`;
+    if (toolsCursor < toolsScroll) toolsScroll = toolsCursor;
+    if (toolsCursor >= toolsScroll + TOOLS_WINDOW) toolsScroll = toolsCursor - TOOLS_WINDOW + 1;
+    const end = Math.min(toolsRows.length, toolsScroll + TOOLS_WINDOW);
+    const lines: (StyledText | string)[] = [];
+    for (let i = toolsScroll; i < end; i++) {
+      const row = toolsRows[i];
+      const focused = i === toolsCursor;
+      const cur = focused ? fg(c.accent)("▸") : " ";
+      if (row.kind === "group") {
+        const on = isGroupEnabled(toolsSelection, row.group.id);
+        const sw = on ? fg(c.green)("●") : dim("○");
+        const caret = row.group.tools.length ? (toolsExpanded.has(row.group.id) ? "▾" : "▸") : " ";
+        const active = row.group.tools.filter((tl) => isToolEnabled(toolsSelection, row.group.id, tl.id)).length;
+        const count = row.group.tools.length ? dim(`${on ? `${active}/${row.group.tools.length}` : "off"}`) : "";
+        const kind = fg(c.muted)(`[${row.group.kind}]`);
+        const err = row.group.error ? fg(c.red)(`  ✗ ${row.group.error.slice(0, 30)}` ) : "";
+        lines.push(t`${cur} ${dim(caret)} ${sw} ${bold(fg(c.bright)(row.group.title))} ${kind} ${count}${err}`);
+      } else {
+        const ton = isToolEnabled(toolsSelection, row.group.id, row.tool.id);
+        const box = !isGroupEnabled(toolsSelection, row.group.id) ? dim("·") : ton ? fg(c.green)("✓") : fg(c.red)("✗");
+        lines.push(t`${cur}      ${box} ${fg(c.fg)(row.tool.id.padEnd(24))} ${dim(row.tool.description.slice(0, 40))}`);
+      }
+    }
+    if (toolsRows.length === 0) lines.push(t`${dim("  (no tools)")}`);
+    toolsBody.content = joinLinesST(lines);
+    const scroll = toolsScroll + TOOLS_WINDOW < toolsRows.length || toolsScroll > 0 ? dim("  ↑/↓ scroll") : "";
+    toolsFooter.content = t`  ${fg(c.muted)("↑/↓")} move  ${fg(c.muted)("·")}  ${dim("space")} toggle  ${fg(c.muted)("·")}  ${dim("→")} expand  ${fg(c.muted)("·")}  ${dim("d")} save default  ${fg(c.muted)("·")}  ${dim("esc")} ${toolsRunMode ? "apply" : "close"}${scroll}`;
+  }
+
+  async function loadToolsOverlay() {
+    toolsTitle.content = t`${bold(fg(c.accent)("tools"))}  ${dim("— probing MCP servers…")}`;
+    toolsBody.content = t`${fg(c.accent)("◇")}  ${dim("building the catalog…")}`;
+    toolsFooter.content = "";
+    showScreen("tools");
+    toolsCatalog = await buildTuiCatalog();
+    toolsExpanded = new Set();
+    toolsCursor = 0;
+    toolsScroll = 0;
+    rebuildToolRows();
+    renderTools();
+  }
+
+  /** Open the tools overlay to edit the saved default selection. */
+  async function openTools() {
+    previousMode = mode === "tools" ? previousMode : mode;
+    mode = "tools";
+    toolsRunMode = false;
+    toolsReturnTo = "back";
+    toolsResolve = null;
+    toolsSelection = normalizeToolSelection(loadConfig().tools);
+    await loadToolsOverlay();
+  }
+
+  /** Open the tools overlay for a single run; resolves with the chosen selection. */
+  function openToolsForRun(initial: ToolSelection): Promise<ToolSelection | null> {
+    return new Promise((resolve) => {
+      mode = "tools";
+      toolsRunMode = true;
+      toolsReturnTo = "create";
+      toolsResolve = resolve;
+      toolsSelection = { disabledGroups: [...initial.disabledGroups], disabledTools: [...initial.disabledTools] };
+      loadToolsOverlay();
+    });
+  }
+
+  function toolsCurrentRow(): ToolRow | null {
+    return toolsRows[toolsCursor] ?? null;
+  }
+
+  function moveTools(delta: number) {
+    toolsCursor = Math.max(0, Math.min(toolsRows.length - 1, toolsCursor + delta));
+    renderTools();
+  }
+
+  function persistToolsIfConfig() {
+    if (!toolsRunMode) saveConfig({ tools: toolsSelection });
+  }
+
+  function toggleToolsCurrent() {
+    const row = toolsCurrentRow();
+    if (!row) return;
+    if (row.kind === "group") toolsSelection = toggleGroup(toolsSelection, row.group.id, !isGroupEnabled(toolsSelection, row.group.id));
+    else toolsSelection = toggleTool(toolsSelection, row.tool.id, !isToolEnabled(toolsSelection, row.group.id, row.tool.id));
+    persistToolsIfConfig();
+    renderTools();
+  }
+
+  function expandToolsCurrent(open: boolean) {
+    const row = toolsCurrentRow();
+    if (!row || row.kind !== "group" || row.group.tools.length === 0) return;
+    if (open) toolsExpanded.add(row.group.id);
+    else toolsExpanded.delete(row.group.id);
+    rebuildToolRows();
+    renderTools();
+  }
+
+  function closeTools(apply: boolean) {
+    const resolve = toolsResolve;
+    const runMode = toolsRunMode;
+    const sel = toolsSelection;
+    toolsResolve = null;
+    if (runMode && resolve) {
+      resolve(apply ? sel : null);
+      return; // caller restores the screen
+    }
+    mode = previousMode === "tools" ? "home" : previousMode;
+    if (mode === "graph") showScreen("graph");
+    else if (mode === "synthesis") showScreen("synthesis");
+    else if (exploration) { mode = "exploring"; showScreen("exploration"); }
+    else { mode = "home"; showScreen("home"); }
+  }
+
+  async function doCreate(seed: string, n?: number, m?: number, ext?: string, opts: { corpusPath?: string; mission?: boolean; prebuiltMission?: Mission | null; toolSelection?: ToolSelection | null } = {}) {
     if (!seed.trim()) { toast.warning("Seed cannot be empty"); return; }
     generating = true;
     const config = loadConfig();
@@ -1718,12 +1926,27 @@ ${dim(visible)}`;
     renderProgress();
 
     const extensions = buildExtensionRegistry();
-    const mcpPool = await connectMcpServers(config.mcpServers);
+    // Resolve the run's tool selection (per-run override or saved default),
+    // connect only enabled MCP servers, and compute disabled tool ids.
+    const selection = normalizeToolSelection(opts.toolSelection ?? config.tools);
+    const enabledServers: Record<string, McpServerConfig> = {};
+    for (const [name, cfg] of Object.entries(config.mcpServers ?? {})) {
+      if (!cfg.disabled && isGroupEnabled(selection, `mcp:${name}`)) enabledServers[name] = cfg;
+    }
+    const built = await buildToolCatalog({
+      hasCorpus: !!opts.corpusPath,
+      extensionGroups: extensions.describeToolGroups([useExt]),
+      mcpServers: enabledServers,
+      probeMcp: true,
+    });
+    const mcpPool = built.mcpPool ?? { tools: [], connections: [], errors: [], close: async () => {} };
+    const disabledToolIds = resolveDisabledToolIds(built.catalog, selection);
     if (mcpPool.tools.length > 0) pushFeed(`mcp: ${mcpPool.tools.length} tool(s) from ${mcpPool.connections.length} server(s)`);
+    if (disabledToolIds.length > 0) pushFeed(`tools: ${countActiveTools(built.catalog, selection)} active (${disabledToolIds.length} off)`);
 
     try {
       const orchestrator = new Orchestrator({
-        dbPath: newDbPath, agent, concurrency: 5, agentic: true, extensions, extraTools: mcpPool.tools,
+        dbPath: newDbPath, agent, concurrency: config.concurrency, agentic: true, extensions, extraTools: mcpPool.tools, disabledTools: disabledToolIds,
         onEvent: (event) => {
           if (event.type === "plan:complete") {
             const d = event.data as { directions?: string[] } | undefined;
@@ -1873,6 +2096,24 @@ ${dim(visible)}`;
       return;
     }
 
+    // ---- Tools mode ----
+    if (mode === "tools") {
+      if (key.name === "escape") { key.stopPropagation(); closeTools(true); return; }
+      if (key.name === "up" || key.name === "k") { key.stopPropagation(); moveTools(-1); return; }
+      if (key.name === "down" || key.name === "j") { key.stopPropagation(); moveTools(1); return; }
+      if (key.name === "right" || key.name === "l") { key.stopPropagation(); expandToolsCurrent(true); return; }
+      if (key.name === "left" || key.name === "h") { key.stopPropagation(); expandToolsCurrent(false); return; }
+      if (key.name === "space" || key.name === "return") { key.stopPropagation(); toggleToolsCurrent(); return; }
+      if (key.name === "d") {
+        key.stopPropagation();
+        saveConfig({ tools: toolsSelection });
+        toast.success("Saved as default toolbelt");
+        return;
+      }
+      key.stopPropagation();
+      return;
+    }
+
     // ---- Creating mode ----
     if (mode === "creating") {
       if (key.name === "escape") {
@@ -1890,11 +2131,12 @@ ${dim(visible)}`;
         for (const r of Object.values(inputs)) (r as any).blur();
         updateExtDisplay(createFocusIdx === 3);
         updateMissionDisplay(createFocusIdx === 5);
+        updateToolsRowDisplay(createFocusIdx === 6);
         if (inputs[createFocusIdx]) inputs[createFocusIdx].focus();
       };
       if (key.name === "tab") {
         key.stopPropagation();
-        createFocusIdx = (createFocusIdx + (key.shift ? 5 : 1)) % 6;
+        createFocusIdx = (createFocusIdx + (key.shift ? 6 : 1)) % 7;
         applyCreateFocus();
         return;
       }
@@ -1918,6 +2160,20 @@ ${dim(visible)}`;
         updateMissionDisplay(true);
         return;
       }
+      // Tools row: open the per-run tool picker (enter/space), then return to the form.
+      if (!onInput && createFocusIdx === 6 && (key.name === "return" || key.name === "space")) {
+        key.stopPropagation();
+        const initial = createToolSelection ?? normalizeToolSelection(loadConfig().tools);
+        try { rootBox.remove("create-box"); } catch {}
+        const picked = await openToolsForRun(initial);
+        if (picked) createToolSelection = picked;
+        try { rootBox.remove("tools-overlay"); } catch {}
+        rootBox.add(createBox);
+        mode = "creating";
+        createFocusIdx = 6;
+        applyCreateFocus();
+        return;
+      }
       if (key.name === "return") {
         key.stopPropagation();
         const seed = createSeedInput.value;
@@ -1927,17 +2183,18 @@ ${dim(visible)}`;
         const ext = availableExtensions[createExtIdx];
         const corpus = createCorpusInput.value.trim() || undefined;
         const mission = createMission;
+        const toolSelection = createToolSelection;
         try { rootBox.remove("create-box"); } catch {}
         if (mission) {
           // Gate generation behind the clarification interview.
           runMissionInterviewTui(seed, n, ext).then((locked) => {
             if (!locked) { mode = "home"; showScreen("home"); return; }
             mode = previousMode;
-            doCreate(seed, n, m, ext, { corpusPath: corpus, mission: true, prebuiltMission: locked });
+            doCreate(seed, n, m, ext, { corpusPath: corpus, mission: true, prebuiltMission: locked, toolSelection });
           });
         } else {
           mode = previousMode;
-          doCreate(seed, n, m, ext, { corpusPath: corpus, mission: false });
+          doCreate(seed, n, m, ext, { corpusPath: corpus, mission: false, toolSelection });
         }
         return;
       }

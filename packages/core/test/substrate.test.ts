@@ -297,4 +297,24 @@ describe("generateNodeAgentic", () => {
     expect(advertised).not.toContain("search_corpus");
     expect(advertised).toContain("outline");
   });
+
+  it("drops tools listed in disabledTools (per-run/config selection)", async () => {
+    const provider = new ScriptedProvider([
+      { stopReason: "end_turn", content: [{ type: "text", text: "# T\n\nbody" }] },
+    ]);
+    const target = graph.getNode("root-2")!;
+    await generateNodeAgentic(target, {
+      agent: provider,
+      storage,
+      graph,
+      corpus,
+      exploration: graph.getExploration("exp")!,
+      disabledTools: ["search_nodes", "link_to_node"],
+    });
+    const advertised = provider.calls[0].tools?.map((t) => t.name) ?? [];
+    expect(advertised).not.toContain("search_nodes");
+    expect(advertised).not.toContain("link_to_node");
+    expect(advertised).toContain("outline"); // others remain
+    expect(advertised).toContain("submit_node"); // delivery tool always present
+  });
 });

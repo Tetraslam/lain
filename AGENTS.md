@@ -101,6 +101,33 @@ Config knobs include provider/model, per-provider credentials, generation
 defaults, `maxTokens`, `concurrency`, `defaultAgentic`, `defaultMissionRounds`,
 watch + synthesis. `maxTokens` is wired into provider creation on every surface.
 
+### Tool catalog + selection (visible + configurable everywhere)
+The agent toolbelt (built-in graph tools, corpus retrieval, each extension/lens,
+each MCP server) is described by a uniform **catalog** and gated by a
+**selection** — both in `packages/shared/src/tool-catalog.ts` (single source of
+truth). `ToolSelection = { disabledGroups, disabledTools }` is a delta from
+"everything on"; pure helpers (`toggleGroup/toggleTool`, `isGroupEnabled/
+isToolEnabled`, `resolveDisabledToolIds`, `enabledMcpServers`, `countActiveTools`,
+`normalizeToolSelection`). `config.tools` holds the default selection.
+- `core/catalog.ts` `buildToolCatalog()` assembles groups; MCP can be **live-
+  probed** (connect + enumerate tools), returning the pool so a run reuses the
+  connection. `registry.describeToolGroups()` supplies extension groups.
+- The orchestrator + `generateNodeAgentic` take `disabledTools` and filter the
+  assembled toolbelt by id (`submit_node` is always kept).
+- **Granularity:** group-level toggle, expandable to per-tool toggles.
+- **Per-run override:** every surface lets you tweak the selection at run start;
+  config defaults are the starting point and a tweak can be "saved as default".
+  Only enabled MCP servers are connected for a run.
+- **CLI:** `lain tools list [--probe]` / `enable|disable <group-or-tool-id>` /
+  `reset`; explore/resume flags `--disable-tool`/`--enable-tool`/`--disable-group`
+  /`--only-tools`/`--no-mcp`. `lain mcp add|list|test|remove` manages servers.
+- **Web:** `GET/PUT /api/tools` (probe), `GET/POST/DELETE /api/mcp`; reusable
+  `ToolPicker` in the SettingsModal "Tools & MCP" tab + the CreateModal per-run
+  panel (with "save as default"). create/extend connect enabled MCP + filter.
+- **TUI:** tools overlay (palette "Tools & MCP") for defaults, and a "tools:" row
+  in the create form opening the same overlay in per-run mode; ↑/↓ move, →
+  expand a group, space/enter toggle, `d` save-as-default.
+
 ## Known Technical Gotchas
 
 ### OpenTUI
