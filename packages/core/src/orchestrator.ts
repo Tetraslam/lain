@@ -300,8 +300,16 @@ export class Orchestrator {
       if (fixes.length === 0) break;
 
       for (const fix of fixes) {
-        const parent = this.graph.getNode(fix.parent) ?? this.graph.getNode("root");
+        let parent = this.graph.getNode(fix.parent) ?? this.graph.getNode("root");
         if (!parent) continue;
+        // Keep fix-branches within the exploration's configured depth: a mission
+        // closes gaps by broadening coverage, not by burrowing ever deeper. If the
+        // chosen parent would push the new child past depth `m` (e.g. it's a leaf,
+        // or a fix node from a prior round), walk up to the nearest ancestor that
+        // keeps the child within the depth budget.
+        while (parent.parentId && parent.depth + 1 > exploration.m) {
+          parent = this.graph.getNode(parent.parentId) ?? parent;
+        }
         const direction = fix.assertions.length ? `${fix.angle} (fulfilling ${fix.assertions.join(", ")})` : fix.angle;
         const children = this.graph.createChildNodes(explorationId, parent.id, 1, [direction]);
         this.emit({ type: "mission:fix", explorationId, nodeId: parent.id, data: { angle: fix.angle, assertions: fix.assertions } });

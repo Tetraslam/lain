@@ -172,6 +172,46 @@ describe("mission lifecycle (plan → validate → fix → revalidate)", () => {
     expect(storage.getMissionReports("e")).toHaveLength(2);
     orch.close();
   });
+
+  it("keeps fix-branches within the exploration depth (no burrowing past m)", async () => {
+    // An agent whose fix targets a DEEP leaf every round — the orchestrator must
+    // reparent upward so fixes never exceed the configured depth m.
+    class DeepFixAgent implements AgentProvider {
+      vc = 0;
+      async generate(r: GenerateRequest): Promise<GenerateResponse> {
+        return { title: `T ${r.node.id}`, content: `C ${r.node.id}`, model: "mock", provider: "anthropic" };
+      }
+      async generateStream(r: GenerateRequest, on: (c: string) => void): Promise<GenerateResponse> {
+        const x = await this.generate(r); on(x.content); return x;
+      }
+      async plan(r: PlanRequest): Promise<PlanResponse> { return { directions: Array.from({ length: r.n }, (_, i) => `d${i + 1}`) }; }
+      async generateRaw(system: string): Promise<string> {
+        if (system.includes("independent validator")) {
+          this.vc++;
+          // Stay unmet so the fix loop runs every round.
+          return '{"results":[{"id":"A1","status":"unmet","evidence":""}],"summary":"still missing"}';
+        }
+        if (system.includes("orchestrator of an ideation mission")) {
+          // Deliberately target the deepest leaf to try to burrow past m.
+          return '{"fixes":[{"parent":"root-1-1","angle":"go deeper","assertions":["A1"]}]}';
+        }
+        return "{}";
+      }
+    }
+    const agent = new DeepFixAgent();
+    const orch = new Orchestrator({ dbPath, agent });
+    await orch.explore({ id: "e", name: "n", seed: "x", n: 1, m: 2, strategy: "bf", planDetail: "sentence", extension: "freeform" });
+    orch.getStorage().upsertMission({
+      explorationId: "e", intent: "g",
+      assertions: [{ id: "A1", text: "covers it" }],
+      features: [], createdAt: new Date().toISOString(),
+    });
+
+    await orch.pursueMission("e", { maxRounds: 3 });
+    const maxDepth = Math.max(...orch.getGraph().getAllNodes("e").map((n) => n.depth));
+    expect(maxDepth).toBeLessThanOrEqual(2); // m = 2; fixes reparented upward, never deeper
+    orch.close();
+  });
 });
 
 describe("findings tools", () => {

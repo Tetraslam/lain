@@ -255,12 +255,14 @@ ${graphOutline(graph, exploration)}`;
 // Orchestrator: turn unmet assertions into targeted fix features
 // ---------------------------------------------------------------------------
 
-const FIX_SYSTEM = `You are the orchestrator of an ideation mission steering it to completion. Given the unmet/partial assertions and the current idea-graph, propose targeted fix work: each fix is one new branch that closes a specific gap, attached under the most relevant existing node (or "root").
+const FIX_SYSTEM = `You are the orchestrator of an ideation mission steering it to completion. Given the unmet/partial assertions and the current idea-graph, propose targeted fix work: each fix is ONE new branch that closes a specific gap.
 
 Return ONLY minified JSON: {"fixes":[{"parent":"<existing node id, or 'root'>","angle":"<the specific direction that will satisfy the gap>","assertions":["A2"]}]}
 
 Rules:
-- At most ${"${MAX}"} fixes — only the highest-leverage ones. Prefer deepening an existing relevant node over a brand-new root branch. No prose outside the JSON.`;
+- At most ${"${MAX}"} fixes — only the highest-leverage ones.
+- Attach each fix under a TOP-LEVEL branch (a direct child of root, e.g. "root-2") or under "root" itself — a mission closes gaps by BROADENING coverage, not by burrowing deeper. Do NOT attach under deep leaf nodes; the exploration depth is capped at ${"${DEPTH}"} and fixes that would exceed it are reparented upward automatically.
+- No prose outside the JSON.`;
 
 export interface FixFeature {
   parent: string;
@@ -294,8 +296,9 @@ Current idea-graph:
 ${graphOutline(graph, exploration)}`;
 
   const validIds = new Set(graph.getAllNodes(exploration.id).map((n) => n.id));
+  const fixSystem = FIX_SYSTEM.replace("${MAX}", String(maxFixes)).replace("${DEPTH}", String(exploration.m));
   try {
-    const obj = extractJson(await agent.generateRaw(FIX_SYSTEM.replace("${MAX}", String(maxFixes)), user, 900));
+    const obj = extractJson(await agent.generateRaw(fixSystem, user, 900));
     if (!obj?.fixes || !Array.isArray(obj.fixes)) return [];
     return (obj.fixes as Record<string, unknown>[])
       .map((f) => ({
