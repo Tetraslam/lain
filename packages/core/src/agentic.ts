@@ -39,6 +39,8 @@ export interface AgenticGenerateDeps {
   extraTools?: LainTool[];
   /** Extension-defined tools (adapted to LainTools with a corpus/graph/agent context). */
   extensionTools?: ExtensionTool[];
+  /** Tool ids to drop from the assembled toolbelt (per-run/config selection). */
+  disabledTools?: string[];
   maxSteps?: number;
   maxTokens?: number;
   onStep?: AgentStepHandler;
@@ -106,11 +108,12 @@ export async function generateNodeAgentic(
   const adaptedExtensionTools = (deps.extensionTools ?? []).map((et) =>
     adaptExtensionTool(et, deps.agent)
   );
+  const disabled = new Set(deps.disabledTools ?? []);
   const tools: LainTool[] = [
     ...buildNodeTools({ hasCorpus }),
     ...adaptedExtensionTools,
     ...(deps.extraTools ?? []),
-  ];
+  ].filter((t) => !disabled.has(t.spec.name));
 
   const ctx = buildToolContext({
     graph: deps.graph,

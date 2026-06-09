@@ -10,9 +10,16 @@ export { Corpus, chunkText, tokenize, type IngestOptions, type IngestResult } fr
 export {
   buildNodeTools,
   buildToolContext,
+  BUILTIN_TOOL_INFO,
+  CORPUS_TOOL_INFO,
   type LainTool,
   type LainToolContext,
 } from "./tools.js";
+export {
+  buildToolCatalog,
+  type BuildCatalogInput,
+  type BuildCatalogResult,
+} from "./catalog.js";
 export { generateNodeAgentic, type AgenticGenerateDeps } from "./agentic.js";
 export {
   connectMcpServer,

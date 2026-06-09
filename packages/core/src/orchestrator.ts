@@ -53,6 +53,8 @@ export interface OrchestratorOptions {
   corpus?: Corpus | null;
   /** Extra tools contributed by extensions / MCP servers. */
   extraTools?: LainTool[];
+  /** Tool ids to drop from the agentic toolbelt (resolved per-run/config selection). */
+  disabledTools?: string[];
 }
 
 /**
@@ -73,6 +75,7 @@ export class Orchestrator {
   private agentMaxTokens: number;
   private corpus: Corpus | null;
   private extraTools: LainTool[];
+  private disabledTools: string[];
 
   constructor(options: OrchestratorOptions) {
     this.storage = new Storage(options.dbPath);
@@ -89,6 +92,7 @@ export class Orchestrator {
     // Reuse the orchestrator's Storage for the corpus so they share one db handle.
     this.corpus = options.corpus ?? (this.agentic ? new Corpus(this.storage) : null);
     this.extraTools = options.extraTools ?? [];
+    this.disabledTools = options.disabledTools ?? [];
   }
 
   getCorpus(): Corpus | null {
@@ -570,6 +574,7 @@ export class Orchestrator {
           extensionTools: this.extensions?.getTools
             ? this.extensions.getTools([exploration.extension])
             : [],
+          disabledTools: this.disabledTools,
           maxSteps: this.agentMaxSteps,
           maxTokens: this.agentMaxTokens,
           onStep: (step: AgentStepEvent) =>

@@ -6,6 +6,7 @@ import type {
   LifecycleHooks,
   OperationDefinition,
   ExtensionTool,
+  ToolGroup,
 } from "@lain/shared";
 
 /**
@@ -174,6 +175,27 @@ export class ExtensionRegistry {
       if (ext.tools) tools.push(...ext.tools);
     }
     return tools;
+  }
+
+  /**
+   * Describe each tool-bearing extension as a catalog group (kind "extension").
+   * With no argument, describes ALL registered extensions that expose tools
+   * (used by the global settings catalog); pass active extensions to scope it.
+   */
+  describeToolGroups(activeExtensions?: string[]): ToolGroup[] {
+    const exts = activeExtensions ? this.iterActive(activeExtensions) : this.getAll();
+    const groups: ToolGroup[] = [];
+    for (const ext of exts) {
+      if (!ext.tools || ext.tools.length === 0) continue;
+      groups.push({
+        id: `ext:${ext.name}`,
+        title: `${ext.name} lens`,
+        kind: "extension",
+        description: `Tools contributed by the ${ext.name} extension.`,
+        tools: ext.tools.map((t) => ({ id: t.spec.name, title: t.spec.name, description: t.spec.description })),
+      });
+    }
+    return groups;
   }
 
   // ========================================================================

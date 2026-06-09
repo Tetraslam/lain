@@ -5,7 +5,7 @@ import * as os from "os";
 import { execFileSync } from "child_process";
 import { fileURLToPath } from "url";
 import { Orchestrator } from "@lain/core";
-import { Storage, Graph, Sync, Exporter, CanvasExporter, SynthesisEngine, Watcher, Corpus, connectMcpServers, planMission, interviewMission, CURRENT_SCHEMA_VERSION, checkForUpdate, clearUpdateCache, addRecentDb, type InterviewTurn } from "@lain/core";
+import { Storage, Graph, Sync, Exporter, CanvasExporter, SynthesisEngine, Watcher, Corpus, connectMcpServers, buildToolCatalog, planMission, interviewMission, CURRENT_SCHEMA_VERSION, checkForUpdate, clearUpdateCache, addRecentDb, type InterviewTurn } from "@lain/core";
 import {
   buildExtensionRegistry,
 } from "@lain/extensions";
@@ -20,12 +20,23 @@ import {
   resolveSettingValue,
   applySettings,
   configPaths,
+  normalizeToolSelection,
+  resolveDisabledToolIds,
+  enabledMcpServers,
+  isGroupEnabled,
+  isToolEnabled,
+  toggleGroup,
+  toggleTool,
+  countActiveTools,
   type Strategy,
   type PlanDetail,
   type Provider,
   type LainConfig,
   type Mission,
   type SettingField,
+  type ToolCatalog,
+  type ToolSelection,
+  type McpServerConfig,
 } from "@lain/shared";
 import type { ParsedArgs } from "./args.js";
 import { getFlag, getBoolFlag, getNumFlag, getMultiFlag } from "./args.js";
@@ -99,6 +110,8 @@ export async function run(args: ParsedArgs): Promise<void> {
       return runCorpus(args);
     case "mcp":
       return runMcp(args);
+    case "tools":
+      return runTools(args);
     case "mission":
       return runMission(args);
     case "version":
@@ -334,11 +347,20 @@ async function runExplore(args: ParsedArgs): Promise<void> {
   const provider = config.defaultProvider;
   const agent = createProviderFromCredentials(provider, config, credentials);
 
-  // Connect any configured MCP servers (their tools join the agentic toolbelt).
-  const mcpPool = agentic ? await connectMcpServers(config.mcpServers) : null;
-  if (mcpPool) {
-    if (mcpPool.tools.length > 0) console.log(`MCP: ${mcpPool.tools.length} tool(s) from ${mcpPool.connections.length} server(s)`);
-    for (const e of mcpPool.errors) console.warn(`  MCP "${e.name}" unavailable: ${e.error}`);
+  // Resolve the per-run tool selection (config defaults + flag overrides) and
+  // assemble the toolbelt. Only enabled MCP servers are connected.
+  const extensionsForCatalog = buildExtensionRegistry();
+  let mcpPool: McpPoolType | null = null;
+  let disabledToolIds: string[] = [];
+  if (agentic) {
+    const belt = await assembleRunToolbelt(config, args, extensionsForCatalog, { hasCorpus: !!corpusPath, ext });
+    mcpPool = belt.mcpPool;
+    disabledToolIds = belt.disabledToolIds;
+    if (mcpPool) {
+      if (mcpPool.tools.length > 0) console.log(`MCP: ${mcpPool.tools.length} tool(s) from ${mcpPool.connections.length} server(s)`);
+      for (const e of mcpPool.errors) console.warn(`  MCP "${e.name}" unavailable: ${e.error}`);
+    }
+    if (disabledToolIds.length > 0) console.log(`Tools: ${belt.activeCount} active (${disabledToolIds.length} disabled by selection)`);
   }
 
   // Mission planning — the cognitive-frontloading gate. Interactively, the
@@ -363,7 +385,7 @@ async function runExplore(args: ParsedArgs): Promise<void> {
   }
 
   // Create orchestrator with extensions
-  const extensions = buildExtensionRegistry();
+  const extensions = extensionsForCatalog;
   const orchestrator = new Orchestrator({
     dbPath,
     agent,
@@ -373,6 +395,7 @@ async function runExplore(args: ParsedArgs): Promise<void> {
     agentic,
     agentMaxSteps,
     extraTools: mcpPool?.tools ?? [],
+    disabledTools: disabledToolIds,
     onEvent: (event) => {
       switch (event.type) {
         case "node:generating":
@@ -775,12 +798,21 @@ async function runResume(args: ParsedArgs): Promise<void> {
   console.log(`Resuming "${exp.name}" — ${pending.length} incomplete node(s)${tags.length ? ` (${tags.join(", ")})` : ""}`);
 
   const agent = createProviderFromCredentials(config.defaultProvider, config, credentials);
-  const mcpPool = agentic ? await connectMcpServers(config.mcpServers) : null;
-  if (mcpPool && mcpPool.tools.length > 0) console.log(`MCP: ${mcpPool.tools.length} tool(s) from ${mcpPool.connections.length} server(s)`);
+  const resumeRegistry = buildExtensionRegistry();
+  let mcpPool: McpPoolType | null = null;
+  let disabledToolIds: string[] = [];
+  if (agentic) {
+    const belt = await assembleRunToolbelt(config, args, resumeRegistry, { hasCorpus, ext: exp.extension });
+    mcpPool = belt.mcpPool;
+    disabledToolIds = belt.disabledToolIds;
+    if (mcpPool && mcpPool.tools.length > 0) console.log(`MCP: ${mcpPool.tools.length} tool(s) from ${mcpPool.connections.length} server(s)`);
+    if (disabledToolIds.length > 0) console.log(`Tools: ${belt.activeCount} active (${disabledToolIds.length} disabled by selection)`);
+  }
 
   const orchestrator = new Orchestrator({
     dbPath,
     agent,
+    disabledTools: disabledToolIds,
     concurrency: getNumFlag(args.flags, "concurrency", "c") ?? 5,
     extensions: buildExtensionRegistry(),
     agentic,
@@ -1586,6 +1618,147 @@ async function runMcp(args: ParsedArgs): Promise<void> {
 }
 
 // ============================================================================
+// Tools — the agent toolbelt catalog + selection
+// ============================================================================
+
+/** Build the full tool catalog from config (probing MCP only if asked). */
+async function buildCliCatalog(config: LainConfig, probe: boolean): Promise<{ catalog: ToolCatalog; close?: () => Promise<void> }> {
+  const registry = buildExtensionRegistry();
+  const { catalog, mcpPool } = await buildToolCatalog({
+    hasCorpus: true, // catalog is descriptive; corpus tools listed regardless
+    extensionGroups: registry.describeToolGroups(),
+    mcpServers: config.mcpServers,
+    probeMcp: probe,
+  });
+  return { catalog, close: mcpPool ? () => mcpPool.close() : undefined };
+}
+
+async function runTools(args: ParsedArgs): Promise<void> {
+  const sub = args.positional[0] ?? "list";
+  const config = loadConfig();
+  const selection = normalizeToolSelection(config.tools);
+
+  if (sub === "list") {
+    const probe = getBoolFlag(args.flags, "probe");
+    const { catalog, close } = await buildCliCatalog(config, probe);
+    const active = countActiveTools(catalog, selection);
+    console.log("");
+    console.log("  " + section("Agent toolbelt") + "  " + dim(`${active} tool(s) active by default`));
+    for (const g of catalog.groups) {
+      const on = isGroupEnabled(selection, g.id);
+      const head = on ? icon.ok("●") : icon.dot("○");
+      const meta = g.kind === "mcp" && !g.probed && !g.error ? dim("  (run --probe to list tools)") : "";
+      const err = g.error ? c.red(`  ✗ ${g.error}`) : "";
+      console.log(`  ${head} ${bold(c.fg(g.title))} ${dim(g.id)}${meta}${err}`);
+      for (const tool of g.tools) {
+        const ton = isToolEnabled(selection, g.id, tool.id);
+        const mark = !on ? dim("·") : ton ? c.green("✓") : c.red("✗");
+        console.log(`      ${mark} ${c.fg(tool.id.padEnd(26))} ${dim(truncateStr(tool.description, 64))}`);
+      }
+    }
+    console.log("");
+    console.log(dim("  toggle defaults: ") + c.fg("lain tools disable <id> | enable <id>") + dim("   (id = a group or a tool)"));
+    if (close) await close();
+    return;
+  }
+
+  if (sub === "enable" || sub === "disable") {
+    const id = args.positional[1];
+    if (!id) throw new Error(`Usage: lain tools ${sub} <group-or-tool-id>`);
+    const enable = sub === "enable";
+    // Resolve whether the id is a group or a tool by consulting the catalog.
+    const { catalog, close } = await buildCliCatalog(config, false);
+    if (close) await close();
+    const group = catalog.groups.find((g) => g.id === id);
+    let next: ToolSelection;
+    if (group) {
+      next = toggleGroup(selection, id, enable);
+    } else {
+      const known = catalog.groups.some((g) => g.tools.some((t) => t.id === id))
+        || /^mcp_/.test(id); // mcp tool ids may not be in an unprobed catalog
+      if (!known) throw new Error(`Unknown tool or group "${id}". Run 'lain tools list' (or '--probe' for MCP tools).`);
+      next = toggleTool(selection, id, enable);
+    }
+    saveConfig({ tools: next });
+    console.log(`${icon.ok()} ${enable ? "enabled" : "disabled"} ${c.fg(id)} ${dim("(default)")}`);
+    return;
+  }
+
+  if (sub === "reset") {
+    saveConfig({ tools: { disabledGroups: [], disabledTools: [] } });
+    console.log(`${icon.ok()} reset tool selection — all tools enabled by default`);
+    return;
+  }
+
+  throw new Error(`Unknown tools subcommand: ${sub}. Use: list, enable, disable, reset`);
+}
+
+type McpPoolType = Awaited<ReturnType<typeof connectMcpServers>>;
+
+/**
+ * Assemble the agentic toolbelt for a run: connect only the enabled MCP servers,
+ * probe their tools, and resolve config defaults + CLI flag overrides into the
+ * set of disabled tool ids. Shared by explore/resume/extend so tool selection is
+ * honored everywhere. Caller owns the returned mcpPool (must close it).
+ */
+async function assembleRunToolbelt(
+  config: LainConfig,
+  args: ParsedArgs,
+  registry: ReturnType<typeof buildExtensionRegistry>,
+  opts: { hasCorpus: boolean; ext: string },
+): Promise<{ mcpPool: McpPoolType | null; disabledToolIds: string[]; activeCount: number }> {
+  // Catalog-independent pre-selection (so we connect only enabled servers).
+  let preSel = normalizeToolSelection(config.tools);
+  for (const id of getMultiFlag(args.flags, "disable-tool")) preSel = toggleTool(preSel, id, false);
+  for (const id of getMultiFlag(args.flags, "enable-tool")) preSel = toggleTool(preSel, id, true);
+  for (const id of getMultiFlag(args.flags, "disable-group")) preSel = toggleGroup(preSel, id, false);
+  if (getBoolFlag(args.flags, "no-mcp")) {
+    for (const name of Object.keys(config.mcpServers ?? {})) preSel = toggleGroup(preSel, `mcp:${name}`, false);
+  }
+  const enabledServers: Record<string, McpServerConfig> = {};
+  for (const [name, cfg] of Object.entries(config.mcpServers ?? {})) {
+    if (!cfg.disabled && isGroupEnabled(preSel, `mcp:${name}`)) enabledServers[name] = cfg;
+  }
+  const built = await buildToolCatalog({
+    hasCorpus: opts.hasCorpus,
+    extensionGroups: registry.describeToolGroups([opts.ext]),
+    mcpServers: enabledServers,
+    probeMcp: true,
+  });
+  const runSel = resolveRunSelection(config, args, built.catalog);
+  return {
+    mcpPool: built.mcpPool ?? null,
+    disabledToolIds: resolveDisabledToolIds(built.catalog, runSel),
+    activeCount: countActiveTools(built.catalog, runSel),
+  };
+}
+
+/**
+ * Resolve the effective per-run tool selection: config defaults, then CLI-flag
+ * overrides (--enable-tool/--disable-tool/--disable-group/--no-mcp/--only-tools).
+ */
+function resolveRunSelection(config: LainConfig, args: ParsedArgs, catalog: ToolCatalog): ToolSelection {
+  let sel = normalizeToolSelection(config.tools);
+  for (const id of getMultiFlag(args.flags, "disable-tool")) sel = toggleTool(sel, id, false);
+  for (const id of getMultiFlag(args.flags, "enable-tool")) sel = toggleTool(sel, id, true);
+  for (const id of getMultiFlag(args.flags, "disable-group")) sel = toggleGroup(sel, id, false);
+  if (getBoolFlag(args.flags, "no-mcp")) {
+    for (const g of catalog.groups) if (g.kind === "mcp") sel = toggleGroup(sel, g.id, false);
+  }
+  // Allowlist: disable everything not named (matches groups or tools).
+  const only = getMultiFlag(args.flags, "only-tools").flatMap((s) => s.split(",")).map((s) => s.trim()).filter(Boolean);
+  if (only.length) {
+    const allow = new Set(only);
+    for (const g of catalog.groups) {
+      if (allow.has(g.id)) continue;
+      for (const tool of g.tools) if (!allow.has(tool.id)) sel = toggleTool(sel, tool.id, false);
+      if (g.tools.length === 0 && !allow.has(g.id)) sel = toggleGroup(sel, g.id, false);
+    }
+  }
+  return sel;
+}
+
+// ============================================================================
 // Corpus — multimodal source material for agentic explorations
 // ============================================================================
 
@@ -1805,6 +1978,10 @@ ${section("Options")}
   --mission-rounds <n>   Max validate→fix rounds for a mission (default: 2)
   --non-interactive      Skip the mission interview; auto-derive the contract (also --yes)
   --max-steps <n>        Max agent tool round-trips per node (default: 10)
+  --disable-tool <id>    Drop a tool for this run (repeatable; also --enable-tool)
+  --disable-group <id>   Drop a whole group, e.g. corpus / ext:worldbuilding / mcp:firecrawl
+  --only-tools <ids>     Allowlist: enable ONLY these tools/groups (comma-separated)
+  --no-mcp               Don't connect any MCP servers for this run
 
 ${section("Commands")}
   init                   Set up global config (--workspace for local, --non-interactive for agents)
@@ -1835,6 +2012,9 @@ ${section("Commands")}
   mcp list               List configured MCP servers
   mcp test [name]        Connect + list a server's tools
   mcp remove <name>      Remove an MCP server
+  tools list             Show the agent toolbelt (--probe to list MCP tools)
+  tools enable/disable   Toggle a group or tool by id (default selection)
+  tools reset            Re-enable all tools by default
   mission [file.db]      Show the intent contract + shared knowledge library
   tui [file.db]          Launch interactive TUI
   serve [dir]            Start web API server (--port <n>, default 3001)

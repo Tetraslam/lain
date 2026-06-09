@@ -1,5 +1,25 @@
 // @lain/shared — shared types, config, and utilities
 
+import type { ToolSelection } from "./tool-catalog.js";
+
+// Re-export the tool catalog + selection model
+export {
+  emptyToolSelection,
+  normalizeToolSelection,
+  isGroupEnabled,
+  isToolEnabled,
+  toggleGroup,
+  toggleTool,
+  resolveDisabledToolIds,
+  enabledMcpServers,
+  countActiveTools,
+  type ToolGroupKind,
+  type ToolInfo,
+  type ToolGroup,
+  type ToolCatalog,
+  type ToolSelection,
+} from "./tool-catalog.js";
+
 // Re-export config module
 export {
   loadConfig,
@@ -377,6 +397,8 @@ export interface LainConfig {
   synthesis: SynthesisConfig;
   /** Remote MCP servers, keyed by a short local name. */
   mcpServers?: Record<string, McpServerConfig>;
+  /** Default tool selection (which groups/tools agents may use). */
+  tools?: ToolSelection;
 }
 
 export const DEFAULT_CONFIG: LainConfig = {
@@ -400,6 +422,7 @@ export const DEFAULT_CONFIG: LainConfig = {
     autoMerge: false,
   },
   mcpServers: {},
+  tools: { disabledGroups: [], disabledTools: [] },
 };
 
 // ============================================================================

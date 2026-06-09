@@ -10,8 +10,24 @@
 import { Graph } from "./graph.js";
 import { Storage } from "./storage.js";
 import { Corpus, tokenize } from "./corpus.js";
-import type { Exploration, Finding, LainNode, ToolSpec, ToolResultBlock } from "@lain/shared";
+import type { Exploration, Finding, LainNode, ToolSpec, ToolResultBlock, ToolInfo } from "@lain/shared";
 import { generateId, nowISO } from "@lain/shared";
+
+/** Catalog metadata for the always-available built-in node tools. */
+export const BUILTIN_TOOL_INFO: ToolInfo[] = [
+  { id: "outline", title: "Outline the graph", description: "List every node as an indented outline so the agent can diverge from or build on the whole tree." },
+  { id: "read_node", title: "Read a node", description: "Read the full title + content of any node by id." },
+  { id: "search_nodes", title: "Search nodes", description: "Keyword-search all completed nodes; returns ranked snippets." },
+  { id: "link_to_node", title: "Link across branches", description: "Create a cross-link from this node to a related node elsewhere." },
+  { id: "read_findings", title: "Read shared findings", description: "Read the shared knowledge library other node-agents recorded." },
+  { id: "note_finding", title: "Note a finding", description: "Record a durable finding for sibling branches to build on." },
+];
+
+/** Catalog metadata for the corpus-retrieval tools (only active when a corpus exists). */
+export const CORPUS_TOOL_INFO: ToolInfo[] = [
+  { id: "search_corpus", title: "Search the corpus", description: "Retrieve relevant passages from the user's ingested source material." },
+  { id: "list_corpus_sources", title: "List corpus sources", description: "List the names + kinds of all ingested source material." },
+];
 
 /** Everything a tool handler can reach. */
 export interface LainToolContext {
