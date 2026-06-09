@@ -84,6 +84,23 @@ Every interactive CLI command must have a `--non-interactive` alternative with e
 exploration db  >  workspace .lain/  >  global ~/.config/lain/  >  built-in defaults
 ```
 
+### Settings system (schema-driven, all three surfaces)
+`packages/shared/src/settings.ts` is the **single source of truth**: a declarative
+`SETTINGS_FIELDS` (typed: string/secret/number/boolean/select, each with a
+section, store, validation bounds, options/suggestions) + `SETTINGS_SECTIONS`.
+Helpers: `coerceSettingValue` (validate), `resolveSettingValue`/`buildSettingsView`
+(read, **secrets redacted** — `value:""` + `isSet`), `applySettings` (validate +
+route each field to config vs credentials store, global or workspace).
+Add a setting once here and it appears everywhere.
+- **CLI**: `lain config list|get|set|unset|path` (validated, `--json`, `--local`).
+- **Web**: `GET/PUT /api/config` (+ `POST /api/config/test` for a live provider
+  ping); `SettingsModal.tsx` renders the schema (gear button / `,` / Cmd-S).
+- **TUI**: `,` or palette → an in-place Settings overlay (↑/↓ move, ←/→ cycle
+  selects, space toggles, enter edits text/secrets; saves immediately).
+Config knobs include provider/model, per-provider credentials, generation
+defaults, `maxTokens`, `concurrency`, `defaultAgentic`, `defaultMissionRounds`,
+watch + synthesis. `maxTokens` is wired into provider creation on every surface.
+
 ## Known Technical Gotchas
 
 ### OpenTUI

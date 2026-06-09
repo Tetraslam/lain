@@ -6,7 +6,7 @@
 import { Storage, Graph, Orchestrator, Sync, Exporter, SynthesisEngine, Corpus, checkForUpdate, collectDbFiles, addRecentDb, getDiscoveryDirs, addDiscoveryDir, removeDiscoveryDir, interviewMission, type InterviewTurn } from "@lain/core";
 import { createProvider } from "@lain/agents";
 import { buildExtensionRegistry } from "@lain/extensions";
-import { generateId, loadConfig, loadCredentials, type Strategy, type PlanDetail, type Provider, type Credentials, type LainConfig, type Mission } from "@lain/shared";
+import { generateId, loadConfig, loadCredentials, buildSettingsView, applySettings, configPaths, type Strategy, type PlanDetail, type Provider, type Credentials, type LainConfig, type Mission, type SettingUpdate } from "@lain/shared";
 import * as fs from "fs";
 import * as path from "path";
 import { fileURLToPath } from "url";
@@ -18,6 +18,7 @@ const CWD = process.env.LAIN_CWD || process.cwd();
 
 function makeAgent(config: LainConfig, credentials: Credentials) {
   const provider = config.defaultProvider;
+  const maxTokens = config.maxTokens;
   switch (provider) {
     case "bedrock":
       return createProvider({
@@ -25,15 +26,16 @@ function makeAgent(config: LainConfig, credentials: Credentials) {
         model: config.defaultModel,
         apiKey: credentials.bedrock?.apiKey || process.env.AWS_BEARER_TOKEN_BEDROCK,
         region: credentials.bedrock?.region || "us-west-2",
+        maxTokens,
       });
     case "anthropic":
-      return createProvider({ provider: "anthropic", model: config.defaultModel, apiKey: credentials.anthropic?.apiKey || process.env.ANTHROPIC_API_KEY });
+      return createProvider({ provider: "anthropic", model: config.defaultModel, apiKey: credentials.anthropic?.apiKey || process.env.ANTHROPIC_API_KEY, maxTokens });
     case "openai":
-      return createProvider({ provider: "openai", model: config.defaultModel, apiKey: credentials.openai?.apiKey || process.env.OPENAI_API_KEY, baseUrl: credentials.openai?.baseUrl || process.env.OPENAI_BASE_URL });
+      return createProvider({ provider: "openai", model: config.defaultModel, apiKey: credentials.openai?.apiKey || process.env.OPENAI_API_KEY, baseUrl: credentials.openai?.baseUrl || process.env.OPENAI_BASE_URL, maxTokens });
     case "openrouter":
-      return createProvider({ provider: "openrouter", model: config.defaultModel, apiKey: credentials.openrouter?.apiKey || process.env.OPENROUTER_API_KEY, baseUrl: credentials.openrouter?.baseUrl });
+      return createProvider({ provider: "openrouter", model: config.defaultModel, apiKey: credentials.openrouter?.apiKey || process.env.OPENROUTER_API_KEY, baseUrl: credentials.openrouter?.baseUrl, maxTokens });
     default:
-      return createProvider({ provider, model: config.defaultModel });
+      return createProvider({ provider, model: config.defaultModel, maxTokens });
   }
 }
 
@@ -118,6 +120,43 @@ Bun.serve({
     // ---- Discovery directories ----
     if (p === "/api/dirs" && req.method === "GET") {
       return json({ dirs: getDiscoveryDirs(), cwd: CWD });
+    }
+
+    // ---- Settings (schema-driven, secrets redacted) ----
+    if (p === "/api/config" && req.method === "GET") {
+      const view = buildSettingsView(loadConfig(CWD), loadCredentials());
+      return json({ ...view, paths: configPaths(CWD) });
+    }
+    if (p === "/api/config" && req.method === "PUT") {
+      const body = await req.json() as { updates: SettingUpdate[]; scope?: "global" | "workspace" };
+      const result = applySettings(body.updates ?? [], { scope: body.scope ?? "global", cwd: CWD });
+      const view = buildSettingsView(loadConfig(CWD), loadCredentials());
+      return json({ ...result, ...view });
+    }
+    // Test a provider connection with a tiny live ping (uses pending edits if provided).
+    if (p === "/api/config/test" && req.method === "POST") {
+      const body = await req.json().catch(() => ({})) as { provider?: Provider; model?: string; credentials?: Credentials };
+      const config = loadConfig(CWD);
+      const credentials = { ...loadCredentials(), ...(body.credentials ?? {}) };
+      const provider = body.provider ?? config.defaultProvider;
+      const model = body.model ?? config.defaultModel;
+      try {
+        const cred = (credentials as any)[provider] ?? {};
+        const agent = createProvider({
+          provider, model, maxTokens: 16,
+          apiKey: cred.apiKey
+            ?? (provider === "bedrock" ? process.env.AWS_BEARER_TOKEN_BEDROCK
+              : provider === "anthropic" ? process.env.ANTHROPIC_API_KEY
+              : provider === "openai" ? process.env.OPENAI_API_KEY
+              : process.env.OPENROUTER_API_KEY),
+          baseUrl: cred.baseUrl,
+          region: cred.region || "us-west-2",
+        });
+        const reply = await agent.generateRaw("Reply with the single word: ok", "ping");
+        return json({ ok: true, provider, model: agent.modelId, sample: reply.slice(0, 40) });
+      } catch (err: any) {
+        return json({ ok: false, provider, model, error: err.message }, 200);
+      }
     }
     if (p === "/api/dirs" && req.method === "POST") {
       const { dir } = await req.json() as { dir: string };

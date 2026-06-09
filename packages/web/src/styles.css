@@ -578,6 +578,44 @@ a:hover { color: var(--accent-hover); }
 .contract-id.branch { color: var(--blue, #7aa2f7); }
 .contract-claims { color: var(--fg-muted); font-family: var(--font-mono); font-size: 11px; }
 
+/* ---- Settings ---- */
+.settings-gear {
+  position: absolute; top: 20px; right: 22px; z-index: 5;
+  background: none; border: none; cursor: pointer;
+  font-size: 20px; color: var(--fg-muted); line-height: 1;
+  transition: color 0.15s ease, transform 0.3s ease;
+}
+.settings-gear:hover { color: var(--accent); transform: rotate(45deg); }
+.settings-modal { width: min(720px, 92vw); max-height: 86vh; display: flex; flex-direction: column; }
+.settings-header { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.settings-path { font-family: var(--font-mono); font-size: 11px; color: var(--fg-muted); }
+.settings-body { display: flex; gap: 18px; margin-top: 14px; flex: 1; min-height: 0; }
+.settings-nav { display: flex; flex-direction: column; gap: 2px; flex: 0 0 150px; }
+.settings-tab {
+  text-align: left; background: none; border: none; cursor: pointer;
+  padding: 8px 10px; border-radius: 6px; font-size: 13px; color: var(--fg-dim);
+  border-left: 2px solid transparent;
+}
+.settings-tab:hover { background: var(--bg-elevated); color: var(--fg-bright); }
+.settings-tab.active { background: var(--bg-elevated); color: var(--accent); border-left-color: var(--accent); font-weight: 500; }
+.settings-pane { flex: 1; overflow-y: auto; padding-right: 6px; min-width: 0; }
+.settings-section-desc { color: var(--fg-muted); font-size: 12px; margin: 0 0 14px; }
+.setting-row {
+  display: flex; align-items: flex-start; justify-content: space-between; gap: 16px;
+  padding: 11px 0; border-bottom: 1px solid var(--border-subtle);
+}
+.setting-row:last-child { border-bottom: none; }
+.setting-meta { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
+.setting-label { font-size: 13px; color: var(--fg-bright); font-weight: 500; }
+.setting-desc { font-size: 11px; color: var(--fg-muted); line-height: 1.4; }
+.setting-control { flex: 0 0 220px; display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+.setting-control .form-input { width: 100%; }
+.settings-test { display: flex; align-items: center; gap: 12px; margin-top: 18px; flex-wrap: wrap; }
+.test-ok { color: var(--green); font-size: 12px; }
+.test-fail { color: var(--red); font-size: 12px; font-family: var(--font-mono); }
+.settings-actions { margin-top: 16px; align-items: center; }
+.settings-saved { color: var(--green); font-size: 12px; margin-right: auto; }
+
 /* ---- Corpus panel (exploration right rail) ---- */
 .corpus-list { display: flex; flex-direction: column; gap: 2px; margin-bottom: 8px; }
 .corpus-source {

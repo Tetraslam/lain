@@ -14,11 +14,18 @@ import {
   nowISO,
   estimateCost,
   slugify,
+  SETTINGS_FIELDS,
+  SETTINGS_SECTIONS,
+  findSettingField,
+  resolveSettingValue,
+  applySettings,
+  configPaths,
   type Strategy,
   type PlanDetail,
   type Provider,
   type LainConfig,
   type Mission,
+  type SettingField,
 } from "@lain/shared";
 import type { ParsedArgs } from "./args.js";
 import { getFlag, getBoolFlag, getNumFlag, getMultiFlag } from "./args.js";
@@ -39,10 +46,11 @@ export async function run(args: ParsedArgs): Promise<void> {
     return runVersion();
   }
 
-  // Auto-init on first run (unless --non-interactive or this IS the init command)
+  // Auto-init on first run (unless --non-interactive or this IS the init/config command)
   if (
     args.command !== "init" &&
     args.command !== "help" &&
+    args.command !== "config" &&
     !configExists() &&
     !getBoolFlag(args.flags, "non-interactive")
   ) {
@@ -284,14 +292,14 @@ async function runExplore(args: ParsedArgs): Promise<void> {
   const planDetail = (getFlag(args.flags, "plan") ?? config.defaultPlanDetail) as PlanDetail;
   const ext = getFlag(args.flags, "ext", "extension") ?? config.defaultExtension;
   const outputDb = getFlag(args.flags, "output", "o", "db");
-  const concurrency = getNumFlag(args.flags, "concurrency", "c") ?? 5;
+  const concurrency = getNumFlag(args.flags, "concurrency", "c") ?? config.concurrency;
   const streaming = getBoolFlag(args.flags, "stream");
   const corpusPath = getFlag(args.flags, "corpus");
   const missionRaw = args.flags["mission"];
   const missionEnabled = missionRaw !== undefined && missionRaw !== false;
   const missionRefinement = typeof missionRaw === "string" ? missionRaw : undefined;
-  const missionRounds = getNumFlag(args.flags, "mission-rounds") ?? 2;
-  const agentic = getBoolFlag(args.flags, "agentic", "agent") || !!corpusPath || missionEnabled;
+  const missionRounds = getNumFlag(args.flags, "mission-rounds") ?? config.defaultMissionRounds;
+  const agentic = getBoolFlag(args.flags, "agentic", "agent") || config.defaultAgentic || !!corpusPath || missionEnabled;
   const agentMaxSteps = getNumFlag(args.flags, "max-steps") ?? 10;
 
   // Generate a name from the seed
@@ -1206,54 +1214,98 @@ async function runExport(args: ParsedArgs): Promise<void> {
 // Config
 // ============================================================================
 
-async function runConfig(args: ParsedArgs): Promise<void> {
-  const subcommand = args.positional[0]; // "set" or "list"
+/** Render a stored value for display (redacting secrets). */
+function displaySettingValue(field: SettingField, raw: unknown): string {
+  if (raw == null || raw === "") return dim("(unset)");
+  if (field.type === "secret") {
+    const s = String(raw);
+    const tail = s.length > 4 ? s.slice(-4) : "";
+    return c.green("●●●●") + dim(tail ? `…${tail}` : "") + dim("  set");
+  }
+  if (field.type === "boolean") return raw ? c.green("on") : dim("off");
+  return c.fg(String(raw));
+}
 
+async function runConfig(args: ParsedArgs): Promise<void> {
+  const subcommand = args.positional[0] || "list";
+  const isLocal = getBoolFlag(args.flags, "local");
+  const asJson = getBoolFlag(args.flags, "json");
+
+  // ---- config path ----
+  if (subcommand === "path") {
+    const paths = configPaths(process.cwd());
+    if (asJson) { console.log(JSON.stringify(paths, null, 2)); return; }
+    console.log(kv("global", paths.global));
+    console.log(kv("workspace", paths.workspace || dim("(none)")));
+    console.log(kv("credentials", paths.credentials));
+    return;
+  }
+
+  // ---- config list ----
   if (subcommand === "list") {
     const config = loadConfig();
-    const isGlobal = getBoolFlag(args.flags, "global");
-    const isLocal = getBoolFlag(args.flags, "local");
-
-    // For now, just dump the merged config
-    console.log(JSON.stringify(config, null, 2));
+    const credentials = loadCredentials();
+    if (asJson) {
+      const out: Record<string, unknown> = {};
+      for (const f of SETTINGS_FIELDS) {
+        const v = resolveSettingValue(f, config, credentials);
+        out[f.key] = f.type === "secret" ? (v ? "***set***" : null) : v ?? null;
+      }
+      console.log(JSON.stringify(out, null, 2));
+      return;
+    }
+    console.log("");
+    for (const sec of SETTINGS_SECTIONS) {
+      console.log("  " + section(sec.title) + (sec.description ? "  " + dim(sec.description) : ""));
+      for (const f of SETTINGS_FIELDS.filter((x) => x.section === sec.id)) {
+        const v = resolveSettingValue(f, config, credentials);
+        console.log("    " + c.muted(f.key.padEnd(34)) + displaySettingValue(f, v));
+      }
+      console.log("");
+    }
+    console.log(dim("  set with: ") + c.fg("lain config set <key> <value>") + dim("   (--local for workspace)"));
     return;
   }
 
+  // ---- config get <key> ----
+  if (subcommand === "get") {
+    const key = args.positional[1];
+    if (!key) throw new Error("Usage: lain config get <key>");
+    const field = findSettingField(key);
+    if (!field) throw new Error(`Unknown setting: ${key}\nRun 'lain config list' to see all keys.`);
+    const v = resolveSettingValue(field, loadConfig(), loadCredentials());
+    if (asJson) { console.log(JSON.stringify(field.type === "secret" ? (v ? "***set***" : null) : v ?? null)); return; }
+    console.log(displaySettingValue(field, v));
+    return;
+  }
+
+  // ---- config set <key> <value> ----
   if (subcommand === "set") {
     const key = args.positional[1];
-    const value = args.positional[2];
-    if (!key || !value) throw new Error("Usage: lain config set <key> <value>");
-
-    const isLocal = getBoolFlag(args.flags, "local");
-
-    // Map flat keys to nested config
-    const updates: Record<string, unknown> = {};
-    const parts = key.split(".");
-    let current = updates;
-    for (let i = 0; i < parts.length - 1; i++) {
-      current[parts[i]] = {};
-      current = current[parts[i]] as Record<string, unknown>;
+    const value = args.positional.slice(2).join(" ");
+    if (!key || args.positional.length < 3) throw new Error("Usage: lain config set <key> <value>  (--local for workspace)");
+    if (!findSettingField(key)) {
+      throw new Error(`Unknown setting: ${key}\nRun 'lain config list' to see all keys.`);
     }
-
-    // Try to parse as number/boolean
-    let parsed: unknown = value;
-    if (value === "true") parsed = true;
-    else if (value === "false") parsed = false;
-    else if (/^\d+$/.test(value)) parsed = parseInt(value, 10);
-
-    current[parts[parts.length - 1]] = parsed;
-
-    if (isLocal) {
-      saveWorkspaceConfig(process.cwd(), updates as Partial<LainConfig>);
-      console.log(`Set ${key} = ${value} (workspace)`);
-    } else {
-      saveConfig(updates as Partial<LainConfig>);
-      console.log(`Set ${key} = ${value} (global)`);
-    }
+    const result = applySettings([{ key, value }], { scope: isLocal ? "workspace" : "global", cwd: process.cwd() });
+    if (result.errors.length) throw new Error(`Invalid value for ${key}: ${result.errors[0].error}`);
+    const field = findSettingField(key)!;
+    const shown = field.type === "secret" ? "(hidden)" : value;
+    console.log(`${icon.ok()} set ${c.fg(key)} = ${c.accent(shown)} ${dim(isLocal ? "(workspace)" : field.store === "credentials" ? "(credentials)" : "(global)")}`);
     return;
   }
 
-  throw new Error("Usage: lain config <set|list>");
+  // ---- config unset <key> ----
+  if (subcommand === "unset") {
+    const key = args.positional[1];
+    if (!key) throw new Error("Usage: lain config unset <key>");
+    if (!findSettingField(key)) throw new Error(`Unknown setting: ${key}`);
+    applySettings([{ key, value: null }], { scope: isLocal ? "workspace" : "global", cwd: process.cwd() });
+    console.log(`${icon.ok()} unset ${c.fg(key)} ${dim(isLocal ? "(workspace)" : "")}`);
+    return;
+  }
+
+  throw new Error("Usage: lain config <list|get|set|unset|path>");
 }
 
 // ============================================================================
@@ -1769,8 +1821,11 @@ ${section("Commands")}
   conflicts [file.db]    List/resolve sync conflicts (--resolve theirs|ours)
   sync <file.db>         Bidirectional sync (--push, --pull, --status)
   export <file.db>       One-shot export to markdown (--out <dir>, --canvas for .canvas)
-  config set <k> <v>     Set config value (--local for workspace)
-  config list            Show effective config (--global, --local)
+  config list            Show all settings, sectioned (--json)
+  config get <key>       Read one setting
+  config set <k> <v>     Set a setting (validated; --local for workspace)
+  config unset <key>     Clear a setting (--local for workspace)
+  config path            Show config/credential file locations
   watch <file.db>        Auto-sync on file changes (--stop, --status)
   extensions [list]      List available extensions
   corpus add <path>...   Ingest files/dirs as source material (--db, --id)

@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { ExplorationView } from "./components/ExplorationView";
 import { CreateModal } from "./components/CreateModal";
+import { SettingsModal } from "./components/SettingsModal";
 import "./styles.css";
 
 interface DbInfo {
@@ -19,6 +20,7 @@ export function App() {
   const [showCreate, setShowCreate] = useState(() =>
     typeof window !== "undefined" && window.location.hash === "#new"
   );
+  const [showSettings, setShowSettings] = useState(false);
   const [loading, setLoading] = useState(true);
   const [selectedIdx, setSelectedIdx] = useState(0);
   const [updateRemote, setUpdateRemote] = useState<string | null>(null);
@@ -70,12 +72,17 @@ export function App() {
 
   // Keyboard navigation on home screen
   useEffect(() => {
-    if (activeDb || showCreate) return;
+    if (activeDb || showCreate || showSettings) return;
     const allItems = dbs.flatMap((db) => db.explorations.map((exp) => ({ db, exp })));
     const totalItems = allItems.length + 1; // +1 for "New exploration"
 
     function handleKey(e: KeyboardEvent) {
       if ((e.target as HTMLElement)?.tagName === "INPUT" || (e.target as HTMLElement)?.tagName === "TEXTAREA") return;
+      if (e.key === "," || (e.key === "s" && (e.metaKey || e.ctrlKey))) {
+        e.preventDefault();
+        setShowSettings(true);
+        return;
+      }
       if (e.key === "ArrowDown" || e.key === "j") {
         e.preventDefault();
         setSelectedIdx((i) => Math.min(i + 1, totalItems - 1));
@@ -95,7 +102,7 @@ export function App() {
     }
     window.addEventListener("keydown", handleKey);
     return () => window.removeEventListener("keydown", handleKey);
-  }, [activeDb, showCreate, dbs, selectedIdx]);
+  }, [activeDb, showCreate, showSettings, dbs, selectedIdx]);
 
   if (activeDb) {
     return (
@@ -110,6 +117,8 @@ export function App() {
 
   return (
     <div className="home">
+      <button className="settings-gear" title="Settings ( , )" onClick={() => setShowSettings(true)}>⚙</button>
+
       <div className="home-brand">
         <h1>lain</h1>
         <p>everything is connected</p>
@@ -182,6 +191,8 @@ export function App() {
           onCreated={(dbFile: string) => { setShowCreate(false); setActiveDb(dbFile); fetchDbs(); }}
         />
       )}
+
+      {showSettings && <SettingsModal onClose={() => setShowSettings(false)} />}
     </div>
   );
 }

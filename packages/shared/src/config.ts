@@ -117,6 +117,47 @@ export function configExists(): boolean {
   return fs.existsSync(GLOBAL_CONFIG_FILE);
 }
 
+/** Delete a dotted path from a JSON file in place (no-op if absent or corrupt). */
+function deletePathInFile(file: string, dotted: string): void {
+  if (!fs.existsSync(file)) return;
+  let obj: Record<string, unknown>;
+  try {
+    obj = JSON.parse(fs.readFileSync(file, "utf-8"));
+  } catch {
+    return;
+  }
+  const parts = dotted.split(".");
+  let cur: any = obj;
+  for (let i = 0; i < parts.length - 1; i++) {
+    if (cur == null || typeof cur !== "object") return;
+    cur = cur[parts[i]];
+  }
+  if (cur && typeof cur === "object") delete cur[parts[parts.length - 1]];
+  fs.writeFileSync(file, JSON.stringify(obj, null, 2) + "\n");
+}
+
+/** Remove a config key (global or workspace). */
+export function unsetConfigPath(dotted: string, opts: { scope?: "global" | "workspace"; cwd?: string } = {}): void {
+  const file = opts.scope === "workspace"
+    ? path.join(opts.cwd || process.cwd(), ".lain", "config.json")
+    : GLOBAL_CONFIG_FILE;
+  deletePathInFile(file, dotted);
+}
+
+/** Remove a credentials key (always global). */
+export function unsetCredentialPath(dotted: string): void {
+  deletePathInFile(GLOBAL_CREDENTIALS_FILE, dotted);
+}
+
+/** Absolute paths of the config/credential files (for `config path` / settings UIs). */
+export function configPaths(cwd?: string): { global: string; workspace: string | null; credentials: string } {
+  return {
+    global: GLOBAL_CONFIG_FILE,
+    workspace: findWorkspaceConfig(cwd || process.cwd()),
+    credentials: GLOBAL_CREDENTIALS_FILE,
+  };
+}
+
 // ============================================================================
 // Utilities
 // ============================================================================

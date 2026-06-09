@@ -48,6 +48,7 @@ export interface PaletteHost {
   addCorpus(): void;
   searchCorpus(): void;
   backToHome(): void;
+  openSettings(): void;
   checkUpdate(): void;
   help(): void;
   quit(): void;
@@ -132,6 +133,8 @@ export function allCommands(): Command[] {
       when: (h) => h.hasExploration, run: (h) => h.syncObsidian() },
 
     // ---- app ----
+    { id: "app.settings", title: "Settings", group: "app", icon: "⚙", shortcut: ",", keywords: "config preferences provider model api key tokens options",
+      run: (h) => h.openSettings() },
     { id: "app.update", title: "Check for updates", group: "app", icon: "↑", keywords: "version upgrade",
       run: (h) => h.checkUpdate() },
     { id: "app.help", title: "Help & keyboard reference", group: "app", icon: "?", shortcut: "?", keywords: "shortcuts keys",

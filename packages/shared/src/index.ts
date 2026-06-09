@@ -8,10 +8,38 @@ export {
   saveCredentials,
   saveWorkspaceConfig,
   configExists,
+  unsetConfigPath,
+  unsetCredentialPath,
+  configPaths,
   slugify,
   deepMerge,
   type Credentials,
 } from "./config.js";
+
+// Re-export the declarative settings schema (single source of truth)
+export {
+  SETTINGS_SECTIONS,
+  SETTINGS_FIELDS,
+  PROVIDERS,
+  MODEL_SUGGESTIONS,
+  getByPath,
+  findSettingField,
+  coerceSettingValue,
+  resolveSettingValue,
+  buildSettingsView,
+  applySettings,
+  currentSettingsView,
+  type SettingType,
+  type SettingOption,
+  type SettingField,
+  type SettingSection,
+  type SettingFieldView,
+  type SettingsView,
+  type SettingUpdate,
+  type ApplyOptions,
+  type ApplyResult,
+  type CoerceResult,
+} from "./settings.js";
 
 // Re-export merge prompt utilities
 export {
@@ -337,6 +365,14 @@ export interface LainConfig {
   defaultStrategy: Strategy;
   defaultPlanDetail: PlanDetail;
   defaultExtension: string;
+  /** Max tokens per model completion. */
+  maxTokens: number;
+  /** Max parallel agent calls during generation. */
+  concurrency: number;
+  /** Whether new explorations default to the tool-using agentic substrate. */
+  defaultAgentic: boolean;
+  /** Default validate→fix rounds for a mission. */
+  defaultMissionRounds: number;
   watch: WatchConfig;
   synthesis: SynthesisConfig;
   /** Remote MCP servers, keyed by a short local name. */
@@ -352,6 +388,10 @@ export const DEFAULT_CONFIG: LainConfig = {
   defaultStrategy: "bf",
   defaultPlanDetail: "sentence",
   defaultExtension: "freeform",
+  maxTokens: 4096,
+  concurrency: 5,
+  defaultAgentic: false,
+  defaultMissionRounds: 2,
   watch: {
     debounceMs: 500,
     onDelete: "prune",

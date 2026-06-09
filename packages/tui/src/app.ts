@@ -16,8 +16,8 @@ import { toast, mountToaster } from "./toast.js";
 import { Storage, Graph, Orchestrator, Sync, Exporter, CanvasExporter, SynthesisEngine, Corpus, connectMcpServers, checkForUpdate, planMission, interviewMission, addRecentDb, type InterviewTurn } from "@lain/core";
 import { buildExtensionRegistry } from "@lain/extensions";
 import { fileURLToPath } from "url";
-import type { LainNode, Exploration, Strategy, PlanDetail, Mission } from "@lain/shared";
-import { generateId } from "@lain/shared";
+import type { LainNode, Exploration, Strategy, PlanDetail, Mission, SettingField, LainConfig, Credentials } from "@lain/shared";
+import { generateId, SETTINGS_SECTIONS, SETTINGS_FIELDS, applySettings, resolveSettingValue, coerceSettingValue } from "@lain/shared";
 import { loadConfig, loadCredentials, createProviderFromCredentials } from "./config-loader.js";
 import { GraphView } from "./graph-view.js";
 import * as fs from "fs";
@@ -455,6 +455,33 @@ export async function createApp(dbPathArg?: string): Promise<void> {
   interviewBox.add(interviewFooter);
 
   // ===========================================================================
+  // SETTINGS VIEW
+  // ===========================================================================
+  const settingsOverlay = new BoxRenderable(renderer, {
+    id: "settings-overlay", width: "100%", height: "100%",
+    position: "absolute", left: 0, top: 0,
+    justifyContent: "center", alignItems: "center",
+  });
+  const settingsBox = new BoxRenderable(renderer, {
+    id: "settings-box", width: 80, border: true, borderStyle: "rounded", borderColor: c.accent,
+    flexDirection: "column", backgroundColor: c.surface,
+    paddingLeft: 2, paddingRight: 2, paddingTop: 1, paddingBottom: 1, gap: 1,
+  });
+  settingsOverlay.add(settingsBox);
+  const settingsTitle = new TextRenderable(renderer, {
+    id: "settings-title", content: t`${bold(fg(c.accent)("settings"))}  ${dim("— global config, saved to ~/.config/lain/")}`,
+  });
+  settingsBox.add(settingsTitle);
+  const settingsBody = new TextRenderable(renderer, { id: "settings-body", content: "", width: "100%" });
+  settingsBox.add(settingsBody);
+  const settingsInput = new InputRenderable(renderer, {
+    id: "settings-input", width: "100%", placeholder: "type a value — enter to save, esc to cancel", visible: false,
+  });
+  settingsBox.add(settingsInput);
+  const settingsFooter = new TextRenderable(renderer, { id: "settings-footer", content: "", width: "100%" });
+  settingsBox.add(settingsFooter);
+
+  // ===========================================================================
   // SYNTHESIS VIEW
   // ===========================================================================
 
@@ -635,13 +662,14 @@ ${annotation.merged ? dim("Already merged.") : dim("m — merge  ·  d — dismi
   // Screen management
   // ===========================================================================
 
-  function showScreen(screen: "home" | "exploration" | "palette" | "create" | "interview" | "graph" | "synthesis") {
+  function showScreen(screen: "home" | "exploration" | "palette" | "create" | "interview" | "settings" | "graph" | "synthesis") {
     try { rootBox.remove("home-container"); } catch {}
     try { rootBox.remove("exp-container"); } catch {}
     try { rootBox.remove("graph-container"); } catch {}
     try { rootBox.remove("palette-overlay"); } catch {}
     try { rootBox.remove("create-box"); } catch {}
     try { rootBox.remove("interview-overlay"); } catch {}
+    try { rootBox.remove("settings-overlay"); } catch {}
     try { rootBox.remove("synth-container"); } catch {}
 
     if (screen === "home") {
@@ -689,6 +717,16 @@ ${annotation.merged ? dim("Already merged.") : dim("m — merge  ·  d — dismi
     } else if (screen === "interview") {
       rootBox.add(homeContainer); // dim backdrop
       rootBox.add(interviewOverlay);
+      homeSelect.focusable = false;
+      homeSelect.blur();
+      treeSelect.focusable = false;
+      treeSelect.blur();
+    } else if (screen === "settings") {
+      if (previousMode === "graph") rootBox.add(graphContainer);
+      else if (previousMode === "synthesis") rootBox.add(synthContainer);
+      else if (exploration) rootBox.add(explorationContainer);
+      else rootBox.add(homeContainer);
+      rootBox.add(settingsOverlay);
       homeSelect.focusable = false;
       homeSelect.blur();
       treeSelect.focusable = false;
@@ -908,6 +946,7 @@ ${annotation.merged ? dim("Already merged.") : dim("m — merge  ·  d — dismi
       addCorpus: () => toast.info("Add corpus via CLI: lain corpus add <path> --db " + path.basename(dbPath)),
       searchCorpus: () => toast.info("Search corpus via CLI: lain corpus search <query> --db " + path.basename(dbPath)),
       backToHome: () => { mode = "home"; showScreen("home"); },
+      openSettings,
       checkUpdate: doCheckUpdate,
       help: showHelpMode,
       quit: cleanup,
@@ -1448,6 +1487,176 @@ ${dim("↑↓")} ${fg(c.muted)("navigate")}   ${dim("↵")} ${fg(c.muted)("run")
     return null;
   }
 
+  // ===========================================================================
+  // Settings (schema-driven, editable in place)
+  // ===========================================================================
+  type SettingsRow = { kind: "header"; title: string } | { kind: "field"; field: SettingField };
+  let settingsRows: SettingsRow[] = [];
+  let settingsFieldIdx: number[] = []; // row indices that are fields (focusable)
+  let settingsCursor = 0;             // index into settingsFieldIdx
+  let settingsScroll = 0;
+  let settingsEditing = false;
+  let settingsSnapConfig: LainConfig = loadConfig();
+  let settingsSnapCreds: Credentials = loadCredentials();
+  const SETTINGS_WINDOW = 16;
+
+  function settingsField(): SettingField | null {
+    const rowIdx = settingsFieldIdx[settingsCursor];
+    const row = settingsRows[rowIdx];
+    return row && row.kind === "field" ? row.field : null;
+  }
+
+  function fmtSettingValue(f: SettingField): StyledText {
+    const raw = resolveSettingValue(f, settingsSnapConfig, settingsSnapCreds);
+    if (raw == null || raw === "") return t`${dim("(unset)")}`;
+    if (f.type === "secret") {
+      const s = String(raw);
+      return t`${fg(c.green)("●●●●")}${dim(s.length > 4 ? `…${s.slice(-4)}` : "")} ${dim("set")}`;
+    }
+    if (f.type === "boolean") return raw ? t`${fg(c.green)("● on")}` : t`${dim("○ off")}`;
+    return t`${fg(c.bright)(String(raw))}`;
+  }
+
+  function openSettings() {
+    settingsSnapConfig = loadConfig();
+    settingsSnapCreds = loadCredentials();
+    settingsRows = [];
+    settingsFieldIdx = [];
+    for (const sec of SETTINGS_SECTIONS) {
+      settingsRows.push({ kind: "header", title: sec.title });
+      for (const f of SETTINGS_FIELDS.filter((x) => x.section === sec.id)) {
+        settingsFieldIdx.push(settingsRows.length);
+        settingsRows.push({ kind: "field", field: f });
+      }
+    }
+    settingsCursor = 0;
+    settingsScroll = 0;
+    settingsEditing = false;
+    settingsInput.visible = false;
+    previousMode = mode === "settings" ? previousMode : mode;
+    mode = "settings";
+    showScreen("settings");
+    renderSettings();
+  }
+
+  function renderSettings() {
+    const focusedRow = settingsFieldIdx[settingsCursor];
+    // Keep the focused row within the scroll window.
+    if (focusedRow < settingsScroll) settingsScroll = focusedRow;
+    if (focusedRow >= settingsScroll + SETTINGS_WINDOW) settingsScroll = focusedRow - SETTINGS_WINDOW + 1;
+    const end = Math.min(settingsRows.length, settingsScroll + SETTINGS_WINDOW);
+
+    const lines: (StyledText | string)[] = [];
+    for (let i = settingsScroll; i < end; i++) {
+      const row = settingsRows[i];
+      if (row.kind === "header") {
+        lines.push(t`${bold(fg(c.accent)(row.title))}`);
+      } else {
+        const isFocused = i === focusedRow;
+        const label = row.field.label.padEnd(22).slice(0, 22);
+        const head = isFocused ? t`${fg(c.accent)("▸ ")}${bold(fg(c.bright)(label))}  ` : t`  ${fg(c.fg)(label)}  `;
+        lines.push(joinStyled(head, fmtSettingValue(row.field)));
+      }
+    }
+    settingsBody.content = joinLinesST(lines);
+
+    const f = settingsField();
+    if (settingsEditing) {
+      settingsFooter.content = t`  ${dim("enter")} save  ${fg(c.muted)("·")}  ${dim("esc")} cancel`;
+    } else if (f) {
+      const hintTxt = f.type === "boolean" ? "space toggle"
+        : f.type === "select" ? "←/→ change"
+        : f.suggestions ? `enter edit  ·  e.g. ${f.suggestions[0]}`
+        : "enter edit";
+      const scroll = settingsScroll + SETTINGS_WINDOW < settingsRows.length || settingsScroll > 0 ? "   ↑/↓ scroll" : "";
+      settingsFooter.content = t`  ${fg(c.muted)("↑/↓")} move  ${fg(c.muted)("·")}  ${dim(hintTxt)}  ${fg(c.muted)("·")}  ${dim("esc")} close${dim(scroll)}`;
+    }
+  }
+
+  /** Persist one setting, reload the snapshot, and toast the outcome. */
+  function persistSetting(field: SettingField, value: unknown) {
+    const res = applySettings([{ key: field.key, value }], { scope: "global" });
+    if (res.errors.length) { toast.error(`${field.label}: ${res.errors[0].error}`); return false; }
+    settingsSnapConfig = loadConfig();
+    settingsSnapCreds = loadCredentials();
+    toast.success(`Saved ${field.label}`);
+    return true;
+  }
+
+  function moveSettings(delta: number) {
+    settingsCursor = Math.max(0, Math.min(settingsFieldIdx.length - 1, settingsCursor + delta));
+    renderSettings();
+  }
+
+  function cycleSettingSelect(dir: number) {
+    const f = settingsField();
+    if (!f || f.type !== "select" || !f.options) return;
+    const cur = String(resolveSettingValue(f, settingsSnapConfig, settingsSnapCreds) ?? f.options[0].value);
+    let idx = f.options.findIndex((o) => o.value === cur);
+    if (idx < 0) idx = 0;
+    idx = (idx + dir + f.options.length) % f.options.length;
+    persistSetting(f, f.options[idx].value);
+    renderSettings();
+  }
+
+  function toggleSettingBool() {
+    const f = settingsField();
+    if (!f || f.type !== "boolean") return;
+    const cur = !!resolveSettingValue(f, settingsSnapConfig, settingsSnapCreds);
+    persistSetting(f, !cur);
+    renderSettings();
+  }
+
+  function beginSettingEdit() {
+    const f = settingsField();
+    if (!f) return;
+    if (f.type === "boolean") { toggleSettingBool(); return; }
+    if (f.type === "select") { cycleSettingSelect(1); return; }
+    settingsEditing = true;
+    const cur = resolveSettingValue(f, settingsSnapConfig, settingsSnapCreds);
+    settingsInput.value = f.type === "secret" ? "" : (cur != null ? String(cur) : "");
+    settingsInput.visible = true;
+    settingsInput.focus();
+    renderSettings();
+  }
+
+  function commitSettingEdit() {
+    const f = settingsField();
+    if (!f) return;
+    const raw = settingsInput.value;
+    if (raw.trim() === "" && f.type !== "string") {
+      // empty on a non-string clears nothing for secrets; just cancel
+      cancelSettingEdit();
+      return;
+    }
+    const coerced = coerceSettingValue(f, raw);
+    if (!coerced.ok) { toast.error(`${f.label}: ${coerced.error}`); return; }
+    persistSetting(f, coerced.value);
+    settingsEditing = false;
+    settingsInput.visible = false;
+    settingsInput.blur();
+    renderSettings();
+  }
+
+  function cancelSettingEdit() {
+    settingsEditing = false;
+    settingsInput.visible = false;
+    settingsInput.blur();
+    settingsInput.value = "";
+    renderSettings();
+  }
+
+  function closeSettings() {
+    settingsEditing = false;
+    settingsInput.visible = false;
+    settingsInput.blur();
+    mode = previousMode === "settings" ? "home" : previousMode;
+    if (mode === "graph") showScreen("graph");
+    else if (mode === "synthesis") showScreen("synthesis");
+    else if (exploration) { mode = "exploring"; showScreen("exploration"); }
+    else { mode = "home"; showScreen("home"); }
+  }
+
   async function doCreate(seed: string, n?: number, m?: number, ext?: string, opts: { corpusPath?: string; mission?: boolean; prebuiltMission?: Mission | null } = {}) {
     if (!seed.trim()) { toast.warning("Seed cannot be empty"); return; }
     generating = true;
@@ -1612,6 +1821,13 @@ ${dim(visible)}`;
       return;
     }
 
+    // ---- "," : open settings from any non-input view ----
+    if (key.name === "," && !key.ctrl && (mode === "home" || mode === "exploring" || mode === "reading" || mode === "graph" || mode === "synthesis")) {
+      key.stopPropagation();
+      openSettings();
+      return;
+    }
+
     // ---- Palette mode — stop propagation only for handled keys ----
     if (mode === "palette") {
       if (key.name === "escape") { key.stopPropagation(); closePalette(); return; }
@@ -1637,6 +1853,24 @@ ${dim(visible)}`;
         key.stopPropagation();
         return;
       }
+    }
+
+    // ---- Settings mode ----
+    if (mode === "settings") {
+      if (settingsEditing) {
+        if (key.name === "escape") { key.stopPropagation(); cancelSettingEdit(); return; }
+        if (key.name === "return") { key.stopPropagation(); commitSettingEdit(); return; }
+        return; // let the input handle typing
+      }
+      if (key.name === "escape" || (key.name === "," && !key.ctrl)) { key.stopPropagation(); closeSettings(); return; }
+      if (key.name === "up" || key.name === "k") { key.stopPropagation(); moveSettings(-1); return; }
+      if (key.name === "down" || key.name === "j") { key.stopPropagation(); moveSettings(1); return; }
+      if (key.name === "left" || key.name === "h") { key.stopPropagation(); cycleSettingSelect(-1); return; }
+      if (key.name === "right" || key.name === "l") { key.stopPropagation(); cycleSettingSelect(1); return; }
+      if (key.name === "space") { key.stopPropagation(); toggleSettingBool(); return; }
+      if (key.name === "return") { key.stopPropagation(); beginSettingEdit(); return; }
+      key.stopPropagation();
+      return;
     }
 
     // ---- Creating mode ----

@@ -29,12 +29,14 @@ export function createProviderFromCredentials(
   config: LainConfig,
   credentials: Credentials
 ) {
+  const maxTokens = config.maxTokens;
   switch (provider) {
     case "anthropic":
       return createProvider({
         provider: "anthropic",
         model: config.defaultModel,
         apiKey: credentials.anthropic?.apiKey || process.env.ANTHROPIC_API_KEY,
+        maxTokens,
       });
 
     case "bedrock": {
@@ -44,6 +46,7 @@ export function createProviderFromCredentials(
         model: config.defaultModel,
         apiKey: bc?.apiKey || process.env.AWS_BEARER_TOKEN_BEDROCK,
         region: bc?.region || process.env.AWS_REGION || "us-west-2",
+        maxTokens,
       });
     }
 
@@ -53,6 +56,7 @@ export function createProviderFromCredentials(
         model: config.defaultModel,
         apiKey: credentials.openai?.apiKey || process.env.OPENAI_API_KEY,
         baseUrl: credentials.openai?.baseUrl || process.env.OPENAI_BASE_URL,
+        maxTokens,
       });
 
     case "openrouter":
@@ -61,12 +65,14 @@ export function createProviderFromCredentials(
         model: config.defaultModel,
         apiKey: credentials.openrouter?.apiKey || process.env.OPENROUTER_API_KEY,
         baseUrl: credentials.openrouter?.baseUrl,
+        maxTokens,
       });
 
     default:
       return createProvider({
         provider,
         model: config.defaultModel,
+        maxTokens,
       });
   }
 }
