@@ -1,8 +1,19 @@
 import React, { useState, useRef, useCallback } from "react";
+import { ToolPicker, type ToolCatalog, type ToolSelection } from "./ToolPicker";
 
 interface CreateModalProps {
   onClose: () => void;
   onCreated: (dbFile: string) => void;
+}
+
+function countActive(catalog: ToolCatalog | null, sel: ToolSelection): number {
+  if (!catalog) return 0;
+  let n = 0;
+  for (const g of catalog.groups) {
+    if (sel.disabledGroups.includes(g.id)) continue;
+    for (const t of g.tools) if (!sel.disabledTools.includes(t.id)) n++;
+  }
+  return n;
 }
 
 interface Activity {
@@ -49,6 +60,12 @@ export function CreateModal({ onClose, onCreated }: CreateModalProps) {
   const [agentic, setAgentic] = useState(false);
   const [mission, setMission] = useState(false);
   const [files, setFiles] = useState<File[]>([]);
+  // Per-run tool selection
+  const [toolsOpen, setToolsOpen] = useState(false);
+  const [toolCatalog, setToolCatalog] = useState<ToolCatalog | null>(null);
+  const [runSelection, setRunSelection] = useState<ToolSelection>({ disabledGroups: [], disabledTools: [] });
+  const [toolsLoading, setToolsLoading] = useState(false);
+  const [saveToolsDefault, setSaveToolsDefault] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [phase, setPhase] = useState<Phase>("form");
   const [activity, setActivity] = useState<Activity[]>([]);
@@ -144,6 +161,25 @@ export function CreateModal({ onClose, onCreated }: CreateModalProps) {
     runInterviewTurn(next);
   };
 
+  const loadTools = useCallback(async () => {
+    setToolsLoading(true);
+    try {
+      const res = await fetch("/api/tools?probe=1");
+      const json = await res.json();
+      setToolCatalog(json.catalog);
+      setRunSelection(json.selection ?? { disabledGroups: [], disabledTools: [] });
+    } catch { /* ignore */ }
+    setToolsLoading(false);
+  }, []);
+
+  const openToolPanel = () => {
+    setToolsOpen((o) => {
+      const next = !o;
+      if (next && !toolCatalog) loadTools();
+      return next;
+    });
+  };
+
   const handleCreate = async (lockedMission: MissionType | null = null) => {
     if (!seed.trim() || phase === "creating") return;
     setPhase("creating");
@@ -155,6 +191,11 @@ export function CreateModal({ onClose, onCreated }: CreateModalProps) {
     });
 
     try {
+      // Include a per-run tool selection only if the user actually opened/edited it.
+      const selectionEdited = toolsOpen && toolCatalog &&
+        (runSelection.disabledGroups.length > 0 || runSelection.disabledTools.length > 0 || saveToolsDefault);
+      const toolSelection = selectionEdited ? runSelection : null;
+
       let res: Response;
       if (files.length > 0) {
         const form = new FormData();
@@ -164,6 +205,8 @@ export function CreateModal({ onClose, onCreated }: CreateModalProps) {
         form.append("extension", ext);
         form.append("agentic", "true");
         if (lockedMission) form.append("mission", JSON.stringify(lockedMission));
+        if (toolSelection) form.append("toolSelection", JSON.stringify(toolSelection));
+        if (saveToolsDefault) form.append("saveToolsDefault", "true");
         for (const f of files) form.append("files", f);
         res = await fetch("/api/create", { method: "POST", body: form });
       } else {
@@ -173,6 +216,7 @@ export function CreateModal({ onClose, onCreated }: CreateModalProps) {
           body: JSON.stringify({
             seed, n: parseInt(n) || 3, m: parseInt(m) || 2, extension: ext,
             agentic: grounded || !!lockedMission, mission: lockedMission,
+            toolSelection, saveToolsDefault,
           }),
         });
       }
@@ -348,6 +392,34 @@ export function CreateModal({ onClose, onCreated }: CreateModalProps) {
                 <em>{mission ? "interview to pin the goal, then validate the graph against a contract" : "freeform branching with no success contract"}</em>
               </span>
             </label>
+
+            {/* Per-run tool selection */}
+            <div className="tool-disclosure">
+              <button type="button" className="tool-disclosure-head" onClick={openToolPanel}>
+                <span className={`tool-caret${toolsOpen ? " open" : ""}`}>▸</span>
+                <strong>Tools</strong>
+                <em>
+                  {toolsOpen && toolCatalog
+                    ? `${countActive(toolCatalog, runSelection)} tools active for this run`
+                    : "choose which tools & MCP servers agents may use"}
+                </em>
+              </button>
+              {toolsOpen && (
+                <div className="tool-disclosure-body">
+                  {toolsLoading || !toolCatalog ? (
+                    <p className="home-loading">probing tools…</p>
+                  ) : (
+                    <>
+                      <ToolPicker catalog={toolCatalog} selection={runSelection} onChange={setRunSelection} />
+                      <label className="save-default">
+                        <input type="checkbox" checked={saveToolsDefault} onChange={(e) => setSaveToolsDefault(e.target.checked)} />
+                        save this selection as the new default
+                      </label>
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
 
             <div className="modal-actions">
               <button className="btn" onClick={onClose}>Cancel</button>

@@ -3,10 +3,10 @@
  * Serves REST endpoints + SSE for streaming.
  * Run with: bun run src/server/index.ts
  */
-import { Storage, Graph, Orchestrator, Sync, Exporter, SynthesisEngine, Corpus, checkForUpdate, collectDbFiles, addRecentDb, getDiscoveryDirs, addDiscoveryDir, removeDiscoveryDir, interviewMission, type InterviewTurn } from "@lain/core";
+import { Storage, Graph, Orchestrator, Sync, Exporter, SynthesisEngine, Corpus, checkForUpdate, collectDbFiles, addRecentDb, getDiscoveryDirs, addDiscoveryDir, removeDiscoveryDir, interviewMission, buildToolCatalog, type InterviewTurn } from "@lain/core";
 import { createProvider } from "@lain/agents";
 import { buildExtensionRegistry } from "@lain/extensions";
-import { generateId, loadConfig, loadCredentials, buildSettingsView, applySettings, configPaths, type Strategy, type PlanDetail, type Provider, type Credentials, type LainConfig, type Mission, type SettingUpdate } from "@lain/shared";
+import { generateId, loadConfig, loadCredentials, saveConfig, buildSettingsView, applySettings, configPaths, normalizeToolSelection, resolveDisabledToolIds, type Strategy, type PlanDetail, type Provider, type Credentials, type LainConfig, type Mission, type SettingUpdate, type ToolSelection, type McpServerConfig } from "@lain/shared";
 import * as fs from "fs";
 import * as path from "path";
 import { fileURLToPath } from "url";
@@ -158,6 +158,56 @@ Bun.serve({
         return json({ ok: false, provider, model, error: err.message }, 200);
       }
     }
+    // ---- Tool catalog + selection ----
+    // GET /api/tools?probe=1 → { catalog, selection }. Probe connects MCP servers
+    // to enumerate their real tools (closed immediately after listing).
+    if (p === "/api/tools" && req.method === "GET") {
+      const config = loadConfig(CWD);
+      const registry = buildExtensionRegistry();
+      const probe = url.searchParams.get("probe") === "1";
+      const { catalog, mcpPool } = await buildToolCatalog({
+        hasCorpus: true,
+        extensionGroups: registry.describeToolGroups(),
+        mcpServers: config.mcpServers,
+        probeMcp: probe,
+      });
+      if (mcpPool) await mcpPool.close();
+      return json({ catalog, selection: normalizeToolSelection(config.tools) });
+    }
+    if (p === "/api/tools" && req.method === "PUT") {
+      const body = await req.json() as { selection: ToolSelection };
+      saveConfig({ tools: normalizeToolSelection(body.selection) });
+      return json({ ok: true, selection: normalizeToolSelection(body.selection) });
+    }
+
+    // ---- MCP server management ----
+    if (p === "/api/mcp" && req.method === "GET") {
+      const config = loadConfig(CWD);
+      return json({ servers: config.mcpServers ?? {} });
+    }
+    if (p === "/api/mcp" && req.method === "POST") {
+      const body = await req.json() as { name: string; url: string; headers?: Record<string, string> };
+      if (!body.name?.trim() || !body.url?.trim()) return json({ error: "name and url required" }, 400);
+      const config = loadConfig(CWD);
+      const servers = { ...(config.mcpServers ?? {}) };
+      servers[body.name.trim()] = { url: body.url.trim(), ...(body.headers && Object.keys(body.headers).length ? { headers: body.headers } : {}) };
+      saveConfig({ mcpServers: servers });
+      // Probe just-added server so the UI can confirm + show its tools.
+      const { mcpPool } = await buildToolCatalog({ mcpServers: { [body.name.trim()]: servers[body.name.trim()] }, probeMcp: true });
+      const conn = mcpPool?.connections[0];
+      const err = mcpPool?.errors[0];
+      if (mcpPool) await mcpPool.close();
+      return json({ ok: !err, server: body.name.trim(), toolCount: conn?.tools.length ?? 0, error: err?.error });
+    }
+    if (p === "/api/mcp" && req.method === "DELETE") {
+      const body = await req.json() as { name: string };
+      const config = loadConfig(CWD);
+      const servers = { ...(config.mcpServers ?? {}) };
+      delete servers[body.name];
+      saveConfig({ mcpServers: servers });
+      return json({ ok: true });
+    }
+
     if (p === "/api/dirs" && req.method === "POST") {
       const { dir } = await req.json() as { dir: string };
       if (!dir?.trim()) return json({ error: "dir required" }, 400);
@@ -239,12 +289,14 @@ Bun.serve({
         strategy?: string; planDetail?: string;
         agentic?: boolean; corpusSources?: { name: string; text: string }[];
         mission?: Mission | null; missionRounds?: number;
+        toolSelection?: ToolSelection | null; saveToolsDefault?: boolean;
       };
       let uploadedFiles: File[] = [];
 
       if (contentType.includes("multipart/form-data")) {
         const form = await req.formData();
         const missionRaw = form.get("mission");
+        const selRaw = form.get("toolSelection");
         body = {
           seed: String(form.get("seed") ?? ""),
           n: Number(form.get("n")) || undefined,
@@ -252,10 +304,17 @@ Bun.serve({
           extension: (form.get("extension") as string) || undefined,
           agentic: form.get("agentic") === "true",
           mission: typeof missionRaw === "string" && missionRaw ? JSON.parse(missionRaw) as Mission : null,
+          toolSelection: typeof selRaw === "string" && selRaw ? JSON.parse(selRaw) as ToolSelection : null,
+          saveToolsDefault: form.get("saveToolsDefault") === "true",
         };
         uploadedFiles = form.getAll("files").filter((v): v is File => typeof v !== "string");
       } else {
         body = await req.json();
+      }
+
+      // Persist the per-run selection as the new default if asked.
+      if (body.toolSelection && body.saveToolsDefault) {
+        saveConfig({ tools: normalizeToolSelection(body.toolSelection) });
       }
 
       const config = loadConfig();
@@ -289,9 +348,33 @@ Bun.serve({
           // agentic (grounded) mode — missions require the tool-using substrate.
           const hasMission = !!(body.mission && body.mission.assertions?.length);
           const agentic = (body.agentic ?? false) || uploadedFiles.length > 0 || (body.corpusSources?.length ?? 0) > 0 || hasMission;
+
+          // Resolve the run's tool selection (per-run override or config default),
+          // connect only the enabled MCP servers, and compute disabled tool ids.
+          const selection = normalizeToolSelection(body.toolSelection ?? config.tools);
+          let mcpPool: Awaited<ReturnType<typeof buildToolCatalog>>["mcpPool"] = undefined;
+          let disabledToolIds: string[] = [];
+          if (agentic) {
+            const enabledServers: Record<string, McpServerConfig> = {};
+            for (const [name, cfg] of Object.entries(config.mcpServers ?? {})) {
+              if (!cfg.disabled && !selection.disabledGroups.includes(`mcp:${name}`)) enabledServers[name] = cfg;
+            }
+            const built = await buildToolCatalog({
+              hasCorpus: uploadedFiles.length > 0 || (body.corpusSources?.length ?? 0) > 0,
+              extensionGroups: extensions.describeToolGroups([ext]),
+              mcpServers: enabledServers,
+              probeMcp: true,
+            });
+            mcpPool = built.mcpPool;
+            disabledToolIds = resolveDisabledToolIds(built.catalog, selection);
+            if (mcpPool && mcpPool.tools.length > 0) send("tools:mcp", { tools: mcpPool.tools.length, servers: mcpPool.connections.length });
+          }
+
           try {
             const orchestrator = new Orchestrator({
-              dbPath, agent, concurrency: 5, streaming: !agentic, extensions, agentic,
+              dbPath, agent, concurrency: config.concurrency, streaming: !agentic, extensions, agentic,
+              extraTools: mcpPool?.tools ?? [],
+              disabledTools: disabledToolIds,
               onEvent: (event) => {
                 send(event.type, { nodeId: event.nodeId, data: event.data });
               },
@@ -328,6 +411,8 @@ Bun.serve({
             send("complete", { dbFile: dbFileName, explorationId: expId });
           } catch (err: any) {
             send("error", { message: err.message });
+          } finally {
+            if (mcpPool) await mcpPool.close();
           }
 
           controller.close();
@@ -376,9 +461,30 @@ Bun.serve({
       probe.close();
       const useAgentic = agentic ?? hasCorpus;
 
-      const orchestrator = new Orchestrator({ dbPath: dbPath, agent, streaming: !useAgentic, extensions, agentic: useAgentic });
+      // Honor the default tool selection: connect only enabled MCP servers + drop disabled tools.
+      const selection = normalizeToolSelection(config.tools);
+      let mcpPool: Awaited<ReturnType<typeof buildToolCatalog>>["mcpPool"] = undefined;
+      let disabledToolIds: string[] = [];
+      if (useAgentic) {
+        const enabledServers: Record<string, McpServerConfig> = {};
+        for (const [name, cfg] of Object.entries(config.mcpServers ?? {})) {
+          if (!cfg.disabled && !selection.disabledGroups.includes(`mcp:${name}`)) enabledServers[name] = cfg;
+        }
+        const built = await buildToolCatalog({
+          hasCorpus, extensionGroups: extensions.describeToolGroups([exp.extension]),
+          mcpServers: enabledServers, probeMcp: true,
+        });
+        mcpPool = built.mcpPool;
+        disabledToolIds = resolveDisabledToolIds(built.catalog, selection);
+      }
+
+      const orchestrator = new Orchestrator({
+        dbPath: dbPath, agent, streaming: !useAgentic, extensions, agentic: useAgentic,
+        extraTools: mcpPool?.tools ?? [], disabledTools: disabledToolIds,
+      });
       const newNodes = await orchestrator.extendNode(exp.id, nodeId, n || exp.n);
       orchestrator.close();
+      if (mcpPool) await mcpPool.close();
       return json({ nodes: newNodes });
     }
 
