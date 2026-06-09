@@ -908,7 +908,7 @@ ${annotation.merged ? dim("Already merged.") : dim("m — merge  ·  d — dismi
     }
     for (const row of visible) {
       if (row.kind === "header") {
-        lines.push(t`${fg(c.muted)(row.label.toUpperCase())}`);
+        lines.push(t`${bold(fg(c.accent)(row.label.toUpperCase()))}`);
       } else {
         const cmd = row.r.command;
         const sel = row.idx === paletteSel;
