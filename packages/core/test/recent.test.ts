@@ -3,22 +3,21 @@ import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
 
-// recent.ts reads/writes ~/.config/lain/recent.json via os.homedir(); point HOME
-// at a temp dir so the test is isolated. Import lazily after HOME is set.
-let tmpHome: string;
-let work: string;
-let recent: typeof import("../src/recent.js");
+import * as recent from "../src/recent.js";
 
-beforeEach(async () => {
-  tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "lain-home-"));
+// recent.ts resolves its store via LAIN_CONFIG_DIR (lazily, per call), so each
+// test gets a fully isolated store regardless of suite ordering.
+let cfg: string;
+let work: string;
+
+beforeEach(() => {
+  cfg = fs.mkdtempSync(path.join(os.tmpdir(), "lain-cfg-"));
   work = fs.mkdtempSync(path.join(os.tmpdir(), "lain-work-"));
-  process.env.HOME = tmpHome;
-  // Fresh module instance isn't needed (functions read homedir() each call), but
-  // os.homedir() caches the env at call time on some platforms — set before use.
-  recent = await import("../src/recent.js");
+  process.env.LAIN_CONFIG_DIR = cfg;
 });
 afterEach(() => {
-  fs.rmSync(tmpHome, { recursive: true, force: true });
+  delete process.env.LAIN_CONFIG_DIR;
+  fs.rmSync(cfg, { recursive: true, force: true });
   fs.rmSync(work, { recursive: true, force: true });
 });
 

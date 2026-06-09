@@ -34,6 +34,31 @@ export function getLocalCommit(repoRoot: string): string | null {
   }
 }
 
+/**
+ * Relationship of a remote commit to local HEAD:
+ *   "ancestor" → HEAD already contains it (we're up to date or ahead)
+ *   "ahead"    → remote has commits HEAD lacks (a real update)
+ *   "unknown"  → can't tell (object not fetched locally / git error)
+ */
+function remoteRelation(repoRoot: string, remoteSha: string): "ancestor" | "ahead" | "unknown" {
+  try {
+    execFileSync("git", ["-C", repoRoot, "cat-file", "-e", `${remoteSha}^{commit}`], { stdio: "ignore" });
+  } catch {
+    return "unknown"; // remote object isn't in the local clone — can't compare
+  }
+  try {
+    execFileSync("git", ["-C", repoRoot, "merge-base", "--is-ancestor", remoteSha, "HEAD"], { stdio: "ignore" });
+    return "ancestor"; // exit 0
+  } catch (err) {
+    return (err as { status?: number }).status === 1 ? "ahead" : "unknown";
+  }
+}
+
+/** Remove the cached remote SHA (call after a successful self-update). */
+export function clearUpdateCache(): void {
+  try { fs.rmSync(CACHE_FILE, { force: true }); } catch { /* ignore */ }
+}
+
 interface Cache {
   checkedAt: number;
   remote: string | null;
@@ -95,6 +120,12 @@ export async function checkForUpdate(repoRoot: string, opts: { force?: boolean }
     else if (cache) remote = cache.remote; // network failed; fall back to last known
   }
 
-  const available = !!remote && !!current && !remote.startsWith(current);
+  let available = false;
+  if (remote && current && !remote.startsWith(current)) {
+    // Prefer git ancestry: only flag if the remote actually has commits HEAD
+    // lacks (avoids a stale cache pointing at a now-older commit after update).
+    const rel = remoteRelation(repoRoot, remote);
+    available = rel === "ancestor" ? false : rel === "ahead" ? true : true;
+  }
   return { available, current, remote: remote ? remote.slice(0, 7) : null };
 }

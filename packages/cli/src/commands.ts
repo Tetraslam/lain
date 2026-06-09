@@ -5,7 +5,7 @@ import * as os from "os";
 import { execFileSync } from "child_process";
 import { fileURLToPath } from "url";
 import { Orchestrator } from "@lain/core";
-import { Storage, Graph, Sync, Exporter, CanvasExporter, SynthesisEngine, Watcher, Corpus, connectMcpServers, deriveIntentContract, CURRENT_SCHEMA_VERSION, checkForUpdate, addRecentDb } from "@lain/core";
+import { Storage, Graph, Sync, Exporter, CanvasExporter, SynthesisEngine, Watcher, Corpus, connectMcpServers, deriveIntentContract, CURRENT_SCHEMA_VERSION, checkForUpdate, clearUpdateCache, addRecentDb } from "@lain/core";
 import {
   buildExtensionRegistry,
 } from "@lain/extensions";
@@ -1576,7 +1576,9 @@ function runUpdate(): void {
     console.log(execFileSync("git", ["-C", root, "pull", "--ff-only"], { encoding: "utf-8" }).trim());
     execFileSync("pnpm", ["-C", root, "install"], { stdio: "inherit" });
     execFileSync("pnpm", ["-C", root, "build"], { stdio: "inherit" });
-    console.log(`\nUpdated to ${lainVersion()}. Your explorations (.db) and config are untouched.`);
+    clearUpdateCache(); // so the next check re-fetches against the new HEAD
+    const git = gitInfo(root);
+    console.log(`\nUpdated to ${lainVersion()}${git ? ` (${git.commit})` : ""}. Your explorations (.db) and config are untouched.`);
   } catch (err: any) {
     console.error(`Update failed: ${err.message}`);
   }

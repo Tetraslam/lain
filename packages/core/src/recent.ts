@@ -7,7 +7,11 @@ import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
 
-const STORE = path.join(os.homedir(), ".config", "lain", "recent.json");
+/** Resolved at call time so HOME / LAIN_CONFIG_DIR overrides are honored. */
+function storeFile(): string {
+  const dir = process.env.LAIN_CONFIG_DIR || path.join(os.homedir(), ".config", "lain");
+  return path.join(dir, "recent.json");
+}
 
 interface Store {
   recents: string[]; // absolute .db paths, most-recent first
@@ -16,7 +20,7 @@ interface Store {
 
 function read(): Store {
   try {
-    const s = JSON.parse(fs.readFileSync(STORE, "utf-8")) as Partial<Store>;
+    const s = JSON.parse(fs.readFileSync(storeFile(), "utf-8")) as Partial<Store>;
     return { recents: s.recents ?? [], dirs: s.dirs ?? [] };
   } catch {
     return { recents: [], dirs: [] };
@@ -25,8 +29,9 @@ function read(): Store {
 
 function write(s: Store): void {
   try {
-    fs.mkdirSync(path.dirname(STORE), { recursive: true });
-    fs.writeFileSync(STORE, JSON.stringify(s, null, 2));
+    const file = storeFile();
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify(s, null, 2));
   } catch {
     /* ignore */
   }
