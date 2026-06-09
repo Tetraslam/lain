@@ -9,6 +9,7 @@
   "scripts": {
     "build": "tsup src/index.ts --format esm --no-splitting --external @opentui/core --external bun:sqlite --external chokidar --external gray-matter --external unpdf --external @modelcontextprotocol/sdk",
     "dev": "bun run src/index.ts",
+    "test": "vitest run",
     "clean": "rm -rf dist"
   },
   "dependencies": {

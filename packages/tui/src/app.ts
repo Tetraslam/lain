@@ -10,7 +10,7 @@ import {
   TextareaRenderable,
   type StyledText,
 } from "@opentui/core";
-import { t, fg, dim, bold, italic, underline, strikethrough, cyan, green, yellow, magenta } from "@opentui/core";
+import { t, fg, bg, dim, bold, italic, underline, strikethrough, cyan, green, yellow, magenta } from "@opentui/core";
 import type { KeyEvent, SelectOption } from "@opentui/core";
 import { toast, mountToaster } from "./toast.js";
 import { Storage, Graph, Orchestrator, Sync, Exporter, CanvasExporter, SynthesisEngine, Corpus, connectMcpServers, checkForUpdate, planMission, addRecentDb } from "@lain/core";
@@ -45,6 +45,7 @@ const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", 
 
 import { c } from "./theme.js";
 import { renderMarkdown, joinStyled } from "./markdown.js";
+import { rankCommands, groupRanked, type PaletteHost, type RankedCommand } from "./palette.js";
 import {
   discoverDbs,
   buildTreeItems,
@@ -52,7 +53,6 @@ import {
   buildHelpContent,
   type TreeItem,
   type AppMode,
-  type PaletteAction,
 } from "./views.js";
 
 // ============================================================================
@@ -294,7 +294,7 @@ export async function createApp(dbPathArg?: string): Promise<void> {
   paletteOverlay.add(paletteBox);
 
   const paletteInput = new InputRenderable(renderer, {
-    id: "palette-input", width: "100%", placeholder: "Type a command...",
+    id: "palette-input", width: "100%", placeholder: "Search commands…  (type to filter)",
   });
   paletteBox.add(paletteInput);
 
@@ -303,17 +303,16 @@ export async function createApp(dbPathArg?: string): Promise<void> {
   });
   paletteBox.add(paletteDivider);
 
-  const paletteSelect = new SelectRenderable(renderer, {
-    id: "palette-select", width: "100%", height: 12,
-    options: [], selectedIndex: 0,
-    backgroundColor: "transparent", textColor: c.dim,
-    focusedBackgroundColor: "transparent", focusedTextColor: c.dim,
-    selectedBackgroundColor: "#2a2e46", selectedTextColor: c.bright,
-    descriptionColor: c.muted, selectedDescriptionColor: c.fg,
-    showDescription: true, showScrollIndicator: false, wrapSelection: false,
-    itemSpacing: 0,
+  // Manually-rendered list (groups, icons, shortcuts, full-width highlight bar).
+  const paletteList = new TextRenderable(renderer, {
+    id: "palette-list", width: "100%", content: "",
   });
-  paletteBox.add(paletteSelect);
+  paletteBox.add(paletteList);
+
+  const paletteFooter = new TextRenderable(renderer, {
+    id: "palette-footer", width: "100%", content: "",
+  });
+  paletteBox.add(paletteFooter);
 
   // ===========================================================================
   // CREATE EXPLORATION (inline in palette area)
@@ -780,57 +779,182 @@ ${annotation.merged ? dim("Already merged.") : dim("m — merge  ·  d — dismi
     if (node) showNode(node);
   });
 
-  // ---- Palette ----
-  function buildPaletteActions(): PaletteAction[] {
-    const actions: PaletteAction[] = [];
-    // When palette is open, check what mode we came from
-    const contextMode = mode === "palette" ? previousMode : mode;
+  // ---- Palette (command registry) ----
+  let paletteHost: PaletteHost | null = null;
+  let paletteRanked: RankedCommand[] = [];
+  let paletteSel = 0;
+  let paletteQuery = "";
+  const PALETTE_ROWS = 11;
+  const PALETTE_W = 54;
 
-    if (contextMode === "exploring" || contextMode === "reading" || contextMode === "synthesis") {
-      const node = selectedNode();
-      actions.push({ name: "Graph view", description: "Visualize exploration as a radial graph", key: "g", action: enterGraphMode });
-      if (contextMode === "reading") {
-        actions.push({ name: "Edit node", description: `Edit content of ${node?.title || "selected"}`, key: "i", action: enterEditMode });
-      }
-      actions.push({ name: "Prune node", description: `Prune ${node?.title || "selected"} and descendants`, key: "p", action: doPrune });
-      actions.push({ name: "Extend node", description: `Add ${exploration?.n || 3} children to ${node?.title || "selected"}`, key: "e", action: doExtend });
-      actions.push({ name: "Redirect node", description: `Regenerate ${node?.title || "selected"} with fresh content`, key: "r", action: doRedirect });
-      actions.push({ name: "Synthesize", description: "Run synthesis pass — find connections across branches", key: "y", action: doSynthesize });
-      actions.push({ name: "View synthesis", description: "Open synthesis results view", key: "Y", action: doViewSynthesis });
-      actions.push({ name: "Export to markdown", description: "Export as Obsidian-compatible markdown files", key: "x", action: doExport });
-      actions.push({ name: "Export to canvas", description: "Export as Obsidian .canvas file (radial graph)", action: doCanvasExport });
-      actions.push({ name: "Sync with Obsidian", description: "Bidirectional sync with filesystem", key: "s", action: doSync });
-      actions.push({ name: "Back to home", description: "Return to exploration list", action: () => { mode = "home"; showScreen("home"); } });
+  async function doResume() {
+    if (!storage || !exploration) return;
+    const loadingId = toast.loading("Resuming — generating pending nodes…");
+    try {
+      const config = loadConfig();
+      const credentials = loadCredentials();
+      const agent = createProviderFromCredentials(config, credentials);
+      const grounded = corpusCount() > 0 || !!storage.getMission(exploration.id);
+      const orchestrator = new Orchestrator({ dbPath, agent, agentic: grounded });
+      const { generated, created } = await orchestrator.resume(exploration.id);
+      orchestrator.close();
+      storage.close();
+      storage = new Storage(dbPath);
+      graph = new Graph(storage);
+      toast.dismiss(loadingId);
+      toast.success(generated || created ? `Resumed — ${generated} generated, ${created} created` : "Already complete");
+      refreshTree();
+      const cur = selectedNode();
+      if (cur) showNode(cur);
+    } catch (err: any) {
+      toast.dismiss(loadingId);
+      toast.error(`Resume failed: ${err.message}`);
     }
-
-    actions.push({ name: "New exploration", description: "Create a new idea graph from scratch", action: () => { previousMode = mode; mode = "creating"; showScreen("create"); } });
-    actions.push({ name: "Help", description: "Show all keyboard shortcuts", key: "?", action: () => showHelpMode() });
-    actions.push({ name: "Quit", description: "Exit lain", key: "q", action: cleanup });
-
-    return actions;
   }
 
-  let paletteActions: PaletteAction[] = [];
+  function doViewMission() {
+    if (!storage || !exploration) return;
+    const m = storage.getMission(exploration.id);
+    if (!m || m.assertions.length === 0) { toast.info('No mission. Create with: lain "<seed>" --mission'); return; }
+    const r = storage.getLatestMissionReport(exploration.id);
+    const met = r ? r.results.filter((x) => x.status === "met").length : 0;
+    toast.info(`Mission: ${met}/${m.assertions.length} met${r ? ` (round ${r.round})` : " — not validated"}. Full report: lain mission`);
+  }
+
+  async function doCheckUpdate() {
+    const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
+    const loadingId = toast.loading("Checking for updates…");
+    try {
+      const s = await checkForUpdate(root, { force: true });
+      toast.dismiss(loadingId);
+      if (s.available) toast.info(`Update available (${s.remote}) — run: lain update`);
+      else toast.success("lain is up to date");
+    } catch { toast.dismiss(loadingId); toast.warning("Update check failed"); }
+  }
+
+  function buildPaletteHost(): PaletteHost {
+    const ctxMode = mode === "palette" ? previousMode : mode;
+    const context = (["home", "exploring", "reading", "graph", "synthesis"].includes(ctxMode)
+      ? ctxMode : "home") as PaletteHost["context"];
+    const node = selectedNode();
+    const hasSyn = !!(storage && exploration && storage.getSynthesesForExploration(exploration.id).length > 0);
+    return {
+      context,
+      hasExploration: !!exploration,
+      hasSelectedNode: !!node,
+      selectedNodeTitle: node?.title ?? null,
+      selectedNodeId: node?.id ?? null,
+      isRootSelected: node?.id === "root",
+      hasCorpus: corpusCount() > 0,
+      hasMission: !!(storage && exploration && storage.getMission(exploration.id)),
+      hasSynthesis: hasSyn,
+      branchN: exploration?.n ?? 3,
+      openNode: () => { const n = selectedNode(); if (n) { showNode(n); enterReadingMode(); } },
+      editNode: enterEditMode,
+      pruneNode: doPrune,
+      extendNode: doExtend,
+      redirectNode: doRedirect,
+      linkNode: () => toast.info("Cross-linking from the TUI is coming — for now: lain link <a> <b>"),
+      graphView: enterGraphMode,
+      backToTree: () => { if (mode === "graph") exitGraphMode(); else enterExploringMode(); },
+      scrollTop: () => { nodeScroll.scrollTop = 0; },
+      newExploration: () => { previousMode = mode; mode = "creating"; showScreen("create"); },
+      openExploration: () => { mode = "home"; showScreen("home"); },
+      synthesize: doSynthesize,
+      viewSynthesis: doViewSynthesis,
+      resumeExploration: doResume,
+      viewMission: doViewMission,
+      exportMarkdown: doExport,
+      exportCanvas: doCanvasExport,
+      syncObsidian: doSync,
+      addCorpus: () => toast.info("Add corpus via CLI: lain corpus add <path> --db " + path.basename(dbPath)),
+      searchCorpus: () => toast.info("Search corpus via CLI: lain corpus search <query> --db " + path.basename(dbPath)),
+      backToHome: () => { mode = "home"; showScreen("home"); },
+      checkUpdate: doCheckUpdate,
+      help: showHelpMode,
+      quit: cleanup,
+    };
+  }
+
+  function joinLinesST(parts: (StyledText | string)[]): StyledText {
+    const out: (StyledText | string)[] = [];
+    parts.forEach((p, i) => { if (i) out.push("\n"); out.push(p); });
+    return joinStyled(...out);
+  }
+
+  function renderPalette() {
+    const searching = paletteQuery.trim().length > 0;
+    type Row = { kind: "header"; label: string } | { kind: "item"; r: RankedCommand; idx: number };
+    const rows: Row[] = [];
+    if (searching) {
+      paletteRanked.forEach((r, idx) => rows.push({ kind: "item", r, idx }));
+    } else {
+      let idx = 0;
+      for (const sec of groupRanked(paletteRanked)) {
+        rows.push({ kind: "header", label: sec.group });
+        for (const r of sec.items) rows.push({ kind: "item", r, idx: idx++ });
+      }
+    }
+
+    // Viewport: keep the selected row centered-ish.
+    const selRow = rows.findIndex((row) => row.kind === "item" && row.idx === paletteSel);
+    let start = Math.max(0, Math.min(selRow - Math.floor(PALETTE_ROWS / 2), rows.length - PALETTE_ROWS));
+    if (!isFinite(start) || start < 0) start = 0;
+    const visible = rows.slice(start, start + PALETTE_ROWS);
+
+    const lines: (StyledText | string)[] = [];
+    if (paletteRanked.length === 0) {
+      lines.push(t`  ${dim("no matching commands")}`);
+    }
+    for (const row of visible) {
+      if (row.kind === "header") {
+        lines.push(t`${fg(c.muted)(row.label.toUpperCase())}`);
+      } else {
+        const cmd = row.r.command;
+        const sel = row.idx === paletteSel;
+        const left = `${cmd.icon}  ${cmd.title}`;
+        const right = cmd.shortcut ?? "";
+        const pad = Math.max(2, PALETTE_W - left.length - right.length);
+        if (sel) {
+          const bar = ` ${left}${" ".repeat(pad)}${right} `;
+          lines.push(t`${bg("#33375a")(fg(c.bright)(bar))}`);
+        } else {
+          const tail = right ? `${" ".repeat(pad)}${right} ` : "";
+          lines.push(t`${fg(c.muted)(` ${cmd.icon}  `)}${fg(c.fg)(cmd.title)}${fg(c.muted)(tail)}`);
+        }
+      }
+    }
+    // Pad to a stable height so the box doesn't jump.
+    while (lines.length < PALETTE_ROWS) lines.push("");
+    paletteList.content = joinLinesST(lines);
+
+    const more = rows.length > PALETTE_ROWS ? `  ${paletteSel + 1}/${paletteRanked.length}` : "";
+    paletteFooter.content = t`${fg(c.muted)("─".repeat(56))}
+${dim("↑↓")} ${fg(c.muted)("navigate")}   ${dim("↵")} ${fg(c.muted)("run")}   ${dim("esc")} ${fg(c.muted)("close")}${fg(c.muted)(more)}`;
+  }
 
   function updatePaletteOptions(filter: string) {
-    paletteActions = buildPaletteActions();
-    const filtered = filter
-      ? paletteActions.filter((a) => a.name.toLowerCase().includes(filter.toLowerCase()))
-      : paletteActions;
-    paletteSelect.options = filtered.map((a) => ({
-      name: a.name,
-      description: `${a.description}${a.key ? `  [${a.key}]` : ""}`,
-      value: a,
-    }));
-    paletteSelect.setSelectedIndex(0);
+    paletteQuery = filter;
+    if (!paletteHost) paletteHost = buildPaletteHost();
+    paletteRanked = rankCommands(paletteHost, filter);
+    paletteSel = 0;
+    renderPalette();
+  }
+
+  function paletteMove(delta: number) {
+    if (paletteRanked.length === 0) return;
+    paletteSel = (paletteSel + delta + paletteRanked.length) % paletteRanked.length;
+    renderPalette();
   }
 
   function executePaletteAction() {
-    const opt = paletteSelect.getSelectedOption();
-    if (!opt?.value) return;
-    const action = opt.value as PaletteAction;
+    const r = paletteRanked[paletteSel];
+    if (!r) { closePalette(); return; }
+    const host = paletteHost;
     closePalette();
-    action.action();
+    try {
+      void Promise.resolve(r.command.run(host!)).catch((e: any) => toast.error(e?.message ?? String(e)));
+    } catch (e: any) { toast.error(e?.message ?? String(e)); }
   }
 
   function openPalette() {
@@ -840,7 +964,9 @@ ${annotation.merged ? dim("Already merged.") : dim("m — merge  ·  d — dismi
     treeSelect.blur();
     homeSelect.focusable = false;
     homeSelect.blur();
-    paletteSelect.focusable = false;
+    paletteHost = buildPaletteHost();
+    paletteQuery = "";
+    paletteSel = 0;
     showScreen("palette");
   }
 
@@ -1352,8 +1478,8 @@ ${dim(visible)}`;
     if (mode === "palette") {
       if (key.name === "escape") { key.stopPropagation(); closePalette(); return; }
       if (key.name === "return") { key.stopPropagation(); executePaletteAction(); return; }
-      if (key.name === "down" || (key.name === "n" && key.ctrl)) { key.stopPropagation(); paletteSelect.moveDown(); return; }
-      if (key.name === "up" || (key.name === "p" && key.ctrl)) { key.stopPropagation(); paletteSelect.moveUp(); return; }
+      if (key.name === "down" || (key.name === "n" && key.ctrl) || (key.name === "tab" && !key.shift)) { key.stopPropagation(); paletteMove(1); return; }
+      if (key.name === "up" || (key.name === "p" && key.ctrl) || (key.name === "tab" && key.shift)) { key.stopPropagation(); paletteMove(-1); return; }
       // Don't stopPropagation for other keys — let InputRenderable handle typing
       return;
     }
