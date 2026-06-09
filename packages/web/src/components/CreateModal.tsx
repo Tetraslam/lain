@@ -7,10 +7,24 @@ interface CreateModalProps {
 
 interface Activity {
   id: number;
-  kind: "plan" | "tool" | "node" | "corpus" | "info";
+  kind: "plan" | "tool" | "node" | "corpus" | "info" | "mission";
   text: string;
   node?: string;
 }
+
+interface MissionType {
+  explorationId: string;
+  intent: string;
+  assertions: { id: string; text: string }[];
+  features: { id: string; angle: string; assertions: string[] }[];
+  createdAt: string;
+}
+
+type InterviewResult =
+  | { done: false; questions: string[]; rationale?: string }
+  | { done: true; mission: MissionType };
+
+type Phase = "form" | "interview" | "creating";
 
 const EXTENSIONS = [
   { value: "freeform", label: "Freeform", hint: "pure divergent thinking" },
@@ -33,21 +47,29 @@ export function CreateModal({ onClose, onCreated }: CreateModalProps) {
   const [m, setM] = useState("2");
   const [ext, setExt] = useState("freeform");
   const [agentic, setAgentic] = useState(false);
+  const [mission, setMission] = useState(false);
   const [files, setFiles] = useState<File[]>([]);
   const [dragging, setDragging] = useState(false);
-  const [creating, setCreating] = useState(false);
+  const [phase, setPhase] = useState<Phase>("form");
   const [activity, setActivity] = useState<Activity[]>([]);
   const [doneCount, setDoneCount] = useState(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const feedRef = useRef<HTMLDivElement>(null);
 
+  // Interview (mission gate) state
+  const [interviewHistory, setInterviewHistory] = useState<{ question: string; answer: string }[]>([]);
+  const [questions, setQuestions] = useState<string[]>([]);
+  const [answers, setAnswers] = useState<string[]>([]);
+  const [proposedMission, setProposedMission] = useState<MissionType | null>(null);
+  const [interviewBusy, setInterviewBusy] = useState(false);
+  const [interviewError, setInterviewError] = useState<string | null>(null);
+  const [refining, setRefining] = useState(false);
+  const [refineText, setRefineText] = useState("");
+
   const grounded = agentic || files.length > 0;
 
   const pushActivity = useCallback((a: Omit<Activity, "id">) => {
-    setActivity((prev) => {
-      const next = [...prev, { ...a, id: activityCounter++ }];
-      return next.slice(-60);
-    });
+    setActivity((prev) => [...prev, { ...a, id: activityCounter++ }].slice(-60));
     requestAnimationFrame(() => {
       if (feedRef.current) feedRef.current.scrollTop = feedRef.current.scrollHeight;
     });
@@ -70,12 +92,67 @@ export function CreateModal({ onClose, onCreated }: CreateModalProps) {
     [addFiles]
   );
 
-  const handleCreate = async () => {
-    if (!seed.trim() || creating) return;
-    setCreating(true);
+  // ---- Mission interview (the cognitive-frontloading gate) ----
+  const runInterviewTurn = useCallback(async (history: { question: string; answer: string }[]) => {
+    setInterviewBusy(true);
+    setInterviewError(null);
+    try {
+      const res = await fetch("/api/mission/interview", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ seed, n: parseInt(n) || 3, extension: ext, history }),
+      });
+      const result = (await res.json()) as InterviewResult;
+      if (result.done) {
+        setProposedMission(result.mission);
+        setQuestions([]);
+        setAnswers([]);
+      } else {
+        setProposedMission(null);
+        setQuestions(result.questions || []);
+        setAnswers((result.questions || []).map(() => ""));
+      }
+    } catch (err: any) {
+      setInterviewError(err.message || "interview failed");
+    }
+    setInterviewBusy(false);
+  }, [seed, n, ext]);
+
+  const startInterview = () => {
+    setPhase("interview");
+    setInterviewHistory([]);
+    setProposedMission(null);
+    setQuestions([]);
+    setRefining(false);
+    runInterviewTurn([]);
+  };
+
+  const submitAnswers = () => {
+    const turns = questions.map((q, i) => ({ question: q, answer: (answers[i] || "").trim() }));
+    const next = [...interviewHistory, ...turns];
+    setInterviewHistory(next);
+    setQuestions([]);
+    runInterviewTurn(next);
+  };
+
+  const submitRefine = () => {
+    const next = [...interviewHistory, { question: "Requested change", answer: refineText.trim() }];
+    setInterviewHistory(next);
+    setProposedMission(null);
+    setRefining(false);
+    setRefineText("");
+    runInterviewTurn(next);
+  };
+
+  const handleCreate = async (lockedMission: MissionType | null = null) => {
+    if (!seed.trim() || phase === "creating") return;
+    setPhase("creating");
     setActivity([]);
     setDoneCount(0);
-    pushActivity({ kind: "info", text: grounded ? "Seeding agents with your material…" : "Beginning exploration…" });
+    pushActivity({
+      kind: "info",
+      text: lockedMission ? "Pursuing the mission…" : grounded ? "Seeding agents with your material…" : "Beginning exploration…",
+    });
 
     try {
       let res: Response;
@@ -86,13 +163,17 @@ export function CreateModal({ onClose, onCreated }: CreateModalProps) {
         form.append("m", m);
         form.append("extension", ext);
         form.append("agentic", "true");
+        if (lockedMission) form.append("mission", JSON.stringify(lockedMission));
         for (const f of files) form.append("files", f);
         res = await fetch("/api/create", { method: "POST", body: form });
       } else {
         res = await fetch("/api/create", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ seed, n: parseInt(n) || 3, m: parseInt(m) || 2, extension: ext, agentic: grounded }),
+          body: JSON.stringify({
+            seed, n: parseInt(n) || 3, m: parseInt(m) || 2, extension: ext,
+            agentic: grounded || !!lockedMission, mission: lockedMission,
+          }),
         });
       }
 
@@ -121,6 +202,9 @@ export function CreateModal({ onClose, onCreated }: CreateModalProps) {
             try { parsed = JSON.parse(data); } catch { continue; }
 
             switch (eventType) {
+              case "mission:set":
+                pushActivity({ kind: "mission", text: `Contract set — ${parsed.assertions} assertions, ${parsed.features} branches` });
+                break;
               case "corpus:ingested":
                 pushActivity({ kind: "corpus", text: `Ingested ${parsed.count} source${parsed.count === 1 ? "" : "s"} into the corpus` });
                 break;
@@ -140,12 +224,23 @@ export function CreateModal({ onClose, onCreated }: CreateModalProps) {
                 setDoneCount((c) => c + 1);
                 pushActivity({ kind: "node", text: parsed.data?.title || "untitled", node: parsed.nodeId });
                 break;
+              case "mission:validated": {
+                const r = parsed.data ?? {};
+                const met = (r.results ?? []).filter((x: any) => x.status === "met").length;
+                pushActivity({ kind: "mission", text: `Validation round ${r.round}: ${met}/${r.results?.length ?? 0} met${r.satisfied ? " — satisfied ✓" : ""}` });
+                break;
+              }
+              case "mission:fix": {
+                const f = parsed.data ?? {};
+                pushActivity({ kind: "mission", text: `Closing gap [${(f.assertions ?? []).join(", ")}]`, node: parsed.nodeId });
+                break;
+              }
               case "complete":
                 dbFile = parsed.dbFile;
                 break;
               case "error":
                 pushActivity({ kind: "info", text: `Error: ${parsed.message}` });
-                setCreating(false);
+                setPhase("form");
                 return;
             }
           }
@@ -153,19 +248,23 @@ export function CreateModal({ onClose, onCreated }: CreateModalProps) {
       }
 
       if (dbFile) onCreated(dbFile);
-      else { pushActivity({ kind: "info", text: "Failed to create exploration" }); setCreating(false); }
+      else { pushActivity({ kind: "info", text: "Failed to create exploration" }); setPhase("form"); }
     } catch (err: any) {
       pushActivity({ kind: "info", text: `Error: ${err.message}` });
-      setCreating(false);
+      setPhase("form");
     }
   };
 
-  return (
-    <div className="modal-overlay" onClick={(e) => { if (e.target === e.currentTarget && !creating) onClose(); }}>
-      <div className="modal-content create-modal">
-        <div className="modal-title">New exploration</div>
+  const primaryAction = () => (mission ? startInterview() : handleCreate(null));
 
-        {!creating ? (
+  return (
+    <div className="modal-overlay" onClick={(e) => { if (e.target === e.currentTarget && phase !== "creating") onClose(); }}>
+      <div className="modal-content create-modal">
+        <div className="modal-title">
+          {phase === "interview" ? "Mission — pin down the goal" : "New exploration"}
+        </div>
+
+        {phase === "form" && (
           <>
             <div className="form-group">
               <label className="form-label">Seed idea</label>
@@ -176,7 +275,7 @@ export function CreateModal({ onClose, onCreated }: CreateModalProps) {
                 onChange={(e) => setSeed(e.target.value)}
                 autoFocus
                 rows={2}
-                onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) handleCreate(); }}
+                onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) primaryAction(); }}
               />
             </div>
 
@@ -242,14 +341,113 @@ export function CreateModal({ onClose, onCreated }: CreateModalProps) {
               {files.length > 0 && <span className="toggle-forced">on — corpus attached</span>}
             </label>
 
+            <label className={`agentic-toggle${mission ? " on" : ""}`} onClick={() => setMission(!mission)}>
+              <span className={`toggle-switch${mission ? " on" : ""}`}><span className="toggle-knob" /></span>
+              <span className="toggle-label">
+                <strong>Mission mode</strong>
+                <em>{mission ? "interview to pin the goal, then validate the graph against a contract" : "freeform branching with no success contract"}</em>
+              </span>
+            </label>
+
             <div className="modal-actions">
               <button className="btn" onClick={onClose}>Cancel</button>
-              <button className="btn btn-primary" onClick={handleCreate} disabled={!seed.trim()}>
-                Explore {grounded ? "↬" : "→"}
+              <button className="btn btn-primary" onClick={primaryAction} disabled={!seed.trim()}>
+                {mission ? "Plan mission ◇" : `Explore ${grounded ? "↬" : "→"}`}
               </button>
             </div>
           </>
-        ) : (
+        )}
+
+        {phase === "interview" && (
+          <div className="interview">
+            <div className="interview-head">
+              <div className="streaming-dot" />
+              <span>{proposedMission ? "Proposed contract — approve before exploring" : interviewBusy ? "thinking…" : "A few questions first"}</span>
+            </div>
+
+            {interviewError && <div className="feed-line feed-info"><span className="feed-text">Error: {interviewError}</span></div>}
+
+            {interviewBusy && (
+              <div className="interview-busy">pinning down the goal…</div>
+            )}
+
+            {!interviewBusy && !proposedMission && questions.length > 0 && (
+              <>
+                <div className="interview-questions">
+                  {questions.map((q, i) => (
+                    <div className="form-group" key={i}>
+                      <label className="form-label">{q}</label>
+                      <textarea
+                        className="form-input"
+                        rows={2}
+                        value={answers[i] || ""}
+                        autoFocus={i === 0}
+                        placeholder="your answer — leave blank to let lain decide"
+                        onChange={(e) => setAnswers((a) => a.map((v, j) => (j === i ? e.target.value : v)))}
+                      />
+                    </div>
+                  ))}
+                </div>
+                <div className="modal-actions">
+                  <button className="btn" onClick={() => setPhase("form")}>Back</button>
+                  <button className="btn btn-primary" onClick={submitAnswers}>Continue →</button>
+                </div>
+              </>
+            )}
+
+            {!interviewBusy && proposedMission && !refining && (
+              <>
+                <div className="contract-card">
+                  <p className="contract-intent">{proposedMission.intent}</p>
+                  <div className="contract-section">Contract · {proposedMission.assertions.length} assertions</div>
+                  <ul className="contract-list">
+                    {proposedMission.assertions.map((a) => (
+                      <li key={a.id}><span className="contract-id">{a.id}</span>{a.text}</li>
+                    ))}
+                  </ul>
+                  {proposedMission.features.length > 0 && (
+                    <>
+                      <div className="contract-section">Branches</div>
+                      <ul className="contract-list">
+                        {proposedMission.features.map((f) => (
+                          <li key={f.id}>
+                            <span className="contract-id branch">{f.id}</span>{f.angle}
+                            <span className="contract-claims"> [{f.assertions.join(", ")}]</span>
+                          </li>
+                        ))}
+                      </ul>
+                    </>
+                  )}
+                </div>
+                <div className="modal-actions">
+                  <button className="btn" onClick={() => setRefining(true)}>Refine</button>
+                  <button className="btn btn-primary" onClick={() => handleCreate(proposedMission)}>Lock in &amp; explore ↬</button>
+                </div>
+              </>
+            )}
+
+            {!interviewBusy && proposedMission && refining && (
+              <>
+                <div className="form-group">
+                  <label className="form-label">What should change about the goal or contract?</label>
+                  <textarea
+                    className="form-input"
+                    rows={3}
+                    value={refineText}
+                    autoFocus
+                    onChange={(e) => setRefineText(e.target.value)}
+                  />
+                </div>
+                <div className="modal-actions">
+                  <button className="btn" onClick={() => setRefining(false)}>Back</button>
+                  <button className="btn btn-primary" onClick={submitRefine} disabled={!refineText.trim()}>Resubmit →</button>
+                </div>
+              </>
+            )}
+          </div>
+        )}
+
+        {phase === "creating" && (
           <div className="thinking">
             <div className="thinking-head">
               <div className="streaming-dot" />
@@ -276,6 +474,8 @@ const TOOL_LABELS: Record<string, string> = {
   search_nodes: "searching other nodes",
   search_corpus: "consulting your source material",
   list_corpus_sources: "reviewing available sources",
+  read_findings: "reviewing shared findings",
+  note_finding: "recording a finding",
   link_to_node: "linking to a related branch",
   coin_names: "coining in-world names",
   submit_node: "writing the node",

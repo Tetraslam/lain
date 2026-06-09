@@ -191,9 +191,16 @@ tables) with no data loss.
   version, doctor, update, uninstall)
 - Bidirectional Obsidian sync + file watcher; canvas export
 - Extension system (4 built-ins; worldbuilding ships a `coin_names` tool)
-- TUI (decomposed into theme/markdown/views modules; corpus grounding indicator)
+- TUI (decomposed into theme/markdown/views modules; corpus grounding indicator;
+  interactive mission interview gate before generation)
 - Web UI (editorial layout, graph overlay, SSE, corpus drag-drop create flow +
-  live thinking feed, in-exploration corpus panel)
+  live thinking feed, in-exploration corpus panel; mission toggle + interview
+  gate via `/api/mission/interview`)
+- Missions on all three surfaces: contract-first **clarification interview**
+  (`interviewMission`) is the cognitive-frontloading gate — CLI (clack), TUI
+  (interview overlay), and web (CreateModal interview phase) all interview the
+  user, show the proposed contract, and only generate on approval; then run the
+  same validate→fix loop (`pursueMission`).
 - Synthesis with staged annotations + merge preview
 - Distribution: install/uninstall scripts, version/doctor/update commands
 

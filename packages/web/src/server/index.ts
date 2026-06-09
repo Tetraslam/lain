@@ -3,10 +3,10 @@
  * Serves REST endpoints + SSE for streaming.
  * Run with: bun run src/server/index.ts
  */
-import { Storage, Graph, Orchestrator, Sync, Exporter, SynthesisEngine, Corpus, checkForUpdate, collectDbFiles, addRecentDb, getDiscoveryDirs, addDiscoveryDir, removeDiscoveryDir } from "@lain/core";
+import { Storage, Graph, Orchestrator, Sync, Exporter, SynthesisEngine, Corpus, checkForUpdate, collectDbFiles, addRecentDb, getDiscoveryDirs, addDiscoveryDir, removeDiscoveryDir, interviewMission, type InterviewTurn } from "@lain/core";
 import { createProvider } from "@lain/agents";
 import { buildExtensionRegistry } from "@lain/extensions";
-import { generateId, loadConfig, loadCredentials, type Strategy, type PlanDetail, type Provider, type Credentials, type LainConfig } from "@lain/shared";
+import { generateId, loadConfig, loadCredentials, type Strategy, type PlanDetail, type Provider, type Credentials, type LainConfig, type Mission } from "@lain/shared";
 import * as fs from "fs";
 import * as path from "path";
 import { fileURLToPath } from "url";
@@ -175,6 +175,23 @@ Bun.serve({
     }
 
     // ---- Create exploration (with SSE streaming) ----
+    // Mission clarification interview — one stateless turn. The client keeps the
+    // running history and re-posts it; returns either more questions or the
+    // finalized contract (the cognitive-frontloading gate before any generation).
+    if (p === "/api/mission/interview" && req.method === "POST") {
+      const body = await req.json() as {
+        seed: string; n?: number; extension?: string; history?: InterviewTurn[];
+      };
+      const config = loadConfig();
+      const credentials = loadCredentials();
+      const agent = makeAgent(config, credentials);
+      const result = await interviewMission(
+        agent, "pending", body.seed, body.n || config.defaultN,
+        body.history ?? [], { extension: body.extension || config.defaultExtension },
+      );
+      return json(result);
+    }
+
     if (p === "/api/create" && req.method === "POST") {
       // Accept either JSON (text-only) or multipart/form-data (with file uploads).
       const contentType = req.headers.get("content-type") || "";
@@ -182,17 +199,20 @@ Bun.serve({
         seed: string; n?: number; m?: number; extension?: string;
         strategy?: string; planDetail?: string;
         agentic?: boolean; corpusSources?: { name: string; text: string }[];
+        mission?: Mission | null; missionRounds?: number;
       };
       let uploadedFiles: File[] = [];
 
       if (contentType.includes("multipart/form-data")) {
         const form = await req.formData();
+        const missionRaw = form.get("mission");
         body = {
           seed: String(form.get("seed") ?? ""),
           n: Number(form.get("n")) || undefined,
           m: Number(form.get("m")) || undefined,
           extension: (form.get("extension") as string) || undefined,
           agentic: form.get("agentic") === "true",
+          mission: typeof missionRaw === "string" && missionRaw ? JSON.parse(missionRaw) as Mission : null,
         };
         uploadedFiles = form.getAll("files").filter((v): v is File => typeof v !== "string");
       } else {
@@ -226,8 +246,10 @@ Bun.serve({
             controller.enqueue(new TextEncoder().encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
           };
 
-          // Uploaded files or inline text sources imply agentic (grounded) mode.
-          const agentic = (body.agentic ?? false) || uploadedFiles.length > 0 || (body.corpusSources?.length ?? 0) > 0;
+          // Uploaded files, inline sources, or a mission contract all imply
+          // agentic (grounded) mode — missions require the tool-using substrate.
+          const hasMission = !!(body.mission && body.mission.assertions?.length);
+          const agentic = (body.agentic ?? false) || uploadedFiles.length > 0 || (body.corpusSources?.length ?? 0) > 0 || hasMission;
           try {
             const orchestrator = new Orchestrator({
               dbPath, agent, concurrency: 5, streaming: !agentic, extensions, agentic,
@@ -239,6 +261,10 @@ Bun.serve({
             await orchestrator.explore({
               id: expId, name: seed, seed, n, m, strategy, planDetail, extension: ext,
               beforeExpand: async () => {
+                if (hasMission) {
+                  orchestrator.getStorage().upsertMission({ ...body.mission!, explorationId: expId });
+                  send("mission:set", { assertions: body.mission!.assertions.length, features: body.mission!.features.length });
+                }
                 const corpus = orchestrator.getCorpus();
                 if (!corpus) return;
                 let count = 0;
@@ -254,6 +280,10 @@ Bun.serve({
                 if (count > 0) send("corpus:ingested", { count });
               },
             });
+
+            if (hasMission) {
+              await orchestrator.pursueMission(expId, { maxRounds: body.missionRounds ?? 2 });
+            }
             orchestrator.close();
 
             send("complete", { dbFile: dbFileName, explorationId: expId });

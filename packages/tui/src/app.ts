@@ -13,10 +13,10 @@ import {
 import { t, fg, bg, dim, bold, italic, underline, strikethrough, cyan, green, yellow, magenta } from "@opentui/core";
 import type { KeyEvent, SelectOption } from "@opentui/core";
 import { toast, mountToaster } from "./toast.js";
-import { Storage, Graph, Orchestrator, Sync, Exporter, CanvasExporter, SynthesisEngine, Corpus, connectMcpServers, checkForUpdate, planMission, addRecentDb } from "@lain/core";
+import { Storage, Graph, Orchestrator, Sync, Exporter, CanvasExporter, SynthesisEngine, Corpus, connectMcpServers, checkForUpdate, planMission, interviewMission, addRecentDb, type InterviewTurn } from "@lain/core";
 import { buildExtensionRegistry } from "@lain/extensions";
 import { fileURLToPath } from "url";
-import type { LainNode, Exploration, Strategy, PlanDetail } from "@lain/shared";
+import type { LainNode, Exploration, Strategy, PlanDetail, Mission } from "@lain/shared";
 import { generateId } from "@lain/shared";
 import { loadConfig, loadCredentials, createProviderFromCredentials } from "./config-loader.js";
 import { GraphView } from "./graph-view.js";
@@ -428,6 +428,33 @@ export async function createApp(dbPathArg?: string): Promise<void> {
   createForm.add(createHint);
 
   // ===========================================================================
+  // MISSION INTERVIEW (cognitive-frontloading gate)
+  // ===========================================================================
+  const interviewOverlay = new BoxRenderable(renderer, {
+    id: "interview-overlay", width: "100%", height: "100%",
+    position: "absolute", left: 0, top: 0,
+    justifyContent: "flex-start", alignItems: "center", paddingTop: 3,
+  });
+  const interviewBox = new BoxRenderable(renderer, {
+    id: "interview-box", width: 72, border: true, borderStyle: "rounded", borderColor: c.accent,
+    flexDirection: "column", backgroundColor: c.surface,
+    paddingLeft: 2, paddingRight: 2, paddingTop: 1, paddingBottom: 1, gap: 1,
+  });
+  interviewOverlay.add(interviewBox);
+  const interviewTitle = new TextRenderable(renderer, {
+    id: "interview-title", content: t`${bold(fg(c.accent)("mission"))}  ${dim("— pin down the goal before exploring")}`,
+  });
+  interviewBox.add(interviewTitle);
+  const interviewBody = new TextRenderable(renderer, { id: "interview-body", content: "", width: "100%" });
+  interviewBox.add(interviewBody);
+  const interviewInput = new InputRenderable(renderer, {
+    id: "interview-input", width: "100%", placeholder: "type your answer — enter to submit, blank to skip",
+  });
+  interviewBox.add(interviewInput);
+  const interviewFooter = new TextRenderable(renderer, { id: "interview-footer", content: "", width: "100%" });
+  interviewBox.add(interviewFooter);
+
+  // ===========================================================================
   // SYNTHESIS VIEW
   // ===========================================================================
 
@@ -608,12 +635,13 @@ ${annotation.merged ? dim("Already merged.") : dim("m — merge  ·  d — dismi
   // Screen management
   // ===========================================================================
 
-  function showScreen(screen: "home" | "exploration" | "palette" | "create" | "graph" | "synthesis") {
+  function showScreen(screen: "home" | "exploration" | "palette" | "create" | "interview" | "graph" | "synthesis") {
     try { rootBox.remove("home-container"); } catch {}
     try { rootBox.remove("exp-container"); } catch {}
     try { rootBox.remove("graph-container"); } catch {}
     try { rootBox.remove("palette-overlay"); } catch {}
     try { rootBox.remove("create-box"); } catch {}
+    try { rootBox.remove("interview-overlay"); } catch {}
     try { rootBox.remove("synth-container"); } catch {}
 
     if (screen === "home") {
@@ -658,6 +686,13 @@ ${annotation.merged ? dim("Already merged.") : dim("m — merge  ·  d — dismi
       updateExtDisplay(false);
       updateMissionDisplay(false);
       createSeedInput.focus();
+    } else if (screen === "interview") {
+      rootBox.add(homeContainer); // dim backdrop
+      rootBox.add(interviewOverlay);
+      homeSelect.focusable = false;
+      homeSelect.blur();
+      treeSelect.focusable = false;
+      treeSelect.blur();
     } else if (screen === "synthesis") {
       rootBox.add(synthContainer);
       homeSelect.focusable = false;
@@ -883,6 +918,21 @@ ${annotation.merged ? dim("Already merged.") : dim("m — merge  ·  d — dismi
     const out: (StyledText | string)[] = [];
     parts.forEach((p, i) => { if (i) out.push("\n"); out.push(p); });
     return joinStyled(...out);
+  }
+
+  /** Word-wrap plain text to a width (returns a newline-joined string). */
+  function wrapText(text: string, width: number): string {
+    const out: string[] = [];
+    for (const para of text.split("\n")) {
+      let line = "";
+      for (const word of para.split(/\s+/)) {
+        if (!line) line = word;
+        else if ((line + " " + word).length <= width) line += " " + word;
+        else { out.push(line); line = word; }
+      }
+      out.push(line);
+    }
+    return out.join("\n");
   }
 
   function renderPalette() {
@@ -1313,7 +1363,92 @@ ${dim("↑↓")} ${fg(c.muted)("navigate")}   ${dim("↵")} ${fg(c.muted)("run")
     }
   }
 
-  async function doCreate(seed: string, n?: number, m?: number, ext?: string, opts: { corpusPath?: string; mission?: boolean } = {}) {
+  // ---- Mission interview (the cognitive-frontloading gate) ----
+  type InterviewPending =
+    | { kind: "question"; resolve: (a: string | null) => void }
+    | { kind: "confirm"; resolve: (c: "proceed" | "refine" | "cancel") => void };
+  let interviewPending: InterviewPending | null = null;
+
+  function askInterviewQuestion(question: string): Promise<string | null> {
+    return new Promise((resolve) => {
+      mode = "interview";
+      interviewPending = { kind: "question", resolve };
+      interviewBody.content = t`${fg(c.cyan)("?")}  ${fg(c.bright)(question)}`;
+      interviewInput.value = "";
+      interviewInput.visible = true;
+      interviewFooter.content = t`  ${dim("enter")} submit  ${fg(c.muted)("·")}  ${dim("esc")} cancel mission`;
+      showScreen("interview");
+      interviewInput.focus();
+    });
+  }
+
+  function confirmContract(m: Mission): Promise<"proceed" | "refine" | "cancel"> {
+    return new Promise((resolve) => {
+      mode = "interview";
+      interviewPending = { kind: "confirm", resolve };
+      interviewInput.blur();
+      interviewInput.visible = false;
+      const lines: (StyledText | string)[] = [
+        t`${bold(fg(c.bright)("Intent"))}`,
+        wrapText(m.intent, 66),
+        "",
+        t`${bold(fg(c.bright)("Contract"))}  ${dim(`${m.assertions.length} assertions`)}`,
+      ];
+      for (const a of m.assertions) lines.push(t`  ${fg(c.green)(a.id)}  ${fg(c.fg)(a.text.length > 62 ? a.text.slice(0, 61) + "…" : a.text)}`);
+      if (m.features.length) {
+        lines.push("", t`${bold(fg(c.bright)("Branches"))}`);
+        for (const f of m.features) lines.push(t`  ${fg(c.blue)(f.id)}  ${fg(c.fg)(f.angle.length > 50 ? f.angle.slice(0, 49) + "…" : f.angle)}  ${dim(`[${f.assertions.join(", ")}]`)}`);
+      }
+      interviewBody.content = joinLinesST(lines);
+      interviewFooter.content = t`  ${dim("enter")} ${fg(c.green)("lock in & explore")}  ${fg(c.muted)("·")}  ${dim("e")} refine  ${fg(c.muted)("·")}  ${dim("esc")} cancel`;
+      showScreen("interview");
+    });
+  }
+
+  /** Run the interview loop. Returns the locked-in mission, or null if cancelled. */
+  async function runMissionInterviewTui(seed: string, n: number, ext: string): Promise<Mission | null> {
+    const config = loadConfig();
+    const credentials = loadCredentials();
+    const agent = createProviderFromCredentials(config, credentials);
+    const history: InterviewTurn[] = [];
+
+    for (let guard = 0; guard < 8; guard++) {
+      mode = "interview";
+      interviewPending = null;
+      interviewInput.blur();
+      interviewInput.visible = false;
+      interviewBody.content = t`${fg(c.accent)("◇")}  ${dim(history.length === 0 ? "thinking about what to ask…" : "reconsidering the goal…")}`;
+      interviewFooter.content = "";
+      showScreen("interview");
+
+      let res;
+      try {
+        res = await interviewMission(agent, "pending", seed, n, history, { extension: ext });
+      } catch (err: any) {
+        toast.error(`Mission planning failed: ${err.message}`);
+        return null;
+      }
+
+      if (!res.done) {
+        for (const q of res.questions) {
+          const ans = await askInterviewQuestion(q);
+          if (ans === null) return null;
+          history.push({ question: q, answer: ans.trim() });
+        }
+        continue;
+      }
+
+      const choice = await confirmContract(res.mission);
+      if (choice === "proceed") return res.mission;
+      if (choice === "cancel") return null;
+      const change = await askInterviewQuestion("What should change about the goal or contract?");
+      if (change === null) return null;
+      history.push({ question: "Requested change", answer: change.trim() });
+    }
+    return null;
+  }
+
+  async function doCreate(seed: string, n?: number, m?: number, ext?: string, opts: { corpusPath?: string; mission?: boolean; prebuiltMission?: Mission | null } = {}) {
     if (!seed.trim()) { toast.warning("Seed cannot be empty"); return; }
     generating = true;
     const config = loadConfig();
@@ -1410,9 +1545,9 @@ ${dim(visible)}`;
         extension: useExt,
         beforeExpand: async (exp) => {
           if (opts.mission) {
-            pushFeed("◆ planning mission (contract-first)…");
-            renderProgress();
-            const mission = await planMission(agent, exp.id, seed, useN, { extension: useExt });
+            const mission = opts.prebuiltMission
+              ? { ...opts.prebuiltMission, explorationId: exp.id }
+              : (pushFeed("◆ planning mission (contract-first)…"), renderProgress(), await planMission(agent, exp.id, seed, useN, { extension: useExt }));
             orchestrator.getStorage().upsertMission(mission);
             pushFeed(`✦ contract set — ${mission.assertions.length} assertions, ${mission.features.length} features`);
           }
@@ -1487,6 +1622,23 @@ ${dim(visible)}`;
       return;
     }
 
+    // ---- Mission interview mode ----
+    if (mode === "interview") {
+      const p = interviewPending;
+      if (!p) { if (key.name === "escape") key.stopPropagation(); return; }
+      if (p.kind === "question") {
+        if (key.name === "escape") { key.stopPropagation(); interviewPending = null; p.resolve(null); return; }
+        if (key.name === "return") { key.stopPropagation(); const v = interviewInput.value; interviewPending = null; p.resolve(v); return; }
+        return; // let the input handle typing
+      } else {
+        if (key.name === "escape") { key.stopPropagation(); interviewPending = null; p.resolve("cancel"); return; }
+        if (key.name === "return") { key.stopPropagation(); interviewPending = null; p.resolve("proceed"); return; }
+        if (key.name === "e") { key.stopPropagation(); interviewPending = null; p.resolve("refine"); return; }
+        key.stopPropagation();
+        return;
+      }
+    }
+
     // ---- Creating mode ----
     if (mode === "creating") {
       if (key.name === "escape") {
@@ -1535,14 +1687,24 @@ ${dim(visible)}`;
       if (key.name === "return") {
         key.stopPropagation();
         const seed = createSeedInput.value;
+        if (!seed.trim()) { toast.warning("Seed cannot be empty"); return; }
         const n = Math.max(1, Math.min(10, parseInt(createNInput.value) || 3));
         const m = Math.max(1, Math.min(10, parseInt(createMInput.value) || 2));
         const ext = availableExtensions[createExtIdx];
         const corpus = createCorpusInput.value.trim() || undefined;
         const mission = createMission;
-        mode = previousMode;
         try { rootBox.remove("create-box"); } catch {}
-        doCreate(seed, n, m, ext, { corpusPath: corpus, mission });
+        if (mission) {
+          // Gate generation behind the clarification interview.
+          runMissionInterviewTui(seed, n, ext).then((locked) => {
+            if (!locked) { mode = "home"; showScreen("home"); return; }
+            mode = previousMode;
+            doCreate(seed, n, m, ext, { corpusPath: corpus, mission: true, prebuiltMission: locked });
+          });
+        } else {
+          mode = previousMode;
+          doCreate(seed, n, m, ext, { corpusPath: corpus, mission: false });
+        }
         return;
       }
       return;

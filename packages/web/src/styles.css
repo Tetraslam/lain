@@ -542,6 +542,41 @@ a:hover { color: var(--accent-hover); }
 .feed-plan .feed-text { color: var(--yellow); }
 .feed-node .feed-text { color: var(--accent); font-family: var(--font-body); font-size: 14px; }
 .feed-info .feed-text { color: var(--fg-muted); font-style: italic; }
+.feed-mission .feed-text { color: var(--magenta, #bb9af7); font-weight: 500; }
+.feed-mission .feed-text::before { content: "◆ "; color: var(--accent); }
+
+/* ---- Mission interview (the cognitive-frontloading gate) ---- */
+.interview { display: flex; flex-direction: column; min-height: 200px; }
+.interview-head {
+  display: flex; align-items: center; gap: 10px; padding-bottom: 12px;
+  margin-bottom: 14px; border-bottom: 1px solid var(--border-subtle);
+  font-size: 13px; color: var(--fg-bright); font-weight: 500;
+}
+.interview-busy {
+  color: var(--fg-muted); font-style: italic; font-size: 13px; padding: 24px 0; text-align: center;
+}
+.interview-questions { display: flex; flex-direction: column; gap: 12px; }
+.contract-card {
+  background: var(--bg-elevated); border: 1px solid var(--border-subtle);
+  border-radius: 8px; padding: 16px 18px; max-height: 46vh; overflow-y: auto;
+  animation: feedIn 0.2s ease;
+}
+.contract-intent {
+  margin: 0 0 14px; font-family: var(--font-body); font-size: 15px; line-height: 1.55;
+  color: var(--fg-bright);
+}
+.contract-section {
+  font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em;
+  color: var(--accent); font-weight: 600; margin: 14px 0 6px;
+}
+.contract-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 5px; }
+.contract-list li { font-size: 13px; line-height: 1.45; color: var(--fg-dim); }
+.contract-id {
+  display: inline-block; min-width: 26px; margin-right: 8px;
+  color: var(--green); font-family: var(--font-mono); font-size: 11px; font-weight: 600;
+}
+.contract-id.branch { color: var(--blue, #7aa2f7); }
+.contract-claims { color: var(--fg-muted); font-family: var(--font-mono); font-size: 11px; }
 
 /* ---- Corpus panel (exploration right rail) ---- */
 .corpus-list { display: flex; flex-direction: column; gap: 2px; margin-bottom: 8px; }

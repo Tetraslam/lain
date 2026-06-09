@@ -20,7 +20,7 @@ export interface TreeItem {
   nodeId: string; prefix: string; title: string; depth: number; status: string; node: LainNode;
 }
 
-export type AppMode = "home" | "exploring" | "reading" | "editing" | "graph" | "help" | "palette" | "creating" | "synthesis";
+export type AppMode = "home" | "exploring" | "reading" | "editing" | "graph" | "help" | "palette" | "creating" | "interview" | "synthesis";
 
 export interface PaletteAction {
   name: string;
