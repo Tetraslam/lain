@@ -413,7 +413,10 @@ export async function createApp(dbPathArg?: string): Promise<void> {
   createMissionRow.add(createMissionDisplay);
   function updateMissionDisplay(focused = false) {
     const label = createMission ? "‹on›" : "‹off›";
-    createMissionDisplay.content = focused ? t`${fg(c.accent)(label)}  ${dim("space toggles")}` : t`${fg(c.bright)(label)}`;
+    const hint = dim("write a goal contract, then validate + auto-fix gaps");
+    createMissionDisplay.content = focused
+      ? t`${fg(c.accent)(label)}  ${hint}  ${dim("· space")}`
+      : t`${fg(c.bright)(label)}  ${hint}`;
   }
   updateMissionDisplay();
 
