@@ -5,7 +5,7 @@ import * as os from "os";
 import { execFileSync } from "child_process";
 import { fileURLToPath } from "url";
 import { Orchestrator } from "@lain/core";
-import { Storage, Graph, Sync, Exporter, CanvasExporter, SynthesisEngine, Watcher, Corpus, connectMcpServers, deriveIntentContract, CURRENT_SCHEMA_VERSION, checkForUpdate, clearUpdateCache, addRecentDb } from "@lain/core";
+import { Storage, Graph, Sync, Exporter, CanvasExporter, SynthesisEngine, Watcher, Corpus, connectMcpServers, planMission, CURRENT_SCHEMA_VERSION, checkForUpdate, clearUpdateCache, addRecentDb } from "@lain/core";
 import {
   buildExtensionRegistry,
 } from "@lain/extensions";
@@ -288,6 +288,7 @@ async function runExplore(args: ParsedArgs): Promise<void> {
   const missionRaw = args.flags["mission"];
   const missionEnabled = missionRaw !== undefined && missionRaw !== false;
   const missionRefinement = typeof missionRaw === "string" ? missionRaw : undefined;
+  const missionRounds = getNumFlag(args.flags, "mission-rounds") ?? 2;
   const agentic = getBoolFlag(args.flags, "agentic", "agent") || !!corpusPath || missionEnabled;
   const agentMaxSteps = getNumFlag(args.flags, "max-steps") ?? 10;
 
@@ -376,6 +377,19 @@ async function runExplore(args: ParsedArgs): Promise<void> {
           }
           break;
         }
+        case "mission:fix": {
+          const f = event.data as { angle?: string; assertions?: string[] } | undefined;
+          console.log(`  ↻ closing gap [${(f?.assertions ?? []).join(", ")}] under ${event.nodeId}: ${truncateStr(f?.angle ?? "", 70)}`);
+          break;
+        }
+        case "mission:validated": {
+          const r = event.data as { round?: number; satisfied?: boolean; results?: { id: string; status: string; evidence: string }[]; summary?: string } | undefined;
+          const icon = (s: string) => (s === "met" ? "✓" : s === "partial" ? "~" : "✗");
+          console.log(`\n  Validation round ${r?.round} — ${r?.satisfied ? "contract satisfied" : "gaps remain"}:`);
+          for (const res of r?.results ?? []) console.log(`    ${icon(res.status)} ${res.id}  ${truncateStr(res.evidence, 64)}`);
+          if (r?.summary && !r.satisfied) console.log(`    → next: ${r.summary}`);
+          break;
+        }
         case "error": {
           const errData = event.data as { error?: string } | undefined;
           console.error(`\n  Error: ${errData?.error}`);
@@ -396,14 +410,20 @@ async function runExplore(args: ParsedArgs): Promise<void> {
       planDetail,
       extension: ext,
       beforeExpand: async (exp) => {
-        // Mission: derive an intent contract before generating.
+        // Mission: write the validation contract + decomposition up-front, so the
+        // root's branches are driven by the contract's features.
         if (missionEnabled) {
-          process.stdout.write("  Defining mission (intent + success criteria)...");
-          const mission = await deriveIntentContract(agent, exp.id, seed, { extension: ext, refinement: missionRefinement });
+          process.stdout.write("  Planning mission (contract-first)...");
+          const mission = await planMission(agent, exp.id, seed.length ? seed : exp.seed, n, { extension: ext, refinement: missionRefinement });
           orchestrator.getStorage().upsertMission(mission);
           console.log(" done");
           console.log(`  Intent: ${truncateStr(mission.intent, 100)}`);
-          for (const cr of mission.criteria) console.log(`    ✓ ${cr}`);
+          console.log(`  Contract (${mission.assertions.length} assertions):`);
+          for (const a of mission.assertions) console.log(`    ${a.id}  ${a.text}`);
+          if (mission.features.length) {
+            console.log(`  Features:`);
+            for (const f of mission.features) console.log(`    ${f.id}  ${truncateStr(f.angle, 70)}  [${f.assertions.join(", ")}]`);
+          }
         }
         // Corpus ingestion.
         if (corpusPath) {
@@ -421,6 +441,18 @@ async function runExplore(args: ParsedArgs): Promise<void> {
         }
       },
     });
+
+    // Mission: independently validate the graph against the contract and
+    // autonomously generate fix-branches until it's satisfied or rounds run out.
+    if (missionEnabled) {
+      console.log(`\nValidating against the contract...`);
+      const report = await orchestrator.pursueMission(explorationId, { maxRounds: missionRounds });
+      if (report) {
+        const met = report.results.filter((r) => r.status === "met").length;
+        console.log(`\nMission ${report.satisfied ? "satisfied ✓" : "incomplete"} — ${met}/${report.results.length} assertions met after ${report.round} round(s).`);
+        console.log(`Run \`lain mission ${dbFileName}\` for the full report.`);
+      }
+    }
 
     console.log(`\nExploration complete: ${dbPath}`);
     console.log(`Run \`lain tree ${explorationId}\` or \`lain export ${dbFileName}\` to view.`);
@@ -1296,13 +1328,35 @@ async function runMission(args: ParsedArgs): Promise<void> {
     const mission = storage.getMission(exp.id);
     const findings = storage.getFindings(exp.id);
 
-    if (!mission) {
+    if (!mission || mission.assertions.length === 0) {
       console.log(`No mission set for "${exp.name}". Create one with \`lain "<seed>" --mission\`.`);
     } else {
       console.log(`Mission — ${exp.name}\n`);
       console.log(`Intent:\n  ${mission.intent}\n`);
-      console.log(`Success criteria:`);
-      for (const cr of mission.criteria) console.log(`  ✓ ${cr}`);
+
+      const report = storage.getLatestMissionReport(exp.id);
+      const statusById = new Map((report?.results ?? []).map((r) => [r.id, r]));
+      const icon = (s?: string) => (s === "met" ? "✓" : s === "partial" ? "~" : s === "unmet" ? "✗" : "·");
+
+      console.log(`Validation contract:`);
+      for (const a of mission.assertions) {
+        const r = statusById.get(a.id);
+        console.log(`  ${icon(r?.status)} ${a.id}  ${a.text}`);
+        if (r?.evidence) console.log(`       ${r.evidence}`);
+      }
+
+      if (mission.features.length) {
+        console.log(`\nFeatures (decomposition):`);
+        for (const f of mission.features) console.log(`  ${f.id}  ${f.angle}  [${f.assertions.join(", ")}]`);
+      }
+
+      if (report) {
+        const met = report.results.filter((r) => r.status === "met").length;
+        console.log(`\nLatest validation: ${report.satisfied ? "satisfied ✓" : "incomplete"} — ${met}/${report.results.length} met after ${report.round} round(s).`);
+        if (report.summary) console.log(`  ${report.summary}`);
+      } else {
+        console.log(`\n(no validation run yet)`);
+      }
     }
 
     console.log(`\nShared knowledge library (${findings.length} findings):`);

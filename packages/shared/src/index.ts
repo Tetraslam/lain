@@ -164,17 +164,65 @@ export interface SyncState {
 // ============================================================================
 
 /**
+ * A single testable assertion in the validation contract — a black-box-checkable
+ * property a complete exploration must satisfy (à la Factory Missions). Written
+ * BEFORE any decomposition so the contract reflects the goal, not the plan.
+ */
+export interface MissionAssertion {
+  /** Stable id, e.g. "A1". */
+  id: string;
+  /** A concrete, verifiable statement about the resulting idea-graph. */
+  text: string;
+}
+
+/**
+ * A planned unit of exploration (a branch angle) that claims which assertions it
+ * intends to fulfill — the decomposition layer between the contract and workers.
+ */
+export interface MissionFeature {
+  id: string;
+  /** The angle/direction this branch pursues. */
+  angle: string;
+  /** Assertion ids this feature is responsible for advancing. */
+  assertions: string[];
+}
+
+/**
  * A mission elevates an exploration from "branch a seed" to "pursue a goal":
- * an explicit intent + a checklist of success criteria the graph should satisfy.
- * Derived from the seed (and optional user refinement) at exploration start,
- * injected into every node-agent, and used by synthesis as a validation rubric.
+ * front-loaded cognition (a validation contract + a decomposition) that lets
+ * node-agents execute autonomously and be independently validated against the
+ * contract, with the orchestrator iterating until the contract is satisfied.
  */
 export interface Mission {
   explorationId: string;
   /** Refined one-paragraph statement of what this exploration is really after. */
   intent: string;
-  /** Finite checklist of testable success criteria. */
-  criteria: string[];
+  /** The validation contract — finite, testable, written contract-first. */
+  assertions: MissionAssertion[];
+  /** Decomposition into branch angles, each claiming assertions. */
+  features: MissionFeature[];
+  createdAt: string;
+}
+
+/** Verdict for one assertion during an independent validation pass. */
+export interface AssertionResult {
+  id: string;
+  status: "met" | "partial" | "unmet";
+  /** One-line justification, ideally citing node ids. */
+  evidence: string;
+}
+
+/**
+ * The output of an independent validator auditing the graph against the contract
+ * as a black box. Stored per round so progress across the fix-loop is visible.
+ */
+export interface MissionReport {
+  explorationId: string;
+  /** 0 = initial generation; 1+ = after each fix round. */
+  round: number;
+  satisfied: boolean;
+  results: AssertionResult[];
+  summary: string;
   createdAt: string;
 }
 
@@ -335,6 +383,8 @@ export type LainEventType =
   | "sync:complete"
   | "plan:created"
   | "plan:complete"
+  | "mission:validated"   // independent validation pass against the contract
+  | "mission:fix"         // a targeted fix-branch is being generated
   | "error";
 
 export interface LainEvent {

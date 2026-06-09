@@ -2,6 +2,7 @@ import { Graph } from "./graph.js";
 import { Storage } from "./storage.js";
 import { Corpus } from "./corpus.js";
 import { generateNodeAgentic } from "./agentic.js";
+import { validateMission, planFixFeatures } from "./mission.js";
 import type { LainTool } from "./tools.js";
 import type {
   AgentProvider,
@@ -16,6 +17,7 @@ import type {
   Strategy,
   AgentStepEvent,
   ExtensionTool,
+  MissionReport,
 } from "@lain/shared";
 import { nowISO } from "@lain/shared";
 
@@ -266,6 +268,50 @@ export class Orchestrator {
     return { generated, created };
   }
 
+  /**
+   * Pursue a mission to completion: independently validate the graph against the
+   * contract, then autonomously generate targeted fix-branches for unmet
+   * assertions and re-validate — looping until the contract is satisfied or the
+   * round budget is hit. This is the "run until the goal is met" part.
+   */
+  async pursueMission(
+    explorationId: string,
+    opts: { maxRounds?: number; maxFixesPerRound?: number } = {}
+  ): Promise<MissionReport | null> {
+    const exploration = this.graph.getExploration(explorationId);
+    if (!exploration) throw new Error(`Exploration not found: ${explorationId}`);
+    const mission = this.storage.getMission(explorationId);
+    if (!mission || mission.assertions.length === 0) return null;
+
+    const maxRounds = opts.maxRounds ?? 2;
+    const maxFixes = opts.maxFixesPerRound ?? 2;
+
+    // Round 0: initial validation of what `explore` produced.
+    let report = await validateMission(this.agent, this.graph, exploration, mission, 0);
+    this.storage.addMissionReport(report);
+    this.emit({ type: "mission:validated", explorationId, data: { round: report.round, satisfied: report.satisfied, results: report.results, summary: report.summary } });
+
+    for (let round = 1; round <= maxRounds && !report.satisfied; round++) {
+      const fixes = await planFixFeatures(this.agent, this.graph, exploration, mission, report, maxFixes);
+      if (fixes.length === 0) break;
+
+      for (const fix of fixes) {
+        const parent = this.graph.getNode(fix.parent) ?? this.graph.getNode("root");
+        if (!parent) continue;
+        const direction = fix.assertions.length ? `${fix.angle} (fulfilling ${fix.assertions.join(", ")})` : fix.angle;
+        const children = this.graph.createChildNodes(explorationId, parent.id, 1, [direction]);
+        this.emit({ type: "mission:fix", explorationId, nodeId: parent.id, data: { angle: fix.angle, assertions: fix.assertions } });
+        await this.generateNodesBatch(children, exploration);
+      }
+
+      report = await validateMission(this.agent, this.graph, exploration, mission, round);
+      this.storage.addMissionReport(report);
+      this.emit({ type: "mission:validated", explorationId, data: { round: report.round, satisfied: report.satisfied, results: report.results, summary: report.summary } });
+    }
+
+    return report;
+  }
+
   // ========================================================================
   // Breadth-First expansion
   // ========================================================================
@@ -385,6 +431,20 @@ export class Orchestrator {
     n: number
   ): Promise<string[] | undefined> {
     if (exploration.planDetail === "none") return undefined;
+
+    // Mission: the root's branches are decided up-front by the contract's
+    // features (front-loaded decomposition), not generic divergent planning.
+    if (parentNode.id === "root") {
+      const mission = this.storage.getMission(exploration.id);
+      if (mission && mission.features.length > 0) {
+        const angles = mission.features.map((f) =>
+          f.assertions.length ? `${f.angle} (fulfilling ${f.assertions.join(", ")})` : f.angle
+        );
+        // Pad/trim to n so the tree shape is respected.
+        while (angles.length < n) angles.push(mission.features[angles.length % mission.features.length].angle);
+        return angles.slice(0, n);
+      }
+    }
 
     const ancestors = this.graph.getAncestorChain(parentNode.id);
 

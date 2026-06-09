@@ -13,7 +13,7 @@ import {
 import { t, fg, dim, bold, italic, underline, strikethrough, cyan, green, yellow, magenta } from "@opentui/core";
 import type { KeyEvent, SelectOption } from "@opentui/core";
 import { toast, mountToaster } from "./toast.js";
-import { Storage, Graph, Orchestrator, Sync, Exporter, CanvasExporter, SynthesisEngine, Corpus, connectMcpServers, checkForUpdate, deriveIntentContract, addRecentDb } from "@lain/core";
+import { Storage, Graph, Orchestrator, Sync, Exporter, CanvasExporter, SynthesisEngine, Corpus, connectMcpServers, checkForUpdate, planMission, addRecentDb } from "@lain/core";
 import { buildExtensionRegistry } from "@lain/extensions";
 import { fileURLToPath } from "url";
 import type { LainNode, Exploration, Strategy, PlanDetail } from "@lain/shared";
@@ -1262,6 +1262,13 @@ ${dim(visible)}`;
             nodesGenerated++;
             const data = event.data as { title?: string } | undefined;
             pushFeed(`✓ ${event.nodeId}  ${data?.title || "untitled"}`);
+          } else if (event.type === "mission:fix") {
+            const f = event.data as { angle?: string; assertions?: string[] } | undefined;
+            pushFeed(`↻ closing gap [${(f?.assertions ?? []).join(", ")}] under ${event.nodeId}`);
+          } else if (event.type === "mission:validated") {
+            const r = event.data as { round?: number; satisfied?: boolean; results?: { status: string }[] } | undefined;
+            const met = (r?.results ?? []).filter((x) => x.status === "met").length;
+            pushFeed(`◆ validation round ${r?.round}: ${met}/${r?.results?.length ?? 0} met${r?.satisfied ? " — satisfied" : ""}`);
           }
           renderProgress();
         },
@@ -1274,11 +1281,11 @@ ${dim(visible)}`;
         extension: useExt,
         beforeExpand: async (exp) => {
           if (opts.mission) {
-            pushFeed("◆ defining mission (intent + success criteria)…");
+            pushFeed("◆ planning mission (contract-first)…");
             renderProgress();
-            const mission = await deriveIntentContract(agent, exp.id, seed, { extension: useExt });
+            const mission = await planMission(agent, exp.id, seed, useN, { extension: useExt });
             orchestrator.getStorage().upsertMission(mission);
-            pushFeed(`✦ mission set — ${mission.criteria.length} success criteria`);
+            pushFeed(`✦ contract set — ${mission.assertions.length} assertions, ${mission.features.length} features`);
           }
           if (opts.corpusPath) {
             const corpus = orchestrator.getCorpus();
@@ -1298,6 +1305,15 @@ ${dim(visible)}`;
           renderProgress();
         },
       });
+      if (opts.mission) {
+        pushFeed("◆ validating against the contract…");
+        renderProgress();
+        const report = await orchestrator.pursueMission(expId, { maxRounds: 2 });
+        if (report) {
+          const met = report.results.filter((r) => r.status === "met").length;
+          pushFeed(`✦ mission ${report.satisfied ? "satisfied" : "incomplete"} — ${met}/${report.results.length} assertions met (${report.round} round)`);
+        }
+      }
       orchestrator.close();
       await mcpPool.close();
       clearInterval(spinner);

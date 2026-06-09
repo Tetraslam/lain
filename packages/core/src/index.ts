@@ -20,7 +20,14 @@ export {
   type McpConnection,
   type McpPool,
 } from "./mcp.js";
-export { deriveIntentContract, parseContract } from "./mission.js";
+export {
+  planMission,
+  validateMission,
+  planFixFeatures,
+  deriveIntentContract,
+  parseContract,
+  type FixFeature,
+} from "./mission.js";
 export { checkForUpdate, getLocalCommit, clearUpdateCache, type UpdateStatus } from "./update.js";
 export {
   addRecentDb,

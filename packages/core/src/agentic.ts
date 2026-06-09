@@ -166,9 +166,9 @@ export async function generateNodeAgentic(
   };
 
   let system = SUBSTRATE_SYSTEM;
-  if (deps.mission) {
-    const criteria = deps.mission.criteria.map((cr, i) => `  ${i + 1}. ${cr}`).join("\n");
-    system += `\n\n--- Mission ---\nThis exploration pursues a goal, not just a topic.\nIntent: ${deps.mission.intent}\nSuccess criteria for the whole graph:\n${criteria}\n\nAdvance one or more of these criteria with THIS node. Record durable discoveries with note_finding so other branches build on them, and read_findings before writing.`;
+  if (deps.mission && deps.mission.assertions.length > 0) {
+    const contract = deps.mission.assertions.map((a) => `  ${a.id}. ${a.text}`).join("\n");
+    system += `\n\n--- Mission contract ---\nThis exploration pursues a goal, not just a topic.\nIntent: ${deps.mission.intent}\nThe whole graph is validated against this contract:\n${contract}\n\nAdvance one or more of these assertions with THIS node, concretely enough that an independent validator could mark it met. Record durable discoveries with note_finding so other branches build on them, and read_findings before writing.`;
   }
   if (deps.extensionSystemPrompt) {
     system += `\n\n--- Domain guidance ---\n${deps.extensionSystemPrompt}`;

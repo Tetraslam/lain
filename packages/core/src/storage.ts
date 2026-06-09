@@ -1,4 +1,5 @@
 import { Database } from "bun:sqlite";
+import { generateId } from "@lain/shared";
 import type {
   Exploration,
   LainNode,
@@ -11,6 +12,7 @@ import type {
   CorpusSource,
   CorpusChunk,
   Mission,
+  MissionReport,
   Finding,
 } from "@lain/shared";
 
@@ -132,9 +134,21 @@ CREATE INDEX IF NOT EXISTS idx_corpus_chunk_source ON corpus_chunk(source_id);
 CREATE TABLE IF NOT EXISTS mission (
   exploration_id TEXT PRIMARY KEY REFERENCES exploration(id),
   intent TEXT NOT NULL,
-  criteria TEXT NOT NULL,
+  assertions TEXT NOT NULL DEFAULT '[]',
+  features TEXT NOT NULL DEFAULT '[]',
   created_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS mission_report (
+  id TEXT PRIMARY KEY,
+  exploration_id TEXT NOT NULL REFERENCES exploration(id),
+  round INTEGER NOT NULL,
+  satisfied INTEGER NOT NULL,
+  results TEXT NOT NULL,
+  summary TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_mission_report_exploration ON mission_report(exploration_id);
 
 CREATE TABLE IF NOT EXISTS finding (
   id TEXT PRIMARY KEY,
@@ -160,7 +174,7 @@ CREATE TABLE IF NOT EXISTS meta (
  * lain transparently adds missing tables; the version + migrations runner
  * exists for future destructive/altering changes that IF NOT EXISTS can't cover.
  */
-export const CURRENT_SCHEMA_VERSION = 2;
+export const CURRENT_SCHEMA_VERSION = 3;
 
 /**
  * Ordered, idempotent migrations for changes that additive CREATE-IF-NOT-EXISTS
@@ -169,6 +183,23 @@ export const CURRENT_SCHEMA_VERSION = 2;
  */
 const MIGRATIONS: Record<number, (db: Database) => void> = {
   // 2: tables added via SCHEMA (IF NOT EXISTS); nothing extra to do.
+  // 3: mission gained assertions/features (replacing the old NOT NULL `criteria`
+  //    column); mission_report added via SCHEMA. Rebuild the table to the
+  //    canonical shape so the legacy NOT-NULL column can't block inserts.
+  3: (db) => {
+    const cols = (db.prepare("PRAGMA table_info(mission)").all() as { name: string }[]).map((c) => c.name);
+    if (cols.includes("assertions") && cols.includes("features") && !cols.includes("criteria")) return;
+    const a = cols.includes("assertions") ? "assertions" : "'[]'";
+    const f = cols.includes("features") ? "features" : "'[]'";
+    db.run("ALTER TABLE mission RENAME TO mission_old");
+    db.run(
+      `CREATE TABLE mission (exploration_id TEXT PRIMARY KEY REFERENCES exploration(id),
+       intent TEXT NOT NULL, assertions TEXT NOT NULL DEFAULT '[]', features TEXT NOT NULL DEFAULT '[]', created_at TEXT NOT NULL)`
+    );
+    db.run(`INSERT INTO mission (exploration_id, intent, assertions, features, created_at)
+            SELECT exploration_id, intent, ${a}, ${f}, created_at FROM mission_old`);
+    db.run("DROP TABLE mission_old");
+  },
 };
 
 export class Storage {
@@ -848,11 +879,18 @@ export class Storage {
   upsertMission(mission: Mission): void {
     this.db
       .prepare(
-        `INSERT INTO mission (exploration_id, intent, criteria, created_at)
-         VALUES (?, ?, ?, ?)
-         ON CONFLICT(exploration_id) DO UPDATE SET intent = excluded.intent, criteria = excluded.criteria`
+        `INSERT INTO mission (exploration_id, intent, assertions, features, created_at)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(exploration_id) DO UPDATE SET
+           intent = excluded.intent, assertions = excluded.assertions, features = excluded.features`
       )
-      .run(mission.explorationId, mission.intent, JSON.stringify(mission.criteria), mission.createdAt);
+      .run(
+        mission.explorationId,
+        mission.intent,
+        JSON.stringify(mission.assertions),
+        JSON.stringify(mission.features),
+        mission.createdAt
+      );
   }
 
   getMission(explorationId: string): Mission | null {
@@ -860,12 +898,50 @@ export class Storage {
       | Record<string, unknown>
       | undefined;
     if (!row) return null;
+    const parse = <T>(v: unknown): T[] => { try { return v ? (JSON.parse(v as string) as T[]) : []; } catch { return []; } };
     return {
       explorationId: row.exploration_id as string,
       intent: row.intent as string,
-      criteria: row.criteria ? (JSON.parse(row.criteria as string) as string[]) : [],
+      assertions: parse(row.assertions),
+      features: parse(row.features),
       createdAt: row.created_at as string,
     };
+  }
+
+  addMissionReport(report: MissionReport): void {
+    this.db
+      .prepare(
+        `INSERT INTO mission_report (id, exploration_id, round, satisfied, results, summary, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        generateId(),
+        report.explorationId,
+        report.round,
+        report.satisfied ? 1 : 0,
+        JSON.stringify(report.results),
+        report.summary,
+        report.createdAt
+      );
+  }
+
+  getMissionReports(explorationId: string): MissionReport[] {
+    const rows = this.db
+      .prepare("SELECT * FROM mission_report WHERE exploration_id = ? ORDER BY round, created_at")
+      .all(explorationId) as Record<string, unknown>[];
+    return rows.map((r) => ({
+      explorationId: r.exploration_id as string,
+      round: r.round as number,
+      satisfied: r.satisfied === 1,
+      results: (() => { try { return JSON.parse(r.results as string); } catch { return []; } })(),
+      summary: (r.summary as string) ?? "",
+      createdAt: r.created_at as string,
+    }));
+  }
+
+  getLatestMissionReport(explorationId: string): MissionReport | null {
+    const reports = this.getMissionReports(explorationId);
+    return reports.length ? reports[reports.length - 1] : null;
   }
 
   // ---- Findings (shared knowledge library) ----

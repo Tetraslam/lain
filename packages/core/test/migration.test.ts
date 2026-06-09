@@ -43,8 +43,9 @@ describe("schema versioning", () => {
     expect(g.getNode("root")?.content).toBe("old content");
 
     // Substrate tables now work on the upgraded db.
-    s.upsertMission({ explorationId: "old", intent: "x", criteria: ["y"], createdAt: "t" });
+    s.upsertMission({ explorationId: "old", intent: "x", assertions: [{ id: "A1", text: "y" }], features: [], createdAt: "t" });
     expect(s.getMission("old")?.intent).toBe("x");
+    expect(s.getMission("old")?.assertions[0].text).toBe("y");
     expect(s.getCorpusSources("old")).toEqual([]);
     s.close();
   });
@@ -54,5 +55,29 @@ describe("schema versioning", () => {
     const s2 = new Storage(dbPath);
     expect(s2.getSchemaVersion()).toBe(CURRENT_SCHEMA_VERSION);
     s2.close();
+  });
+
+  it("migrates a v2 mission table (criteria) up to v3 (assertions/features)", () => {
+    // Simulate a v2 db: mission table with the old `criteria` column, stamped v2.
+    const raw = new Database(dbPath, { create: true });
+    raw.exec(`
+      CREATE TABLE exploration (id TEXT PRIMARY KEY, name TEXT, seed TEXT, n INTEGER, m INTEGER, strategy TEXT, plan_detail TEXT, extension TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+      CREATE TABLE mission (exploration_id TEXT PRIMARY KEY, intent TEXT NOT NULL, criteria TEXT NOT NULL, created_at TEXT NOT NULL);
+      CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+      INSERT INTO meta (key, value) VALUES ('schema_version', '2');
+      INSERT INTO exploration (id, name, seed, n, m, strategy, plan_detail, extension, created_at, updated_at) VALUES ('old', 'L', 's', 2, 1, 'bf', 'sentence', 'freeform', 't', 't');
+      INSERT INTO mission (exploration_id, intent, criteria, created_at) VALUES ('old', 'legacy intent', '["c1"]', 't');
+    `);
+    raw.close();
+
+    const s = new Storage(dbPath); // triggers migration v3 (ALTER ADD assertions/features)
+    expect(s.getSchemaVersion()).toBe(CURRENT_SCHEMA_VERSION);
+    // The legacy mission row survives; assertions default empty and are writable.
+    const m = s.getMission("old")!;
+    expect(m.intent).toBe("legacy intent");
+    expect(m.assertions).toEqual([]);
+    s.upsertMission({ explorationId: "old", intent: "legacy intent", assertions: [{ id: "A1", text: "z" }], features: [], createdAt: "t" });
+    expect(s.getMission("old")!.assertions[0].text).toBe("z");
+    s.close();
   });
 });
