@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { Storage } from "../src/storage.js";
 import { Graph } from "../src/graph.js";
 import { Orchestrator } from "../src/orchestrator.js";
-import { parseContract } from "../src/mission.js";
+import { parseContract, interviewMission } from "../src/mission.js";
 import { buildNodeTools, buildToolContext } from "../src/tools.js";
 import type { AgentProvider, GenerateRequest, GenerateResponse, PlanRequest, PlanResponse } from "@lain/shared";
 import * as fs from "fs";
@@ -87,6 +87,59 @@ class MockMissionAgent implements AgentProvider {
     return "{}";
   }
 }
+
+// Interview agent: asks once, then finalizes a contract once it has an answer.
+class InterviewAgent implements AgentProvider {
+  async generate(): Promise<GenerateResponse> { return { title: "t", content: "c", model: "mock", provider: "anthropic" }; }
+  async generateStream(): Promise<GenerateResponse> { return this.generate(); }
+  async plan(r: PlanRequest): Promise<PlanResponse> { return { directions: Array.from({ length: r.n }, (_, i) => `d${i}`) }; }
+  async generateRaw(system: string, user: string): Promise<string> {
+    if (system.includes("make the goal unambiguous")) {
+      // First turn (no clarifications yet) → ask; subsequent → finalize.
+      if (!user.includes("Clarifications so far")) {
+        return '{"ready":false,"questions":["Who is the audience?","What is out of scope?"]}';
+      }
+      return '{"ready":true,"intent":"clear goal","assertions":[{"id":"A1","text":"x"},{"id":"A2","text":"y"}],"features":[{"id":"F1","angle":"one","assertions":["A1"]},{"id":"F2","angle":"two","assertions":["A2"]}]}';
+    }
+    return "{}";
+  }
+}
+
+describe("interviewMission (cognitive-frontloading gate)", () => {
+  it("asks clarifying questions before it will finalize", async () => {
+    const r = await interviewMission(new InterviewAgent(), "e", "a seed", 2, []);
+    expect(r.done).toBe(false);
+    if (!r.done) expect(r.questions.length).toBeGreaterThan(0);
+  });
+
+  it("finalizes a contract once questions are answered", async () => {
+    const r = await interviewMission(new InterviewAgent(), "e", "a seed", 2, [
+      { question: "Who is the audience?", answer: "researchers" },
+      { question: "What is out of scope?", answer: "implementation" },
+    ]);
+    expect(r.done).toBe(true);
+    if (r.done) {
+      expect(r.mission.assertions.length).toBe(2);
+      expect(r.mission.features.length).toBe(2);
+      expect(r.mission.intent).toBe("clear goal");
+    }
+  });
+
+  it("forces finalization after maxRounds even if the agent keeps asking", async () => {
+    // An agent that ALWAYS asks — the gate must still terminate.
+    const stubborn: AgentProvider = {
+      generate: async () => ({ title: "t", content: "c", model: "m", provider: "anthropic" }),
+      generateStream: async () => ({ title: "t", content: "c", model: "m", provider: "anthropic" }),
+      plan: async (r) => ({ directions: Array.from({ length: r.n }, (_, i) => `d${i}`) }),
+      generateRaw: async () => '{"ready":false,"questions":["again?"]}',
+    } as AgentProvider;
+    const history = [
+      { question: "q1", answer: "a1" }, { question: "q2", answer: "a2" }, { question: "q3", answer: "a3" },
+    ];
+    const r = await interviewMission(stubborn, "e", "seed", 2, history, { maxRounds: 3 });
+    expect(r.done).toBe(true); // reached the cap → finalized regardless
+  });
+});
 
 describe("mission lifecycle (plan → validate → fix → revalidate)", () => {
   let tmp: string;

@@ -22,11 +22,14 @@ export {
 } from "./mcp.js";
 export {
   planMission,
+  interviewMission,
   validateMission,
   planFixFeatures,
   deriveIntentContract,
   parseContract,
   type FixFeature,
+  type InterviewTurn,
+  type InterviewResult,
 } from "./mission.js";
 export { checkForUpdate, getLocalCommit, clearUpdateCache, type UpdateStatus } from "./update.js";
 export {

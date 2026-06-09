@@ -85,6 +85,88 @@ export async function planMission(
   return { explorationId, intent, assertions, features, createdAt: nowISO() };
 }
 
+// ---------------------------------------------------------------------------
+// Clarification interview — the cognitive-frontloading gate.
+//
+// Before any exploration runs, the architect investigates: it asks sharp
+// clarifying questions until the goal is unambiguous, and only then finalizes
+// the contract. Interactive surfaces refuse to proceed until this completes.
+// ---------------------------------------------------------------------------
+
+export interface InterviewTurn {
+  question: string;
+  answer: string;
+}
+
+export type InterviewResult =
+  | { done: false; questions: string[]; rationale?: string }
+  | { done: true; mission: Mission };
+
+const INTERVIEW_SYSTEM = `You are a mission architect for an ideation engine. In THIS phase your only job is to make the goal unambiguous before any exploration begins — front-load the hard thinking.
+
+Given the seed and any prior answers, decide ONE of:
+- If scope, intent, audience, constraints, or what would make the result excellent are still genuinely unclear, ask 2–4 SHARP clarifying questions whose answers would materially change what gets explored. Never ask generic, rhetorical, or yes/no-obvious questions. Don't re-ask anything already answered.
+- Only once the goal is clear, finalize the validation contract.
+
+Return ONLY minified JSON, exactly ONE of:
+  {"ready":false,"questions":["...","..."]}
+  {"ready":true,"intent":"<one vivid paragraph>","assertions":[{"id":"A1","text":"<testable, black-box-checkable property>"}],"features":[{"id":"F1","angle":"<branch angle>","assertions":["A1"]}]}
+
+When ready: 4–7 assertions written from the goal (not from any plan); produce exactly N features (given below) that each claim assertions and together cover every assertion. No prose outside the JSON.`;
+
+/**
+ * One turn of the clarification interview. Returns either more questions (the
+ * goal isn't rigorous yet) or the finalized mission. After `maxRounds` it forces
+ * finalization so the loop always terminates.
+ */
+export async function interviewMission(
+  agent: AgentProvider,
+  explorationId: string,
+  seed: string,
+  n: number,
+  history: InterviewTurn[],
+  opts: { extension?: string; maxRounds?: number } = {}
+): Promise<InterviewResult> {
+  const maxRounds = opts.maxRounds ?? 3;
+  const qa = history.map((t, i) => `Q${i + 1}: ${t.question}\nA${i + 1}: ${t.answer || "(no preference)"}`).join("\n");
+  const ctx = [
+    `Seed: ${seed}`,
+    opts.extension && opts.extension !== "freeform" ? `Lens: ${opts.extension}` : "",
+    `N = ${n}`,
+    qa ? `Clarifications so far:\n${qa}` : "",
+    history.length >= maxRounds ? "You have asked enough — finalize the contract now." : "",
+  ].filter(Boolean).join("\n");
+
+  const refinement = history.map((t) => `${t.question} ${t.answer}`).join(" · ");
+
+  let obj: any = null;
+  try {
+    obj = extractJson(await agent.generateRaw(INTERVIEW_SYSTEM, ctx, 1300));
+  } catch { /* fall through to finalize */ }
+
+  // More questions wanted (and we still have budget).
+  if (obj && obj.ready === false && Array.isArray(obj.questions) && history.length < maxRounds) {
+    const questions = obj.questions.map((q: unknown) => String(q).trim()).filter(Boolean).slice(0, 4);
+    if (questions.length > 0) return { done: false, questions, rationale: obj.rationale ? String(obj.rationale) : undefined };
+  }
+
+  // Finalize: prefer the contract the interviewer just produced; else fall back.
+  const assertions = normalizeAssertions(obj?.assertions);
+  if (assertions.length > 0) {
+    return {
+      done: true,
+      mission: {
+        explorationId,
+        intent: typeof obj?.intent === "string" && obj.intent.trim() ? obj.intent.trim() : refinement || seed,
+        assertions,
+        features: normalizeFeatures(obj?.features, assertions),
+        createdAt: nowISO(),
+      },
+    };
+  }
+  return { done: true, mission: await planMission(agent, explorationId, seed, n, { extension: opts.extension, refinement }) };
+}
+
 function normalizeAssertions(raw: unknown): MissionAssertion[] {
   if (!Array.isArray(raw)) return [];
   return raw

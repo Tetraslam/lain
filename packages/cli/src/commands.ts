@@ -5,7 +5,7 @@ import * as os from "os";
 import { execFileSync } from "child_process";
 import { fileURLToPath } from "url";
 import { Orchestrator } from "@lain/core";
-import { Storage, Graph, Sync, Exporter, CanvasExporter, SynthesisEngine, Watcher, Corpus, connectMcpServers, planMission, CURRENT_SCHEMA_VERSION, checkForUpdate, clearUpdateCache, addRecentDb } from "@lain/core";
+import { Storage, Graph, Sync, Exporter, CanvasExporter, SynthesisEngine, Watcher, Corpus, connectMcpServers, planMission, interviewMission, CURRENT_SCHEMA_VERSION, checkForUpdate, clearUpdateCache, addRecentDb, type InterviewTurn } from "@lain/core";
 import {
   buildExtensionRegistry,
 } from "@lain/extensions";
@@ -18,6 +18,7 @@ import {
   type PlanDetail,
   type Provider,
   type LainConfig,
+  type Mission,
 } from "@lain/shared";
 import type { ParsedArgs } from "./args.js";
 import { getFlag, getBoolFlag, getNumFlag, getMultiFlag } from "./args.js";
@@ -332,6 +333,27 @@ async function runExplore(args: ParsedArgs): Promise<void> {
     for (const e of mcpPool.errors) console.warn(`  MCP "${e.name}" unavailable: ${e.error}`);
   }
 
+  // Mission planning — the cognitive-frontloading gate. Interactively, the
+  // architect interviews you until the goal is unambiguous, then you approve the
+  // contract before anything generates. Non-interactive (agents) auto-derive.
+  let plannedMission: Mission | null = null;
+  const interactive = !!process.stdin.isTTY && !!process.stdout.isTTY
+    && !getBoolFlag(args.flags, "non-interactive", "yes", "no-interview");
+  if (missionEnabled) {
+    if (interactive) {
+      plannedMission = await runMissionInterview(agent, explorationId, seed, n, ext, missionRefinement);
+      if (!plannedMission) {
+        console.log("Mission cancelled.");
+        if (mcpPool) await mcpPool.close();
+        return;
+      }
+    } else {
+      process.stdout.write("Planning mission (contract-first, non-interactive)...");
+      plannedMission = await planMission(agent, explorationId, seed, n, { extension: ext, refinement: missionRefinement });
+      console.log(" done");
+    }
+  }
+
   // Create orchestrator with extensions
   const extensions = buildExtensionRegistry();
   const orchestrator = new Orchestrator({
@@ -411,20 +433,10 @@ async function runExplore(args: ParsedArgs): Promise<void> {
       planDetail,
       extension: ext,
       beforeExpand: async (exp) => {
-        // Mission: write the validation contract + decomposition up-front, so the
-        // root's branches are driven by the contract's features.
-        if (missionEnabled) {
-          process.stdout.write("  Planning mission (contract-first)...");
-          const mission = await planMission(agent, exp.id, seed.length ? seed : exp.seed, n, { extension: ext, refinement: missionRefinement });
-          orchestrator.getStorage().upsertMission(mission);
-          console.log(" done");
-          console.log(`  Intent: ${truncateStr(mission.intent, 100)}`);
-          console.log(`  Contract (${mission.assertions.length} assertions):`);
-          for (const a of mission.assertions) console.log(`    ${a.id}  ${a.text}`);
-          if (mission.features.length) {
-            console.log(`  Features:`);
-            for (const f of mission.features) console.log(`    ${f.id}  ${truncateStr(f.angle, 70)}  [${f.assertions.join(", ")}]`);
-          }
+        // Mission: persist the contract (planned/approved above) so the root's
+        // branches are driven by its features.
+        if (plannedMission) {
+          orchestrator.getStorage().upsertMission({ ...plannedMission, explorationId: exp.id });
         }
         // Corpus ingestion.
         if (corpusPath) {
@@ -461,6 +473,66 @@ async function runExplore(args: ParsedArgs): Promise<void> {
     orchestrator.close();
     if (mcpPool) await mcpPool.close();
   }
+}
+
+/**
+ * The interactive cognitive-frontloading gate: the architect interviews the
+ * user until the goal is unambiguous, then the user approves the contract.
+ * Returns the locked-in mission, or null if cancelled. Won't proceed without it.
+ */
+async function runMissionInterview(
+  agent: ReturnType<typeof createProviderFromCredentials>,
+  explorationId: string,
+  seed: string,
+  n: number,
+  ext: string,
+  refinement?: string
+): Promise<Mission | null> {
+  p.intro(`${c.accent("mission")} ${dim("— let's pin down the goal before exploring")}`);
+  const history: InterviewTurn[] = [];
+  if (refinement) history.push({ question: "Initial framing", answer: refinement });
+
+  const showContract = (m: Mission) => {
+    const lines = [
+      `${bold("Intent")}  ${m.intent}`,
+      "",
+      bold("Contract"),
+      ...m.assertions.map((a) => `  ${c.green(a.id)}  ${a.text}`),
+    ];
+    if (m.features.length) {
+      lines.push("", bold("Branches"));
+      for (const f of m.features) lines.push(`  ${c.blue(f.id)}  ${f.angle} ${dim(`[${f.assertions.join(", ")}]`)}`);
+    }
+    p.note(lines.join("\n"), "proposed mission");
+  };
+
+  for (let guard = 0; guard < 8; guard++) {
+    const spin = p.spinner();
+    spin.start(history.length === 0 ? "Thinking about what to ask…" : "Reconsidering the goal…");
+    const res = await interviewMission(agent, explorationId, seed, n, history, { extension: ext });
+    spin.stop(res.done ? "Goal is clear." : "A few questions first.");
+
+    if (!res.done) {
+      for (const q of res.questions) {
+        const ans = await p.text({ message: q, placeholder: "enter to skip / no strong preference" });
+        if (p.isCancel(ans)) { p.cancel("Mission cancelled."); return null; }
+        history.push({ question: q, answer: typeof ans === "string" ? ans.trim() : "" });
+      }
+      continue;
+    }
+
+    showContract(res.mission);
+    const ok = await p.confirm({ message: "Lock this in and start exploring?" });
+    if (p.isCancel(ok)) { p.cancel("Mission cancelled."); return null; }
+    if (ok) { p.outro(`Mission locked — ${res.mission.assertions.length} assertions to satisfy.`); return res.mission; }
+
+    const change = await p.text({ message: "What should change about the goal or contract?" });
+    if (p.isCancel(change)) { p.cancel("Mission cancelled."); return null; }
+    history.push({ question: "Requested change", answer: typeof change === "string" ? change.trim() : "" });
+  }
+  // Safety net: never loop forever.
+  p.outro("Finalizing mission.");
+  return planMission(agent, explorationId, seed, n, { extension: ext, refinement: history.map((h) => h.answer).join(" · ") });
 }
 
 // ============================================================================
@@ -1677,8 +1749,9 @@ ${section("Options")}
   -c, --concurrency <n>  Max parallel agent calls (default: 5)
   --agentic              Expand nodes as tool-using agents (graph + corpus + findings + linking)
   --corpus <path>        Ingest a file/dir as source material before generating (implies --agentic)
-  --mission [intent]     Write a validation contract + pursue it autonomously (implies --agentic)
+  --mission [intent]     Interview → validation contract → pursue it autonomously (implies --agentic)
   --mission-rounds <n>   Max validate→fix rounds for a mission (default: 2)
+  --non-interactive      Skip the mission interview; auto-derive the contract (also --yes)
   --max-steps <n>        Max agent tool round-trips per node (default: 10)
 
 ${section("Commands")}
