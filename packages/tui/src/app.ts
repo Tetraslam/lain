@@ -14,6 +14,7 @@ import { t, fg, bg, dim, bold, italic, underline, strikethrough, cyan, green, ye
 import type { KeyEvent, SelectOption } from "@opentui/core";
 import { toast, mountToaster } from "./toast.js";
 import { copyToClipboard } from "./clipboard.js";
+import { mountNodeContent, clearContainer } from "./content-view.js";
 import { Storage, Graph, Orchestrator, Sync, Exporter, CanvasExporter, SynthesisEngine, Corpus, connectMcpServers, buildToolCatalog, checkForUpdate, planMission, interviewMission, addRecentDb, type InterviewTurn } from "@lain/core";
 import { buildExtensionRegistry } from "@lain/extensions";
 import { fileURLToPath } from "url";
@@ -50,7 +51,6 @@ import { rankCommands, groupRanked, type PaletteHost, type RankedCommand } from 
 import {
   discoverDbs,
   buildTreeItems,
-  buildNodeContent,
   buildHelpContent,
   type TreeItem,
   type AppMode,
@@ -245,8 +245,12 @@ export async function createApp(dbPathArg?: string): Promise<void> {
   });
   nodePanel.add(nodeScroll);
 
-  const nodeText = new TextRenderable(renderer, { id: "node-text", content: "", width: "100%" });
+  // Simple full-text surface (help, generating feed) — cheap to mutate.
+  const nodeText = new TextRenderable(renderer, { id: "node-text", content: "", width: "100%", wrapMode: "word", selectable: true });
   nodeScroll.content.add(nodeText);
+  // Structured node view: wrapping text blocks + per-cell table renderables.
+  const nodeBlocks = new BoxRenderable(renderer, { id: "node-blocks", width: "100%", flexDirection: "column" });
+  nodeScroll.content.add(nodeBlocks);
 
   // Footer
   const expFooter = new BoxRenderable(renderer, { id: "exp-footer", width: "100%", height: 1, marginTop: 1, marginBottom: 1, paddingLeft: 2 });
@@ -854,7 +858,8 @@ ${annotation.merged ? dim("Already merged.") : dim("m — merge  ·  d — dismi
     });
     treeSelect.setSelectedIndex(0);
 
-    nodeText.content = buildNodeContent(root, graph, allNodes, storage ?? undefined, contentWidth);
+    nodeText.content = "";
+    mountNodeContent(renderer, nodeBlocks, root, graph, allNodes, storage ?? undefined, contentWidth);
     expFooterText.content = exploringFooter();
 
     mode = "exploring";
@@ -907,7 +912,8 @@ ${annotation.merged ? dim("Already merged.") : dim("m — merge  ·  d — dismi
 
   function showNode(node: LainNode) {
     if (!graph) return;
-    nodeText.content = buildNodeContent(node, graph, allNodes, storage ?? undefined, contentWidth);
+    nodeText.content = "";
+    mountNodeContent(renderer, nodeBlocks, node, graph, allNodes, storage ?? undefined, contentWidth);
     nodeScroll.scrollTop = 0;
   }
 
@@ -1183,6 +1189,7 @@ ${dim("↑↓")} ${fg(c.muted)("navigate")}   ${dim("↵")} ${fg(c.muted)("run")
     nodePanel.borderColor = c.accent;
     treeSelect.blur();
     treeSelect.focusable = false;
+    clearContainer(nodeBlocks);
     nodeText.content = buildHelpContent();
     nodeScroll.scrollTop = 0;
     expFooterText.content = t`  ${dim("press any key to dismiss")}`;
@@ -1268,8 +1275,9 @@ ${dim("↑↓")} ${fg(c.muted)("navigate")}   ${dim("↵")} ${fg(c.muted)("run")
     mode = "editing";
     editingNodeId = node.id;
 
-    // Replace nodeText with editTextarea in the scroll container
-    try { nodeScroll.content.remove("node-text"); } catch {}
+    // Hide the rendered view and drop in the editor textarea.
+    nodeText.content = "";
+    clearContainer(nodeBlocks);
     editTextarea.initialValue = node.content || "";
     nodeScroll.content.add(editTextarea);
     editTextarea.focus();
@@ -1289,9 +1297,8 @@ ${dim("↑↓")} ${fg(c.muted)("navigate")}   ${dim("↵")} ${fg(c.muted)("run")
       toast.success("Saved");
     }
 
-    // Swap textarea back to text renderable
+    // Remove the editor; the reading refresh below re-mounts the rendered view.
     try { nodeScroll.content.remove("edit-textarea"); } catch {}
-    nodeScroll.content.add(nodeText);
     editTextarea.blur();
     editingNodeId = null;
 
@@ -1906,6 +1913,7 @@ ${dim("↑↓")} ${fg(c.muted)("navigate")}   ${dim("↵")} ${fg(c.muted)("run")
     renderer.setTerminalTitle(`lain — creating: ${shortName}`);
     expHeaderText.content = t`  ${fg(c.accent)("lain")}  ${dim(shortName)}  ${fg(c.muted)("·")}  ${fg(c.yellow)("creating...")}  ${fg(c.muted)("·")}  ${dim(`n=${useN} m=${useM}`)}  ${fg(c.muted)("·")}  ${dim(useExt)}`;
     treeSelect.options = [{ name: "generating...", description: "", value: null }];
+    clearContainer(nodeBlocks);
     nodeText.content = t`${bold(fg(c.bright)(seed))}
 
 ${fg(c.yellow)("Generating exploration...")}

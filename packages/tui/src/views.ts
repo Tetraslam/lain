@@ -65,8 +65,8 @@ export function buildTreeItems(node: LainNode, allNodes: LainNode[], prefix = ""
   return items;
 }
 
-/** Build the styled content view for a single node (breadcrumb, meta, body, links, notes, children). */
-export function buildNodeContent(node: LainNode, graph: Graph, allNodes: LainNode[], storage?: Storage, contentWidth = 88): StyledText {
+/** Header block for a node view: breadcrumb, title, meta. */
+export function buildNodeHead(node: LainNode, graph: Graph): StyledText {
   const ancestors = graph.getAncestorChain(node.id);
   let breadcrumb = "";
   if (ancestors.length > 0) {
@@ -75,9 +75,21 @@ export function buildNodeContent(node: LainNode, graph: Graph, allNodes: LainNod
       return name.length > 40 ? name.slice(0, 39) + "…" : name;
     }).join("  ›  ");
   }
-
   const statusColor = node.status === "complete" ? c.green : node.status === "pruned" ? c.red : c.yellow;
+  let metaExtraStr = "";
+  if (node.model) metaExtraStr += `model  ${node.model} (${node.provider})\n`;
+  if (node.planSummary) metaExtraStr += `direction  ${node.planSummary}\n`;
+  const titleStr = node.title || node.id;
+  const sep = "─".repeat(Math.min(50, titleStr.length));
+  return t`${breadcrumb ? `${breadcrumb}\n\n` : ""}${bold(fg(c.bright)(titleStr))}
+${fg(c.muted)(sep)}
 
+${fg(c.blue)("id")}  ${node.id}  ${fg(c.muted)("·")}  ${fg(c.blue)("depth")}  ${String(node.depth)}  ${fg(c.muted)("·")}  ${fg(c.blue)("branch")}  ${String(node.branchIndex)}  ${fg(c.muted)("·")}  ${fg(statusColor)(node.status)}
+${metaExtraStr}`;
+}
+
+/** Trailer block for a node view: cross-links, notes, children. Empty string if none. */
+export function buildNodeTrailer(node: LainNode, graph: Graph, allNodes: LainNode[], storage?: Storage): string {
   const crosslinks = graph.getCrosslinksForNode(node.id);
   let crosslinksStr = "";
   if (crosslinks.length > 0) {
@@ -88,40 +100,28 @@ export function buildNodeContent(node: LainNode, graph: Graph, allNodes: LainNod
       crosslinksStr += `  → ${other?.title || otherId}${cl.label ? `  ${cl.label}` : ""}\n`;
     }
   }
-
+  let notesStr = "";
+  if (storage) {
+    const nodeAnnotations = storage.getNodeAnnotations(node.id);
+    if (nodeAnnotations.length > 0) {
+      notesStr += `\n────────────────────────────────\nnotes (${nodeAnnotations.length})\n`;
+      for (const na of nodeAnnotations) notesStr += `  ◆ ${na.content}\n`;
+    }
+  }
   const children = allNodes.filter((n) => n.parentId === node.id && n.status !== "pruned");
   let childrenStr = "";
   if (children.length > 0) {
     childrenStr += `\n────────────────────────────────\nchildren (${children.length})\n`;
     for (const child of children) childrenStr += `  ${child.branchIndex}. ${child.title || child.id}\n`;
   }
+  return `${crosslinksStr}${notesStr}${childrenStr}`;
+}
 
-  let notesStr = "";
-  if (storage) {
-    const nodeAnnotations = storage.getNodeAnnotations(node.id);
-    if (nodeAnnotations.length > 0) {
-      notesStr += `\n────────────────────────────────\nnotes (${nodeAnnotations.length})\n`;
-      for (const na of nodeAnnotations) {
-        notesStr += `  ◆ ${na.content}\n`;
-      }
-    }
-  }
-
-  let metaExtraStr = "";
-  if (node.model) metaExtraStr += `model  ${node.model} (${node.provider})\n`;
-  if (node.planSummary) metaExtraStr += `direction  ${node.planSummary}\n`;
-
-  const titleStr = node.title || node.id;
-  const sep = "─".repeat(Math.min(50, titleStr.length));
-
-  const head = t`${breadcrumb ? `${breadcrumb}\n\n` : ""}${bold(fg(c.bright)(titleStr))}
-${fg(c.muted)(sep)}
-
-${fg(c.blue)("id")}  ${node.id}  ${fg(c.muted)("·")}  ${fg(c.blue)("depth")}  ${String(node.depth)}  ${fg(c.muted)("·")}  ${fg(c.blue)("branch")}  ${String(node.branchIndex)}  ${fg(c.muted)("·")}  ${fg(statusColor)(node.status)}
-${metaExtraStr}
-`;
+/** Build the styled content view for a single node (single StyledText; tables inline). */
+export function buildNodeContent(node: LainNode, graph: Graph, allNodes: LainNode[], storage?: Storage, contentWidth = 88): StyledText {
+  const head = buildNodeHead(node, graph);
   const body = node.content ? renderMarkdown(node.content, contentWidth) : t`${dim("(no content)")}`;
-  return joinStyled(head, body, `${crosslinksStr}${notesStr}${childrenStr}`);
+  return joinStyled(head, "\n", body, "\n", buildNodeTrailer(node, graph, allNodes, storage));
 }
 
 /** Build the keyboard reference shown in help mode. */

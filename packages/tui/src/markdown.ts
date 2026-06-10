@@ -56,7 +56,7 @@ function renderInlineChunks(text: string): TextChunk[] {
 // GFM tables — rendered as a clean, aligned box (Tokyo Night)
 // ---------------------------------------------------------------------------
 
-type Align = "left" | "right" | "center";
+export type Align = "left" | "right" | "center";
 
 /** Split a table row into trimmed cells (tolerant of missing edge pipes). */
 function splitTableRow(s: string): string[] {
@@ -145,6 +145,83 @@ function renderTable(header: string[], alignsIn: Align[], bodyRows: string[][], 
   }
   lines.push(rule("└", "┴", "┘"));
   return lines;
+}
+
+// ---------------------------------------------------------------------------
+// Block model — split content into text + table blocks so the content view can
+// mount tables as real per-cell renderables (selectable, wrapping) rather than
+// as pre-formatted lines inside one TextRenderable.
+// ---------------------------------------------------------------------------
+
+export type MdBlock =
+  | { kind: "text"; md: string }
+  | { kind: "table"; header: string[]; aligns: Align[]; rows: string[][] };
+
+export function splitMarkdownBlocks(md: string): MdBlock[] {
+  const lines = md.split("\n");
+  const blocks: MdBlock[] = [];
+  let buf: string[] = [];
+  let inCode = false;
+  const flush = () => { if (buf.length) { blocks.push({ kind: "text", md: buf.join("\n") }); buf = []; } };
+  for (let i = 0; i < lines.length; i++) {
+    const ln = lines[i];
+    if (ln.trimStart().startsWith("```")) { inCode = !inCode; buf.push(ln); continue; }
+    if (!inCode && ln.includes("|") && i + 1 < lines.length && isTableDelimiter(lines[i + 1])) {
+      flush();
+      const header = splitTableRow(ln);
+      const aligns = colAligns(lines[i + 1]);
+      const rows: string[][] = [];
+      let j = i + 2;
+      while (j < lines.length && lines[j].includes("|") && lines[j].trim() !== "" && !lines[j].trimStart().startsWith("```")) {
+        rows.push(splitTableRow(lines[j]));
+        j++;
+      }
+      blocks.push({ kind: "table", header, aligns, rows });
+      i = j - 1;
+      continue;
+    }
+    buf.push(ln);
+  }
+  flush();
+  return blocks;
+}
+
+export interface TableLayout {
+  ncol: number;
+  widths: number[];      // content width per column (excludes padding/border)
+  aligns: Align[];
+  header: string[];      // plain (markdown-stripped) cells, normalized to ncol
+  rows: string[][];
+}
+
+/**
+ * Normalize a parsed table and fit its columns to `maxWidth`. Cells keep their
+ * FULL text (the content view wraps them), so nothing is truncated — narrow
+ * columns just grow taller. Per-column overhead is paddingLeft+paddingRight+
+ * right-border = 3, plus 1 for the table's left border.
+ */
+export function computeTableLayout(header: string[], alignsIn: Align[], bodyRows: string[][], maxWidth: number): TableLayout {
+  const ncol = Math.max(header.length, ...bodyRows.map((r) => r.length), 1);
+  const aligns: Align[] = Array.from({ length: ncol }, (_, i) => alignsIn[i] ?? "left");
+  const norm = (r: string[]) => Array.from({ length: ncol }, (_, i) => plainInline(r[i] ?? ""));
+  const H = norm(header);
+  const R = bodyRows.map(norm);
+
+  // Natural width = longest word OR full cell, capped; min 3 so columns stay usable.
+  const longestWord = (s: string) => s.split(/\s+/).reduce((m, w) => Math.max(m, w.length), 0);
+  const widths = Array.from({ length: ncol }, (_, i) =>
+    Math.max(3, longestWord(H[i]), H[i].length, ...R.map((r) => Math.min(r[i].length, 28)), ...R.map((r) => longestWord(r[i]))));
+
+  const per = 3;
+  const total = () => 1 + widths.reduce((a, w) => a + w + per, 0);
+  let guard = 0;
+  while (total() > Math.max(20, maxWidth) && guard++ < 5000) {
+    let widest = 0;
+    for (let i = 1; i < ncol; i++) if (widths[i] > widths[widest]) widest = i;
+    if (widths[widest] <= 4) break;
+    widths[widest]--;
+  }
+  return { ncol, widths, aligns, header: H, rows: R };
 }
 
 export function renderMarkdown(md: string, maxWidth = 88): StyledText {
