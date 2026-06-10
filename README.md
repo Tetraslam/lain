@@ -4,8 +4,8 @@
 
 **a graph-based ideation engine**
 
-plant a seed. watch a graph of tool-using agents branch, research, and build on
-one another — until something extraordinary emerges.
+plant a seed. a graph of tool-using agents branches, researches, and builds on
+itself — until something extraordinary emerges.
 
 [![CI](https://github.com/Tetraslam/lain/actions/workflows/ci.yml/badge.svg)](https://github.com/Tetraslam/lain/actions/workflows/ci.yml)
 
@@ -15,37 +15,30 @@ one another — until something extraordinary emerges.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Tetraslam/lain/main/bootstrap.sh | bash
+```
 
+```bash
 lain init                                   # pick a provider, paste a key
 lain "a religion that worships entropy" --mission
 ```
 
-The installer brings its own prerequisites, `lain init` takes a minute, and the
-last line hands you a graph of developed ideas. Every exploration is one
-portable `.db` file.
+Every exploration is one portable `.db` file.
 
 ## What it does
 
-You give lain a seed. It branches into `n` directions, recurses to depth `m`,
-and expands every node with a tool-using **agent** — never a one-shot
-completion. Each node-agent can:
+A seed branches into `n` directions, recurses to depth `m`, and every node is
+expanded by a tool-using **agent** — never a one-shot completion. Each one can:
 
-- **read the whole graph** — study, diverge from, and build on other branches
-- **retrieve from your corpus** — drop in PDFs, notes, CSVs, images and it
-  grounds ideas in *your* material, not generic ones
-- **search & cite the web** — with the `research` lens it grounds claims in real
-  sources and footnotes them `[1]`
-- **share findings** — a discovery in one branch reaches all the others, so they
-  genuinely collaborate
-- **call tools & link branches** — extension tools, any remote **MCP** server,
-  and cross-links that wire the graph together
+- **read the whole graph** — diverge from and build on other branches
+- **ground in your corpus** — drop in PDFs, notes, CSVs, images
+- **search & cite the web** — the `research` lens footnotes real sources `[1]`
+- **share findings** — a discovery in one branch reaches all the others
+- **call MCP tools & link branches** — the graph wires itself together
 
-A **mission** gives the run a goal and a checklist of success criteria, then
-validates the finished graph against it. A **synthesis** pass surfaces the
-connections, contradictions, and emergent patterns across the whole thing.
-
-Explore it in the **CLI**, a keyboard-driven **TUI**, or a **web** UI — and sync
-it all to Obsidian.
+A **mission** gives the run a goal and a success checklist, then validates the
+finished graph against it. A **synthesis** pass surfaces the connections,
+contradictions, and emergent patterns. Explore in the **CLI**, a keyboard
+**TUI**, or a **web** UI — and sync it all to Obsidian.
 
 ## A taste
 
@@ -62,10 +55,11 @@ lain tree            lain show root-1            lain mission
 lain synthesize      lain export idea.db         lain sync idea.db
 ```
 
-## Tools beyond the graph
+## MCP tools
 
 Add any remote [MCP](https://modelcontextprotocol.io) server and its tools join
-the agents' toolbelt automatically — authenticate however the server expects:
+the agents' toolbelt — a web-search server like Firecrawl is what powers the
+`research` lens' citations.
 
 ```bash
 lain mcp add firecrawl https://mcp.firecrawl.dev/<key>/v2/mcp        # key in URL
@@ -75,9 +69,6 @@ lain mcp add svc https://mcp.example.com/v1 --header "X-Org: acme"   # arbitrary
 
 lain mcp test svc     # connect + list its tools     lain mcp list     # secrets redacted
 ```
-
-A web-search server (e.g. Firecrawl) is what powers the `research` lens'
-citations.
 
 ## Providers
 
@@ -92,16 +83,10 @@ lain update          # pull + rebuild — your .db files and config stay untouch
 lain uninstall
 ```
 
-## Build from source
+## From source
 
-Requires [bun](https://bun.sh):
-
-```bash
-bash install.sh      # build + put `lain` on your PATH
-pnpm test            # the full test suite
-```
-
-Architecture and internals live in [`AGENTS.md`](./AGENTS.md).
+Requires [bun](https://bun.sh). `bash install.sh` builds and puts `lain` on your
+PATH; `pnpm test` runs the suite. Internals live in [`AGENTS.md`](./AGENTS.md).
 
 <div align="center">
 <sub>named after lain iwakura. everything is connected.</sub>
