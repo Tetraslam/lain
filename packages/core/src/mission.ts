@@ -7,9 +7,11 @@
 //                  assertions. Contract-first so it reflects the goal, not a plan.
 //   • validator  — independently audits the finished graph against the contract
 //                  as a black box (reads node output, not worker reasoning).
-//   • orchestrator (planFixFeatures) — turns unmet assertions into targeted fix
-//                  work the workers (node-agents) then execute. Loops until the
-//                  contract is satisfied or a round budget is hit.
+//   • orchestrator (planMissionRevisions) — turns unmet assertions into in-place
+//                  REVISIONS of the responsible nodes (the validator's critique
+//                  is sent back to each node's author to correct/deepen it — no
+//                  new nodes). Loops until the contract is satisfied or the round
+//                  budget is hit.
 
 import type {
   AgentProvider,
@@ -252,62 +254,79 @@ ${graphOutline(graph, exploration)}`;
 }
 
 // ---------------------------------------------------------------------------
-// Orchestrator: turn unmet assertions into targeted fix features
+// Orchestrator: turn unmet assertions into in-place node revisions
 // ---------------------------------------------------------------------------
 
-const FIX_SYSTEM = `You are the orchestrator of an ideation mission steering it to completion. Given the unmet/partial assertions and the current idea-graph, propose targeted fix work: each fix is ONE new branch that closes a specific gap.
+const REVISE_SYSTEM = `You are the orchestrator of an ideation mission steering it to completion. An independent validator judged the idea-graph against the contract and flagged assertions as unmet/partial, citing the nodes responsible. Your job: decide which EXISTING nodes to REVISE so those assertions become satisfied. You do NOT add new nodes — you send the deficient nodes back to their author to correct and deepen.
 
-Return ONLY minified JSON: {"fixes":[{"parent":"<existing node id, or 'root'>","angle":"<the specific direction that will satisfy the gap>","assertions":["A2"]}]}
+Return ONLY minified JSON: {"revisions":[{"node":"<existing node id>","assertions":["A2"],"critique":"<concretely what this node must add or change to satisfy them>"}]}
 
 Rules:
-- At most ${"${MAX}"} fixes — only the highest-leverage ones.
-- Attach each fix under a TOP-LEVEL branch (a direct child of root, e.g. "root-2") or under "root" itself — a mission closes gaps by BROADENING coverage, not by burrowing deeper. Do NOT attach under deep leaf nodes; the exploration depth is capped at ${"${DEPTH}"} and fixes that would exceed it are reparented upward automatically.
+- At most ${"${MAX}"} revisions — target the nodes that most directly own each gap (prefer the node ids the validator cited; otherwise the single most relevant existing node).
+- ONE entry per node: if a node must satisfy several assertions, list them all together.
+- "critique" is a specific, actionable instruction to the node's author (what is missing and what to add), not vague praise.
 - No prose outside the JSON.`;
 
-export interface FixFeature {
-  parent: string;
-  angle: string;
+export interface MissionRevision {
+  /** The existing node to revise in place. */
+  nodeId: string;
+  /** Assertion ids this revision should make the node satisfy. */
   assertions: string[];
+  /** Concrete instruction for what the node must add/change. */
+  critique: string;
 }
 
-/** Plan targeted fix features for the assertions that aren't yet met. */
-export async function planFixFeatures(
+/**
+ * Decide which existing nodes to revise (in place) to close the contract gaps.
+ * Missions correct deficient nodes rather than spawning new ones.
+ */
+export async function planMissionRevisions(
   agent: AgentProvider,
   graph: Graph,
   exploration: Exploration,
   mission: Mission,
   report: MissionReport,
   maxFixes: number
-): Promise<FixFeature[]> {
+): Promise<MissionRevision[]> {
   const gaps = report.results.filter((r) => r.status !== "met");
   if (gaps.length === 0) return [];
   const gapText = gaps
     .map((g) => {
       const a = mission.assertions.find((x) => x.id === g.id);
-      return `${g.id} (${g.status}): ${a?.text ?? ""} — ${g.evidence}`;
+      return `${g.id} (${g.status}): ${a?.text ?? ""} — validator noted: ${g.evidence || "(absent)"}`;
     })
     .join("\n");
   const user = `Intent: ${mission.intent}
 
-Unmet/partial assertions:
+Unmet/partial assertions (with what the validator said, citing node ids):
 ${gapText}
 
 Current idea-graph:
 ${graphOutline(graph, exploration)}`;
 
-  const validIds = new Set(graph.getAllNodes(exploration.id).map((n) => n.id));
-  const fixSystem = FIX_SYSTEM.replace("${MAX}", String(maxFixes)).replace("${DEPTH}", String(exploration.m));
+  const validIds = new Set(
+    graph.getAllNodes(exploration.id).filter((n) => n.status === "complete").map((n) => n.id)
+  );
+  const system = REVISE_SYSTEM.replace("${MAX}", String(maxFixes));
   try {
-    const obj = extractJson(await agent.generateRaw(fixSystem, user, 900));
-    if (!obj?.fixes || !Array.isArray(obj.fixes)) return [];
-    return (obj.fixes as Record<string, unknown>[])
-      .map((f) => ({
-        parent: validIds.has(String(f.parent)) ? String(f.parent) : "root",
-        angle: String(f.angle ?? "").trim(),
-        assertions: Array.isArray(f.assertions) ? f.assertions.map(String) : [],
-      }))
-      .filter((f) => f.angle)
-      .slice(0, maxFixes);
+    const obj = extractJson(await agent.generateRaw(system, user, 900));
+    if (!obj?.revisions || !Array.isArray(obj.revisions)) return [];
+    // Merge by node so a node is revised once for all the assertions it owns.
+    const byNode = new Map<string, MissionRevision>();
+    for (const r of obj.revisions as Record<string, unknown>[]) {
+      const nodeId = String(r.node ?? "").trim();
+      if (!validIds.has(nodeId)) continue;
+      const assertions = Array.isArray(r.assertions) ? r.assertions.map(String) : [];
+      const critique = String(r.critique ?? "").trim();
+      const existing = byNode.get(nodeId);
+      if (existing) {
+        existing.assertions = [...new Set([...existing.assertions, ...assertions])];
+        if (critique) existing.critique = existing.critique ? `${existing.critique} ${critique}` : critique;
+      } else {
+        byNode.set(nodeId, { nodeId, assertions, critique });
+      }
+    }
+    return [...byNode.values()].slice(0, maxFixes);
   } catch {
     return [];
   }

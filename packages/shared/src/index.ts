@@ -447,7 +447,7 @@ export type LainEventType =
   | "plan:created"
   | "plan:complete"
   | "mission:validated"   // independent validation pass against the contract
-  | "mission:fix"         // a targeted fix-branch is being generated
+  | "mission:fix"         // a flagged node is being revised to close a contract gap
   | "error";
 
 export interface LainEvent {

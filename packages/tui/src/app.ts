@@ -1959,8 +1959,8 @@ ${dim(visible)}`;
             const data = event.data as { title?: string } | undefined;
             pushFeed(`✓ ${event.nodeId}  ${data?.title || "untitled"}`);
           } else if (event.type === "mission:fix") {
-            const f = event.data as { angle?: string; assertions?: string[] } | undefined;
-            pushFeed(`↻ closing gap [${(f?.assertions ?? []).join(", ")}] under ${event.nodeId}`);
+            const f = event.data as { assertions?: string[] } | undefined;
+            pushFeed(`↻ revising ${event.nodeId} to close [${(f?.assertions ?? []).join(", ")}]`);
           } else if (event.type === "mission:validated") {
             const r = event.data as { round?: number; satisfied?: boolean; results?: { status: string }[] } | undefined;
             const met = (r?.results ?? []).filter((x) => x.status === "met").length;

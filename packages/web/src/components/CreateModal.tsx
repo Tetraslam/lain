@@ -276,7 +276,7 @@ export function CreateModal({ onClose, onCreated }: CreateModalProps) {
               }
               case "mission:fix": {
                 const f = parsed.data ?? {};
-                pushActivity({ kind: "mission", text: `Closing gap [${(f.assertions ?? []).join(", ")}]`, node: parsed.nodeId });
+                pushActivity({ kind: "mission", text: `Revising to close [${(f.assertions ?? []).join(", ")}]`, node: parsed.nodeId });
                 break;
               }
               case "complete":

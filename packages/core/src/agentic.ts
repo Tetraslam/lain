@@ -41,6 +41,12 @@ export interface AgenticGenerateDeps {
   extensionTools?: ExtensionTool[];
   /** Tool ids to drop from the assembled toolbelt (per-run/config selection). */
   disabledTools?: string[];
+  /**
+   * Mission revision mode: the node already has content but an independent
+   * validator found it doesn't yet satisfy some assertions. The agent must
+   * REVISE the existing node (not write a fresh one) to close those gaps.
+   */
+  revision?: { assertions: { id: string; text: string }[]; critique: string };
   maxSteps?: number;
   maxTokens?: number;
   onStep?: AgentStepHandler;
@@ -65,7 +71,12 @@ When you are ready, you MUST finish by calling the \`submit_node\` tool exactly 
 - content: the node body in clean markdown (no title heading, no meta-commentary about your process).
 Do not write the node as prose in a normal message — always deliver it via \`submit_node\`.`;
 
-function buildTaskMessage(node: LainNode, graph: Graph, exploration: Exploration): string {
+function buildTaskMessage(
+  node: LainNode,
+  graph: Graph,
+  exploration: Exploration,
+  revision?: { assertions: { id: string; text: string }[]; critique: string }
+): string {
   const ancestors = graph.getAncestorChain(node.id);
   const siblings = graph.getSiblings(node.id).filter((s) => s.status === "complete");
 
@@ -94,6 +105,22 @@ function buildTaskMessage(node: LainNode, graph: Graph, exploration: Exploration
       ? `YOUR ASSIGNED DIRECTION for this node (${node.id}):\n${node.planSummary}`
       : `This is node ${node.id}. Develop a distinct, valuable direction from the seed/parent.`
   );
+
+  if (revision) {
+    const current = (node.content || "").trim();
+    parts.push(
+      `YOU ALREADY WROTE THIS NODE. Current content:\n"""\n${current.slice(0, 2400)}${current.length > 2400 ? "\n…" : ""}\n"""`
+    );
+    parts.push(
+      `An independent validator audited the whole graph against the mission contract and found THIS node does not yet satisfy:\n${revision.assertions
+        .map((a) => `  ${a.id}. ${a.text}`)
+        .join("\n")}\nValidator's critique: ${revision.critique}`
+    );
+    parts.push(
+      `REVISE this node so it concretely satisfies the above. Preserve and build on what already works — don't throw away good material or change the node's role in the graph; deepen and correct it. Research with your tools as needed, then deliver the COMPLETE updated node via submit_node.`
+    );
+    return parts.join("\n\n");
+  }
 
   parts.push(`Now research with your tools, then write the final node.`);
   return parts.join("\n\n");
@@ -178,7 +205,7 @@ export async function generateNodeAgentic(
   }
 
   const toolSpecs = [...tools.map((t) => t.spec), submitTool];
-  let messages = [userText(buildTaskMessage(node, deps.graph, deps.exploration))];
+  let messages = [userText(buildTaskMessage(node, deps.graph, deps.exploration, deps.revision))];
   let result = await runAgent({
     provider: deps.agent,
     system,

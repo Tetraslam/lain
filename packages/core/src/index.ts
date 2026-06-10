@@ -31,10 +31,10 @@ export {
   planMission,
   interviewMission,
   validateMission,
-  planFixFeatures,
+  planMissionRevisions,
   deriveIntentContract,
   parseContract,
-  type FixFeature,
+  type MissionRevision,
   type InterviewTurn,
   type InterviewResult,
 } from "./mission.js";

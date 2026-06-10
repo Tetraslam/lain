@@ -432,8 +432,8 @@ async function runExplore(args: ParsedArgs): Promise<void> {
           break;
         }
         case "mission:fix": {
-          const f = event.data as { angle?: string; assertions?: string[] } | undefined;
-          console.log(`  ↻ closing gap [${(f?.assertions ?? []).join(", ")}] under ${event.nodeId}: ${truncateStr(f?.angle ?? "", 70)}`);
+          const f = event.data as { critique?: string; assertions?: string[] } | undefined;
+          console.log(`  ↻ revising ${event.nodeId} to close [${(f?.assertions ?? []).join(", ")}]: ${truncateStr(f?.critique ?? "", 70)}`);
           break;
         }
         case "mission:validated": {

@@ -2,7 +2,7 @@ import { Graph } from "./graph.js";
 import { Storage } from "./storage.js";
 import { Corpus } from "./corpus.js";
 import { generateNodeAgentic } from "./agentic.js";
-import { validateMission, planFixFeatures } from "./mission.js";
+import { validateMission, planMissionRevisions } from "./mission.js";
 import type { LainTool } from "./tools.js";
 import type {
   AgentProvider,
@@ -296,24 +296,21 @@ export class Orchestrator {
     this.emit({ type: "mission:validated", explorationId, data: { round: report.round, satisfied: report.satisfied, results: report.results, summary: report.summary } });
 
     for (let round = 1; round <= maxRounds && !report.satisfied; round++) {
-      const fixes = await planFixFeatures(this.agent, this.graph, exploration, mission, report, maxFixes);
-      if (fixes.length === 0) break;
+      // Close gaps by REVISING the nodes the validator flagged — not by adding
+      // new nodes. The mission's job is to make the existing graph satisfy the
+      // contract, so a failed assertion sends its responsible node back to its
+      // author with the validator's critique.
+      const revisions = await planMissionRevisions(this.agent, this.graph, exploration, mission, report, maxFixes);
+      if (revisions.length === 0) break;
 
-      for (const fix of fixes) {
-        let parent = this.graph.getNode(fix.parent) ?? this.graph.getNode("root");
-        if (!parent) continue;
-        // Keep fix-branches within the exploration's configured depth: a mission
-        // closes gaps by broadening coverage, not by burrowing ever deeper. If the
-        // chosen parent would push the new child past depth `m` (e.g. it's a leaf,
-        // or a fix node from a prior round), walk up to the nearest ancestor that
-        // keeps the child within the depth budget.
-        while (parent.parentId && parent.depth + 1 > exploration.m) {
-          parent = this.graph.getNode(parent.parentId) ?? parent;
-        }
-        const direction = fix.assertions.length ? `${fix.angle} (fulfilling ${fix.assertions.join(", ")})` : fix.angle;
-        const children = this.graph.createChildNodes(explorationId, parent.id, 1, [direction]);
-        this.emit({ type: "mission:fix", explorationId, nodeId: parent.id, data: { angle: fix.angle, assertions: fix.assertions } });
-        await this.generateNodesBatch(children, exploration);
+      for (const rev of revisions) {
+        const node = this.graph.getNode(rev.nodeId);
+        if (!node) continue;
+        const assertions = mission.assertions
+          .filter((a) => rev.assertions.includes(a.id))
+          .map((a) => ({ id: a.id, text: a.text }));
+        this.emit({ type: "mission:fix", explorationId, nodeId: node.id, data: { assertions: rev.assertions, critique: rev.critique } });
+        await this.generateNode(this.graph.getNode(rev.nodeId)!, exploration, { assertions, critique: rev.critique });
       }
 
       report = await validateMission(this.agent, this.graph, exploration, mission, round);
@@ -515,7 +512,8 @@ export class Orchestrator {
 
   private async generateNode(
     node: LainNode,
-    exploration: Exploration
+    exploration: Exploration,
+    revision?: { assertions: { id: string; text: string }[]; critique: string }
   ): Promise<void> {
     this.storage.updateNodeStatus(node.id, "generating");
     this.emit({
@@ -583,6 +581,7 @@ export class Orchestrator {
             ? this.extensions.getTools([exploration.extension])
             : [],
           disabledTools: this.disabledTools,
+          revision,
           maxSteps: this.agentMaxSteps,
           maxTokens: this.agentMaxTokens,
           onStep: (step: AgentStepEvent) =>

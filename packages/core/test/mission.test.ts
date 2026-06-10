@@ -74,15 +74,18 @@ class MockMissionAgent implements AgentProvider {
     if (system.includes("decomposing a mission into FEATURES")) {
       return '{"features":[{"id":"F1","angle":"the risks","assertions":["A1"]},{"id":"F2","angle":"the benefits","assertions":["A2"]}]}';
     }
+    // Check the revise/orchestrator role before the validator role: the revise
+    // prompt also mentions "independent validator", so order matters here.
+    if (system.includes("orchestrator of an ideation mission")) {
+      // Revise an existing node (no new nodes) to close the A1 gap.
+      return '{"revisions":[{"node":"root-1","assertions":["A1"],"critique":"add the risks explicitly"}]}';
+    }
     if (system.includes("independent validator")) {
       this.validateCalls++;
       if (this.validateCalls === 1) {
         return '{"results":[{"id":"A1","status":"unmet","evidence":""},{"id":"A2","status":"met","evidence":"root-2"}],"summary":"risk not covered"}';
       }
       return '{"results":[{"id":"A1","status":"met","evidence":"root-3"},{"id":"A2","status":"met","evidence":"root-2"}],"summary":"complete"}';
-    }
-    if (system.includes("orchestrator of an ideation mission")) {
-      return '{"fixes":[{"parent":"root","angle":"explore the risks directly","assertions":["A1"]}]}';
     }
     return "{}";
   }
@@ -167,49 +170,52 @@ describe("mission lifecycle (plan → validate → fix → revalidate)", () => {
     expect(report!.round).toBe(1);                 // one fix round
     expect(agent.validateCalls).toBe(2);           // initial + after fix
 
-    // A fix branch was generated, and two reports were recorded.
-    expect(orch.getGraph().getAllNodes("e").length).toBeGreaterThan(before);
+    // The fix REVISED an existing node in place — no new nodes were added.
+    expect(orch.getGraph().getAllNodes("e").length).toBe(before);
     expect(storage.getMissionReports("e")).toHaveLength(2);
     orch.close();
   });
 
-  it("keeps fix-branches within the exploration depth (no burrowing past m)", async () => {
-    // An agent whose fix targets a DEEP leaf every round — the orchestrator must
-    // reparent upward so fixes never exceed the configured depth m.
-    class DeepFixAgent implements AgentProvider {
-      vc = 0;
+  it("revises nodes in place across rounds — never adds nodes or grows depth", async () => {
+    // The validator stays unmet so the fix loop runs every round; each round must
+    // REVISE the cited node (regenerate it), never spawn a new node.
+    const regenerated: string[] = [];
+    class ReviseAgent implements AgentProvider {
       async generate(r: GenerateRequest): Promise<GenerateResponse> {
-        return { title: `T ${r.node.id}`, content: `C ${r.node.id}`, model: "mock", provider: "anthropic" };
+        regenerated.push(r.node.id);
+        return { title: `T ${r.node.id}`, content: `C ${r.node.id} #${regenerated.filter((x) => x === r.node.id).length}`, model: "mock", provider: "anthropic" };
       }
       async generateStream(r: GenerateRequest, on: (c: string) => void): Promise<GenerateResponse> {
         const x = await this.generate(r); on(x.content); return x;
       }
       async plan(r: PlanRequest): Promise<PlanResponse> { return { directions: Array.from({ length: r.n }, (_, i) => `d${i + 1}`) }; }
       async generateRaw(system: string): Promise<string> {
-        if (system.includes("independent validator")) {
-          this.vc++;
-          // Stay unmet so the fix loop runs every round.
-          return '{"results":[{"id":"A1","status":"unmet","evidence":""}],"summary":"still missing"}';
-        }
         if (system.includes("orchestrator of an ideation mission")) {
-          // Deliberately target the deepest leaf to try to burrow past m.
-          return '{"fixes":[{"parent":"root-1-1","angle":"go deeper","assertions":["A1"]}]}';
+          return '{"revisions":[{"node":"root-1","assertions":["A1"],"critique":"go deeper on root-1"}]}';
+        }
+        if (system.includes("independent validator")) {
+          return '{"results":[{"id":"A1","status":"partial","evidence":"root-1 is shallow"}],"summary":"still shallow"}';
         }
         return "{}";
       }
     }
-    const agent = new DeepFixAgent();
-    const orch = new Orchestrator({ dbPath, agent });
-    await orch.explore({ id: "e", name: "n", seed: "x", n: 1, m: 2, strategy: "bf", planDetail: "sentence", extension: "freeform" });
+    const orch = new Orchestrator({ dbPath, agent: new ReviseAgent() });
+    await orch.explore({ id: "e", name: "n", seed: "x", n: 2, m: 2, strategy: "bf", planDetail: "sentence", extension: "freeform" });
     orch.getStorage().upsertMission({
       explorationId: "e", intent: "g",
       assertions: [{ id: "A1", text: "covers it" }],
       features: [], createdAt: new Date().toISOString(),
     });
 
+    const before = orch.getGraph().getAllNodes("e").length;
+    const beforeDepth = Math.max(...orch.getGraph().getAllNodes("e").map((n) => n.depth));
+    regenerated.length = 0;
     await orch.pursueMission("e", { maxRounds: 3 });
-    const maxDepth = Math.max(...orch.getGraph().getAllNodes("e").map((n) => n.depth));
-    expect(maxDepth).toBeLessThanOrEqual(2); // m = 2; fixes reparented upward, never deeper
+
+    const after = orch.getGraph().getAllNodes("e");
+    expect(after.length).toBe(before);                               // no new nodes
+    expect(Math.max(...after.map((n) => n.depth))).toBe(beforeDepth); // no deeper
+    expect(regenerated.filter((id) => id === "root-1").length).toBe(3); // root-1 revised each round
     orch.close();
   });
 });
