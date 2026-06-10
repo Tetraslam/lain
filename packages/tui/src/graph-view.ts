@@ -12,6 +12,8 @@ import {
 import { t, fg, bold } from "@opentui/core";
 import type { RenderContext, KeyEvent, StyledText } from "@opentui/core";
 import type { LainNode, Crosslink } from "@lain/shared";
+import { renderMarkdown, joinStyled } from "./markdown.js";
+import { tuneScroll } from "./scroll.js";
 
 // ============================================================================
 // Types
@@ -453,7 +455,8 @@ export class GraphView {
     });
     this.peekScroll = new ScrollBoxRenderable(this.renderer, { id: "graph-peek-scroll", scrollY: true, scrollX: false });
     this.peekBox.add(this.peekScroll);
-    this.peekText = new TextRenderable(this.renderer, { id: "graph-peek-text", content: "", width: "100%" });
+    tuneScroll(this.peekScroll);
+    this.peekText = new TextRenderable(this.renderer, { id: "graph-peek-text", content: "", width: "100%", wrapMode: "word", selectable: true });
     this.peekScroll.content.add(this.peekText);
 
     if (this.graphNodes.length > 0) this.updatePeek();
@@ -538,18 +541,23 @@ export class GraphView {
     const gn = this.graphNodes[this.selectedIdx];
     if (!gn) return;
     const ln = this.allLainNodes.find((n) => n.id === gn.id);
-    const content = ln?.content
-      ? (ln.content.length > 300 ? ln.content.slice(0, 297) + "…" : ln.content)
-      : "(no content)";
 
-    this.peekText.content = t`${bold(fg("#c0caf5")(gn.title))}
+    // Sidebar content width (box 32 − borders/padding) and a generous, space-
+    // aware character budget (the peek scrolls, so allow a few screenfuls).
+    const contentWidth = 28;
+    const rows = Math.max(12, this.vh - 8);
+    const limit = Math.max(1500, contentWidth * rows * 2);
+    const raw = ln?.content ?? "";
+    const truncated = raw.length > limit ? raw.slice(0, limit - 1) + "…" : raw;
+
+    const head = t`${bold(fg("#c0caf5")(gn.title))}
 
 ${fg("#7aa2f7")("id")}  ${gn.id}
 ${fg("#7aa2f7")("depth")}  ${String(gn.depth)}
 ${fg("#7aa2f7")("status")}  ${gn.status}
-
-${content}
 `;
+    const body = truncated ? renderMarkdown(truncated, contentWidth) : t`${fg("#565f89")("(no content)")}`;
+    this.peekText.content = joinStyled(head, "\n", body);
     this.peekScroll.scrollTop = 0;
   }
 }

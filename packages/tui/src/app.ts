@@ -15,6 +15,7 @@ import type { KeyEvent, SelectOption } from "@opentui/core";
 import { toast, mountToaster } from "./toast.js";
 import { copyToClipboard } from "./clipboard.js";
 import { mountNodeContent, clearContainer } from "./content-view.js";
+import { tuneScroll } from "./scroll.js";
 import { Storage, Graph, Orchestrator, Sync, Exporter, CanvasExporter, SynthesisEngine, Corpus, connectMcpServers, buildToolCatalog, checkForUpdate, planMission, interviewMission, addRecentDb, type InterviewTurn } from "@lain/core";
 import { buildExtensionRegistry } from "@lain/extensions";
 import { fileURLToPath } from "url";
@@ -244,6 +245,7 @@ export async function createApp(dbPathArg?: string): Promise<void> {
     id: "node-scroll", scrollY: true, scrollX: false, viewportCulling: true,
   });
   nodePanel.add(nodeScroll);
+  tuneScroll(nodeScroll);
 
   // Simple full-text surface (help, generating feed) — cheap to mutate.
   const nodeText = new TextRenderable(renderer, { id: "node-text", content: "", width: "100%", wrapMode: "word", selectable: true });
@@ -596,8 +598,9 @@ export async function createApp(dbPathArg?: string): Promise<void> {
     id: "synth-detail-scroll", width: "100%", height: "100%",
   });
   synthDetailBox.add(synthDetailScroll);
+  tuneScroll(synthDetailScroll);
   const synthDetailText = new TextRenderable(renderer, {
-    id: "synth-detail-text", content: "",
+    id: "synth-detail-text", content: "", width: "100%", wrapMode: "word", selectable: true,
   });
   synthDetailScroll.add(synthDetailText);
 

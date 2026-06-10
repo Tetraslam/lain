@@ -104,17 +104,17 @@ export type InterviewResult =
   | { done: false; questions: string[]; rationale?: string }
   | { done: true; mission: Mission };
 
-const INTERVIEW_SYSTEM = `You are a mission architect for an ideation engine. In THIS phase your only job is to make the goal unambiguous before any exploration begins — front-load the hard thinking.
+const INTERVIEW_SYSTEM = `You are setting up a "mission" for an ideation engine. Before any exploration runs, turn the seed into a sharp contract: the intent beneath it, plus a handful of testable assertions that define what an excellent exploration must achieve.
 
-Given the seed and any prior answers, decide ONE of:
-- If scope, intent, audience, constraints, or what would make the result excellent are still genuinely unclear, ask 2–4 SHARP clarifying questions whose answers would materially change what gets explored. Never ask generic, rhetorical, or yes/no-obvious questions. Don't re-ask anything already answered.
-- Only once the goal is clear, finalize the validation contract.
+Front-load the thinking, but respect the user's time and the team's capability. You're handing this to a strong, resourceful exploration team that can research, verify facts, and exercise judgment of its own — your job is to set a clear direction, not to interrogate. So default to proceeding: resolve ordinary ambiguity with well-reasoned assumptions and state them in the intent, rather than asking. Reserve a question for the rare genuine fork — a decision you truly cannot make sensibly on the user's behalf and that would send the whole exploration somewhere different. When in doubt, proceed.
+
+Trust the seed and the lens for what they are. Take the user's framing at face value, and let the lens (e.g. research, worldbuilding, debate) tell you how to treat the material and what "excellent" means here.
 
 Return ONLY minified JSON, exactly ONE of:
-  {"ready":false,"questions":["...","..."]}
+  {"ready":false,"questions":["..."]}
   {"ready":true,"intent":"<one vivid paragraph>","assertions":[{"id":"A1","text":"<testable, black-box-checkable property>"}],"features":[{"id":"F1","angle":"<branch angle>","assertions":["A1"]}]}
 
-When ready: 4–7 assertions written from the goal (not from any plan); produce exactly N features (given below) that each claim assertions and together cover every assertion. No prose outside the JSON.`;
+When ready: 4–7 assertions written from the goal (not from a plan); exactly N features (given below) that each claim assertions and together cover every assertion. No prose outside the JSON.`;
 
 /**
  * One turn of the clarification interview. Returns either more questions (the

@@ -97,7 +97,7 @@ class InterviewAgent implements AgentProvider {
   async generateStream(): Promise<GenerateResponse> { return this.generate(); }
   async plan(r: PlanRequest): Promise<PlanResponse> { return { directions: Array.from({ length: r.n }, (_, i) => `d${i}`) }; }
   async generateRaw(system: string, user: string): Promise<string> {
-    if (system.includes("make the goal unambiguous")) {
+    if (system.includes("Front-load the thinking")) {
       // First turn (no clarifications yet) → ask; subsequent → finalize.
       if (!user.includes("Clarifications so far")) {
         return '{"ready":false,"questions":["Who is the audience?","What is out of scope?"]}';
