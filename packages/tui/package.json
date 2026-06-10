@@ -18,5 +18,9 @@
     "@lain/extensions": "workspace:*",
     "@lain/shared": "workspace:*",
     "@opentui/core": "^0.3.2"
+  },
+  "main": "./src/app.ts",
+  "exports": {
+    ".": "./src/app.ts"
   }
 }

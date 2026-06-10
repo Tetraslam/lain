@@ -18,6 +18,8 @@
     "@lain/core": "workspace:*",
     "@lain/extensions": "workspace:*",
     "@lain/shared": "workspace:*",
+    "@lain/tui": "workspace:*",
+    "@lain/web": "workspace:*",
     "gray-matter": "^4.0.3"
   }
 }

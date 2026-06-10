@@ -13,8 +13,12 @@ import { fileURLToPath } from "url";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../..");
 
-const PORT = Number(process.env.LAIN_PORT) || 3001;
-const CWD = process.env.LAIN_CWD || process.cwd();
+let PORT = Number(process.env.LAIN_PORT) || 3001;
+let CWD = process.env.LAIN_CWD || process.cwd();
+// When running inside the compiled single binary, the built web client is
+// embedded as a string and injected via startServer(); otherwise we read from
+// the dist/ directory on disk (source / dev).
+let EMBEDDED_CLIENT: string | null = null;
 
 function makeAgent(config: LainConfig, credentials: Credentials) {
   const provider = config.defaultProvider;
@@ -97,9 +101,7 @@ function safeDbPath(dbFile: string): string | null {
 // Server
 // ============================================================================
 
-Bun.serve({
-  port: PORT,
-  async fetch(req) {
+async function handleRequest(req: Request): Promise<Response> {
     const url = new URL(req.url);
     const p = url.pathname;
 
@@ -721,6 +723,18 @@ Bun.serve({
     }
 
     // ---- Static file serving (built web UI) ----
+    const HTML_CACHE = "no-cache, no-store, must-revalidate";
+
+    // Single-binary mode: the whole client is inlined into one HTML string.
+    // It's a self-contained SPA, so any non-API route returns it.
+    if (EMBEDDED_CLIENT !== null) {
+      if (p.startsWith("/api/")) return json({ error: "Not found" }, 404);
+      return new Response(EMBEDDED_CLIENT, {
+        headers: { "Content-Type": "text/html", "Cache-Control": HTML_CACHE },
+      });
+    }
+
+    // Source / dev mode: serve the built files from dist/ on disk.
     const DIST_DIR = path.resolve(path.dirname(new URL(import.meta.url).pathname), "../../dist");
     const MIME_TYPES: Record<string, string> = {
       ".html": "text/html", ".js": "application/javascript", ".css": "text/css",
@@ -728,14 +742,11 @@ Bun.serve({
       ".json": "application/json", ".woff": "font/woff", ".woff2": "font/woff2",
     };
 
-    // Try to serve from dist. index.html must NEVER be cached — otherwise a
-    // browser keeps serving a stale app that points at old (now-gone) asset
-    // hashes after an update. Content-hashed assets (js/css) are immutable, so
-    // they can be cached aggressively.
+    // index.html must NEVER be cached — otherwise a browser keeps serving a
+    // stale app that points at old (now-gone) asset hashes after an update.
+    // Content-hashed assets (js/css) are immutable, so cache them aggressively.
     const isHtml = p === "/" || p.endsWith(".html");
-    const cacheHeader = isHtml
-      ? "no-cache, no-store, must-revalidate"
-      : "public, max-age=31536000, immutable";
+    const cacheHeader = isHtml ? HTML_CACHE : "public, max-age=31536000, immutable";
     let filePath = path.join(DIST_DIR, p === "/" ? "index.html" : p);
     if (fs.existsSync(filePath) && fs.statSync(filePath).isFile()) {
       const ext = path.extname(filePath);
@@ -749,12 +760,31 @@ Bun.serve({
     const indexPath = path.join(DIST_DIR, "index.html");
     if (!p.startsWith("/api/") && fs.existsSync(indexPath)) {
       return new Response(fs.readFileSync(indexPath), {
-        headers: { "Content-Type": "text/html", "Cache-Control": "no-cache, no-store, must-revalidate" },
+        headers: { "Content-Type": "text/html", "Cache-Control": HTML_CACHE },
       });
     }
 
     return json({ error: "Not found" }, 404);
-  },
-});
+}
 
-console.log(`lain API server running on http://localhost:${PORT}`);
+export interface StartServerOptions {
+  /** Port to listen on (default: $LAIN_PORT or 3001). */
+  port?: number;
+  /** Directory to discover/write explorations under (default: $LAIN_CWD or cwd). */
+  cwd?: string;
+  /** Pre-built single-file web client (for the compiled binary). */
+  clientHtml?: string | null;
+}
+
+/** Start the lain web server. Returns the Bun server handle. */
+export function startServer(opts: StartServerOptions = {}) {
+  if (opts.port != null) PORT = opts.port;
+  if (opts.cwd) CWD = path.resolve(opts.cwd);
+  if (opts.clientHtml != null) EMBEDDED_CLIENT = opts.clientHtml;
+  const server = Bun.serve({ port: PORT, fetch: handleRequest });
+  console.log(`lain API server running on http://localhost:${PORT}`);
+  return server;
+}
+
+// Auto-start when run directly (source / dev: `bun run src/server/index.ts`).
+if (import.meta.main) startServer();

@@ -5,3 +5,4 @@ dist/
 *.db.lock
 .turbo/
 .playwright-mcp/
+dist-bin/

@@ -57,11 +57,11 @@ export async function run(args: ParsedArgs): Promise<void> {
     return runVersion();
   }
 
-  // Auto-init on first run (unless --non-interactive or this IS the init/config command)
+  // Auto-init on first run — but never for informational/lifecycle commands,
+  // which must work on a fresh machine without dragging the user into setup.
+  const NO_AUTOINIT = new Set(["init", "help", "config", "version", "doctor", "update", "uninstall"]);
   if (
-    args.command !== "init" &&
-    args.command !== "help" &&
-    args.command !== "config" &&
+    !NO_AUTOINIT.has(args.command) &&
     !configExists() &&
     !getBoolFlag(args.flags, "non-interactive")
   ) {
@@ -1848,7 +1848,14 @@ function repoRoot(): string {
   return path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 }
 
+/** True when running as the compiled single binary (version baked in at build). */
+export function isCompiledBinary(): boolean {
+  return !!process.env.LAIN_VERSION;
+}
+
 function lainVersion(): string {
+  // Baked in at binary-compile time (scripts/build-binary.ts).
+  if (process.env.LAIN_VERSION) return process.env.LAIN_VERSION;
   try {
     const pkg = JSON.parse(fs.readFileSync(path.join(repoRoot(), "packages/cli/package.json"), "utf-8"));
     return pkg.version ?? "0.0.0";
@@ -1858,6 +1865,10 @@ function lainVersion(): string {
 }
 
 function gitInfo(root: string): { commit: string; branch: string } | null {
+  // Baked in at binary-compile time — git isn't available inside the binary.
+  if (process.env.LAIN_COMMIT) {
+    return { commit: process.env.LAIN_COMMIT, branch: process.env.LAIN_BRANCH || "release" };
+  }
   const opts = { encoding: "utf-8" as const, stdio: ["ignore", "pipe", "ignore"] as const };
   try {
     const commit = execFileSync("git", ["-C", root, "rev-parse", "--short", "HEAD"], opts).trim();
@@ -1875,7 +1886,8 @@ function runVersion(): void {
   console.log(kv("commit", git ? `${git.branch} ${c.cyan(git.commit)}` : dim("not a git checkout")));
   console.log(kv("schema", `v${CURRENT_SCHEMA_VERSION}`));
   console.log(kv("runtime", `bun ${process.versions.bun ?? "?"}`));
-  console.log(kv("source", dim(root)));
+  if (isCompiledBinary()) console.log(kv("build", dim(`single binary (${process.platform}-${process.arch})`)));
+  else console.log(kv("source", dim(root)));
   console.log("");
 }
 
@@ -1888,12 +1900,17 @@ async function runDoctor(): Promise<void> {
   const bunOk = !!process.versions.bun;
   console.log(`  ${ok(bunOk)} bun runtime ${dim(process.versions.bun ?? "(not running under bun!)")}`);
 
-  let pnpmOk = false;
-  try { execFileSync("pnpm", ["--version"], { stdio: "ignore" }); pnpmOk = true; } catch {}
-  console.log(`  ${ok(pnpmOk)} pnpm available`);
+  if (isCompiledBinary()) {
+    // Single binary: no toolchain or dist on disk — it's all baked in.
+    console.log(`  ${icon.ok()} single binary ${dim(`(${process.platform}-${process.arch}, ${lainVersion()})`)}`);
+  } else {
+    let pnpmOk = false;
+    try { execFileSync("pnpm", ["--version"], { stdio: "ignore" }); pnpmOk = true; } catch {}
+    console.log(`  ${ok(pnpmOk)} pnpm available`);
 
-  const distOk = fs.existsSync(path.join(root, "packages/cli/dist/index.js"));
-  console.log(`  ${ok(distOk)} build present ${dim(distOk ? "(dist/)" : "(run `lain update`)")}`);
+    const distOk = fs.existsSync(path.join(root, "packages/cli/dist/index.js"));
+    console.log(`  ${ok(distOk)} build present ${dim(distOk ? "(dist/)" : "(run `lain update`)")}`);
+  }
 
   const cfgOk = configExists();
   console.log(`  ${ok(cfgOk)} global config ${dim(cfgOk ? "(~/.config/lain)" : "(run `lain init`)")}`);
@@ -1912,6 +1929,13 @@ async function runDoctor(): Promise<void> {
     console.log(`  ${icon.dot()} ${mcpCount} MCP server(s) configured`);
   }
 
+  if (isCompiledBinary()) {
+    const git = gitInfo(root);
+    console.log(`  ${icon.dot()} ${dim(`release ${git?.commit ?? ""} — update with`)} ${c.cyan("lain update")}`);
+    console.log("");
+    return;
+  }
+
   const git = gitInfo(root);
   console.log(`  ${icon.dot()} ${git ? `git ${git.branch} @ ${c.cyan(git.commit)}` : dim("not a git checkout (self-update unavailable)")}`);
 
@@ -1921,8 +1945,21 @@ async function runDoctor(): Promise<void> {
   console.log("");
 }
 
+const INSTALL_ONE_LINER = "curl -fsSL https://tetraslam.github.io/lain/install | bash";
+
 function runUpdate(): void {
   const root = repoRoot();
+  if (isCompiledBinary()) {
+    // Single binary: re-run the installer, which fetches the latest binary.
+    console.log("Updating lain (re-running the installer for the latest binary)...");
+    try {
+      execFileSync("bash", ["-c", INSTALL_ONE_LINER], { stdio: "inherit" });
+      console.log(`\nUpdated. Your explorations (.db) and config are untouched.`);
+    } catch (err: any) {
+      console.error(`Update failed: ${err.message}\nRe-run manually:\n  ${INSTALL_ONE_LINER}`);
+    }
+    return;
+  }
   if (!gitInfo(root)) {
     console.error("lain isn't a git checkout here, so `update` can't pull. Reinstall from source.");
     return;

@@ -12,7 +12,8 @@
     "test": "turbo test",
     "lint": "turbo lint",
     "clean": "turbo clean",
-    "lain": "bun packages/cli/dist/index.js"
+    "lain": "bun packages/cli/dist/index.js",
+    "build:binary": "bun scripts/build-binary.ts"
   },
   "devDependencies": {
     "@types/node": "^25.6.0",
