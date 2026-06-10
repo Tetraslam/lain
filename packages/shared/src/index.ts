@@ -28,6 +28,7 @@ export {
   saveCredentials,
   saveWorkspaceConfig,
   configExists,
+  removeMcpServer,
   unsetConfigPath,
   unsetCredentialPath,
   configPaths,

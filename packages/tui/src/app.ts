@@ -20,7 +20,7 @@ import { Storage, Graph, Orchestrator, Sync, Exporter, CanvasExporter, Synthesis
 import { buildExtensionRegistry } from "@lain/extensions";
 import { fileURLToPath } from "url";
 import type { LainNode, Exploration, Strategy, PlanDetail, Mission, SettingField, LainConfig, Credentials, ToolCatalog, ToolGroup, ToolSelection, McpServerConfig } from "@lain/shared";
-import { generateId, SETTINGS_SECTIONS, SETTINGS_FIELDS, applySettings, resolveSettingValue, coerceSettingValue, saveConfig, normalizeToolSelection, resolveDisabledToolIds, toggleGroup, toggleTool, isGroupEnabled, isToolEnabled, countActiveTools } from "@lain/shared";
+import { generateId, SETTINGS_SECTIONS, SETTINGS_FIELDS, applySettings, resolveSettingValue, coerceSettingValue, saveConfig, removeMcpServer, normalizeToolSelection, resolveDisabledToolIds, toggleGroup, toggleTool, isGroupEnabled, isToolEnabled, countActiveTools } from "@lain/shared";
 import { loadConfig, loadCredentials, createProviderFromCredentials } from "./config-loader.js";
 import { GraphView } from "./graph-view.js";
 import * as fs from "fs";
@@ -1958,10 +1958,8 @@ ${dim(
       return;
     }
     const name = row.group.id.slice("mcp:".length);
-    const servers = { ...(loadConfig().mcpServers ?? {}) };
-    if (!servers[name]) { toast.warning(`No server "${name}" in config`); return; }
-    delete servers[name];
-    saveConfig({ mcpServers: servers });
+    if (!(loadConfig().mcpServers ?? {})[name]) { toast.warning(`No server "${name}" in config`); return; }
+    removeMcpServer(name); // not saveConfig — a merge would never drop the key
     toast.success(`Removed "${name}"`);
     await loadToolsOverlay();
   }

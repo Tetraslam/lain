@@ -47,6 +47,7 @@ import {
   saveCredentials,
   saveWorkspaceConfig,
   configExists,
+  removeMcpServer,
 } from "./config.js";
 import { findDb, createProviderFromCredentials, truncateStr } from "./commands/helpers.js";
 import { banner, rule, section, kv, icon, c, bold, dim } from "./style.js";
@@ -1591,9 +1592,7 @@ async function runMcp(args: ParsedArgs): Promise<void> {
   if (sub === "remove") {
     const name = args.positional[1];
     if (!name || !servers[name]) throw new Error(`No MCP server named "${name}".`);
-    const next = { ...servers };
-    delete next[name];
-    saveConfig({ mcpServers: next });
+    removeMcpServer(name); // not saveConfig — a merge would never drop the key
     console.log(`Removed MCP server "${name}".`);
     return;
   }

@@ -9,6 +9,7 @@ export {
   saveCredentials,
   saveWorkspaceConfig,
   configExists,
+  removeMcpServer,
   slugify,
   type Credentials,
 } from "@lain/shared";

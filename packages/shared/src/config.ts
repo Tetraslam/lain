@@ -117,6 +117,21 @@ export function configExists(): boolean {
   return fs.existsSync(GLOBAL_CONFIG_FILE);
 }
 
+/**
+ * Remove a single MCP server from the global config. This needs its own path
+ * because saveConfig() deep-merges — re-saving the map minus a key would never
+ * actually drop it. Deletes the exact key (handles names with dots). No-op if
+ * absent.
+ */
+export function removeMcpServer(name: string): void {
+  if (!fs.existsSync(GLOBAL_CONFIG_FILE)) return;
+  let obj: Record<string, unknown>;
+  try { obj = JSON.parse(fs.readFileSync(GLOBAL_CONFIG_FILE, "utf-8")); } catch { return; }
+  const servers = obj.mcpServers;
+  if (servers && typeof servers === "object") delete (servers as Record<string, unknown>)[name];
+  fs.writeFileSync(GLOBAL_CONFIG_FILE, JSON.stringify(obj, null, 2) + "\n");
+}
+
 /** Delete a dotted path from a JSON file in place (no-op if absent or corrupt). */
 function deletePathInFile(file: string, dotted: string): void {
   if (!fs.existsSync(file)) return;

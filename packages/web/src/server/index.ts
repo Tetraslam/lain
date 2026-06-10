@@ -6,7 +6,7 @@
 import { Storage, Graph, Orchestrator, Sync, Exporter, SynthesisEngine, Corpus, checkForUpdate, collectDbFiles, addRecentDb, getDiscoveryDirs, addDiscoveryDir, removeDiscoveryDir, interviewMission, buildToolCatalog, type InterviewTurn } from "@lain/core";
 import { createProvider } from "@lain/agents";
 import { buildExtensionRegistry } from "@lain/extensions";
-import { generateId, loadConfig, loadCredentials, saveConfig, buildSettingsView, applySettings, configPaths, normalizeToolSelection, resolveDisabledToolIds, type Strategy, type PlanDetail, type Provider, type Credentials, type LainConfig, type Mission, type SettingUpdate, type ToolSelection, type McpServerConfig } from "@lain/shared";
+import { generateId, loadConfig, loadCredentials, saveConfig, buildSettingsView, applySettings, configPaths, normalizeToolSelection, removeMcpServer, resolveDisabledToolIds, type Strategy, type PlanDetail, type Provider, type Credentials, type LainConfig, type Mission, type SettingUpdate, type ToolSelection, type McpServerConfig } from "@lain/shared";
 import * as fs from "fs";
 import * as path from "path";
 import { fileURLToPath } from "url";
@@ -203,10 +203,7 @@ async function handleRequest(req: Request): Promise<Response> {
     }
     if (p === "/api/mcp" && req.method === "DELETE") {
       const body = await req.json() as { name: string };
-      const config = loadConfig(CWD);
-      const servers = { ...(config.mcpServers ?? {}) };
-      delete servers[body.name];
-      saveConfig({ mcpServers: servers });
+      removeMcpServer(body.name); // not saveConfig — a merge would never drop the key
       return json({ ok: true });
     }
 

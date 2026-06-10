@@ -10,7 +10,8 @@
     "build": "vite build",
     "preview": "vite preview",
     "clean": "rm -rf dist",
-    "test:e2e": "bun test/e2e/web.e2e.ts"
+    "test:e2e": "bun test/e2e/web.e2e.ts",
+    "test": "bun test"
   },
   "dependencies": {
     "@lain/agents": "workspace:*",
