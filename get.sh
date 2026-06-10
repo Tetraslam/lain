@@ -47,7 +47,12 @@ case "$(uname -m)" in
   aarch64|arm64)  ARCH=arm64 ;;
   *) warn "Unsupported arch $(uname -m) for a prebuilt binary."; build_from_source ;;
 esac
-# We don't ship musl binaries yet — build from source on Alpine/musl.
+# Prebuilt targets: linux-x64, linux-arm64, darwin-arm64. Everything else
+# (Intel macs, Alpine/musl) builds from source.
+if [ "$OS" = "darwin" ] && [ "$ARCH" = "x64" ]; then
+  warn "No prebuilt binary for Intel macOS — building from source."
+  build_from_source
+fi
 if [ "$OS" = "linux" ] && ldd --version 2>&1 | grep -qi musl; then
   warn "musl libc detected — no prebuilt binary for musl yet."
   build_from_source

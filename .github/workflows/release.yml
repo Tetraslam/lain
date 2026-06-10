@@ -28,8 +28,6 @@ jobs:
             asset: lain-linux-x64
           - runner: ubuntu-24.04-arm
             asset: lain-linux-arm64
-          - runner: macos-13
-            asset: lain-darwin-x64
           - runner: macos-14
             asset: lain-darwin-arm64
     steps:
