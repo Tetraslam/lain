@@ -66,14 +66,17 @@ if ! command -v node >/dev/null 2>&1; then
 fi
 command -v node >/dev/null 2>&1 || { err "✗ node is required to build and could not be installed."; exit 1; }
 
-# --- pnpm: provision if missing (corepack, else bun global) ------------------
+# --- pnpm: provision via bun (NOT corepack) ----------------------------------
+# We deliberately avoid corepack: the version bundled with current Node fails to
+# verify the registry signature ("Cannot find matching keyid") and, worse,
+# `corepack enable` leaves a poisoned `pnpm` shim that crashes at runtime. A
+# bun-installed pnpm runs fine on the Node we just ensured. Belt-and-suspenders:
+# disable corepack signature checks in case anything in the build invokes it.
+export COREPACK_INTEGRITY_KEYS=0
 if ! command -v pnpm >/dev/null 2>&1; then
   echo "Provisioning pnpm..."
-  if command -v corepack >/dev/null 2>&1; then corepack enable pnpm >/dev/null 2>&1 || true; fi
-  if ! command -v pnpm >/dev/null 2>&1; then
-    bun install -g pnpm >/dev/null 2>&1 || true
-    ensure_path "$(bun pm bin -g 2>/dev/null || echo "$HOME/.bun/bin")"
-  fi
+  bun install -g pnpm >/dev/null 2>&1 || bun install -g pnpm || true
+  ensure_path "$(bun pm bin -g 2>/dev/null || echo "$HOME/.bun/bin")"
 fi
 command -v pnpm >/dev/null 2>&1 || { err "✗ pnpm could not be provisioned. Install it: https://pnpm.io"; exit 1; }
 
