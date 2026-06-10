@@ -47,7 +47,7 @@ export interface OrchestratorOptions {
   agentic?: boolean;
   /** Max agent steps (tool round-trips) per node when agentic. Default 10. */
   agentMaxSteps?: number;
-  /** Max output tokens per agent turn when agentic. Default 4096 (node bodies are long). */
+  /** Max output tokens per agent turn when agentic. Default 16384 (node bodies are long; a small cap truncates submit_node). */
   agentMaxTokens?: number;
   /** Shared corpus for retrieval tools (created from the same db if omitted). */
   corpus?: Corpus | null;
@@ -88,7 +88,7 @@ export class Orchestrator {
     this.onEvent = options.onEvent ?? (() => {});
     this.agentic = options.agentic ?? false;
     this.agentMaxSteps = options.agentMaxSteps ?? 10;
-    this.agentMaxTokens = options.agentMaxTokens ?? 4096;
+    this.agentMaxTokens = options.agentMaxTokens ?? 16384;
     // Reuse the orchestrator's Storage for the corpus so they share one db handle.
     this.corpus = options.corpus ?? (this.agentic ? new Corpus(this.storage) : null);
     this.extraTools = options.extraTools ?? [];

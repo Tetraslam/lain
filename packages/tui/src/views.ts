@@ -66,7 +66,7 @@ export function buildTreeItems(node: LainNode, allNodes: LainNode[], prefix = ""
 }
 
 /** Build the styled content view for a single node (breadcrumb, meta, body, links, notes, children). */
-export function buildNodeContent(node: LainNode, graph: Graph, allNodes: LainNode[], storage?: Storage): StyledText {
+export function buildNodeContent(node: LainNode, graph: Graph, allNodes: LainNode[], storage?: Storage, contentWidth = 88): StyledText {
   const ancestors = graph.getAncestorChain(node.id);
   let breadcrumb = "";
   if (ancestors.length > 0) {
@@ -120,7 +120,7 @@ ${fg(c.muted)(sep)}
 ${fg(c.blue)("id")}  ${node.id}  ${fg(c.muted)("·")}  ${fg(c.blue)("depth")}  ${String(node.depth)}  ${fg(c.muted)("·")}  ${fg(c.blue)("branch")}  ${String(node.branchIndex)}  ${fg(c.muted)("·")}  ${fg(statusColor)(node.status)}
 ${metaExtraStr}
 `;
-  const body = node.content ? renderMarkdown(node.content) : t`${dim("(no content)")}`;
+  const body = node.content ? renderMarkdown(node.content, contentWidth) : t`${dim("(no content)")}`;
   return joinStyled(head, body, `${crosslinksStr}${notesStr}${childrenStr}`);
 }
 

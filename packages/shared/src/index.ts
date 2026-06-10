@@ -410,7 +410,7 @@ export const DEFAULT_CONFIG: LainConfig = {
   defaultStrategy: "bf",
   defaultPlanDetail: "sentence",
   defaultExtension: "freeform",
-  maxTokens: 4096,
+  maxTokens: 16384,
   concurrency: 5,
   defaultAgentic: false,
   defaultMissionRounds: 2,

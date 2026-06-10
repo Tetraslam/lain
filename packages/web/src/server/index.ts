@@ -373,6 +373,7 @@ Bun.serve({
           try {
             const orchestrator = new Orchestrator({
               dbPath, agent, concurrency: config.concurrency, streaming: !agentic, extensions, agentic,
+              agentMaxTokens: config.maxTokens,
               extraTools: mcpPool?.tools ?? [],
               disabledTools: disabledToolIds,
               onEvent: (event) => {
@@ -480,6 +481,7 @@ Bun.serve({
 
       const orchestrator = new Orchestrator({
         dbPath: dbPath, agent, streaming: !useAgentic, extensions, agentic: useAgentic,
+        agentMaxTokens: config.maxTokens,
         extraTools: mcpPool?.tools ?? [], disabledTools: disabledToolIds,
       });
       const newNodes = await orchestrator.extendNode(exp.id, nodeId, n || exp.n);

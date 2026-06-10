@@ -52,7 +52,102 @@ function renderInlineChunks(text: string): TextChunk[] {
   return out;
 }
 
-export function renderMarkdown(md: string): StyledText {
+// ---------------------------------------------------------------------------
+// GFM tables — rendered as a clean, aligned box (Tokyo Night)
+// ---------------------------------------------------------------------------
+
+type Align = "left" | "right" | "center";
+
+/** Split a table row into trimmed cells (tolerant of missing edge pipes). */
+function splitTableRow(s: string): string[] {
+  let t = s.trim();
+  if (t.startsWith("|")) t = t.slice(1);
+  if (t.endsWith("|")) t = t.slice(0, -1);
+  return t.split(/(?<!\\)\|/).map((cell) => cell.trim().replace(/\\\|/g, "|"));
+}
+
+/** Is this line a GFM delimiter row, e.g. `|---|:--:|--:|`? */
+function isTableDelimiter(s: string): boolean {
+  const t = s.trim();
+  if (!t.includes("-") || !/^[|\s:.-]+$/.test(t)) return false;
+  const cells = splitTableRow(t);
+  return cells.length > 0 && cells.every((cell) => /^:?-+:?$/.test(cell.replace(/\s+/g, "")));
+}
+
+function colAligns(delim: string): Align[] {
+  return splitTableRow(delim).map((cell) => {
+    const x = cell.replace(/\s+/g, "");
+    const left = x.startsWith(":");
+    const right = x.endsWith(":");
+    return left && right ? "center" : right ? "right" : "left";
+  });
+}
+
+/** Strip inline markdown markers to visible text (cells render plain, aligned). */
+function plainInline(s: string): string {
+  return s
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, "")
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+    .replace(/(\*\*\*|___)(.+?)\1/g, "$2")
+    .replace(/(\*\*|__)(.+?)\1/g, "$2")
+    .replace(/(\*|_)(.+?)\1/g, "$2")
+    .replace(/~~(.+?)~~/g, "$1")
+    .replace(/`([^`]+)`/g, "$1")
+    .trim();
+}
+
+function padCell(s: string, w: number, align: Align): string {
+  let txt = s;
+  if (txt.length > w) txt = w <= 1 ? txt.slice(0, w) : txt.slice(0, w - 1) + "…";
+  const gap = w - txt.length;
+  if (gap <= 0) return txt;
+  if (align === "right") return " ".repeat(gap) + txt;
+  if (align === "center") { const left = Math.floor(gap / 2); return " ".repeat(left) + txt + " ".repeat(gap - left); }
+  return txt + " ".repeat(gap);
+}
+
+/** Render a parsed table into styled lines (one TextChunk[] per output line). */
+function renderTable(header: string[], alignsIn: Align[], bodyRows: string[][], maxWidth: number): TextChunk[][] {
+  const ncol = Math.max(header.length, ...bodyRows.map((r) => r.length), 1);
+  const aligns: Align[] = Array.from({ length: ncol }, (_, i) => alignsIn[i] ?? "left");
+  const norm = (r: string[]) => Array.from({ length: ncol }, (_, i) => plainInline(r[i] ?? ""));
+  const H = norm(header);
+  const B = bodyRows.map(norm);
+
+  const widths = Array.from({ length: ncol }, (_, i) =>
+    Math.max(1, H[i].length, ...B.map((r) => r[i].length)));
+
+  // Shrink the widest columns until the whole table fits maxWidth.
+  const frame = ncol + 1; // vertical borders
+  const total = () => widths.reduce((a, w) => a + w + 2, 0) + frame;
+  let guard = 0;
+  while (total() > Math.max(24, maxWidth) && guard++ < 2000) {
+    let widest = 0;
+    for (let i = 1; i < ncol; i++) if (widths[i] > widths[widest]) widest = i;
+    if (widths[widest] <= 4) break;
+    widths[widest]--;
+  }
+
+  const mut = (s: string) => fg(c.muted)(s);
+  const rule = (l: string, mid: string, r: string): TextChunk[] =>
+    [mut(l + widths.map((w) => "─".repeat(w + 2)).join(mid) + r)];
+
+  const lines: TextChunk[][] = [];
+  lines.push(rule("┌", "┬", "┐"));
+  const head: TextChunk[] = [mut("│")];
+  H.forEach((cell, i) => { head.push(bold(fg(c.bright)(" " + padCell(cell, widths[i], aligns[i]) + " ")), mut("│")); });
+  lines.push(head);
+  lines.push(rule("├", "┼", "┤"));
+  for (const r of B) {
+    const row: TextChunk[] = [mut("│")];
+    r.forEach((cell, i) => { row.push(fg(c.fg)(" " + padCell(cell, widths[i], aligns[i]) + " "), mut("│")); });
+    lines.push(row);
+  }
+  lines.push(rule("└", "┴", "┘"));
+  return lines;
+}
+
+export function renderMarkdown(md: string, maxWidth = 88): StyledText {
   if (!md) return new StyledText([]);
   const lines = md.split("\n");
   const out: TextChunk[] = [];
@@ -66,7 +161,8 @@ export function renderMarkdown(md: string): StyledText {
   let inCode = false;
   let codeLang = "";
 
-  for (const ln of lines) {
+  for (let i = 0; i < lines.length; i++) {
+    const ln = lines[i];
     const trimmed = ln.trimStart();
 
     // Code fence
@@ -76,6 +172,23 @@ export function renderMarkdown(md: string): StyledText {
       continue;
     }
     if (inCode) { line([fg(c.muted)("│ "), fg(c.green)(ln)]); continue; }
+
+    // GFM table — a header row followed by a delimiter row (|---|:--:|…).
+    if (ln.includes("|") && i + 1 < lines.length && isTableDelimiter(lines[i + 1])) {
+      const header = splitTableRow(ln);
+      const aligns = colAligns(lines[i + 1]);
+      const rows: string[][] = [];
+      let j = i + 2;
+      while (j < lines.length && lines[j].includes("|") && lines[j].trim() !== "" && !lines[j].trimStart().startsWith("```")) {
+        rows.push(splitTableRow(lines[j]));
+        j++;
+      }
+      line([]);
+      for (const trow of renderTable(header, aligns, rows, maxWidth)) line(trow);
+      line([]);
+      i = j - 1;
+      continue;
+    }
 
     // Horizontal rule
     if (/^(---+|\*\*\*+|___+)$/.test(ln.trim())) { line([fg(c.muted)("─".repeat(42))]); continue; }

@@ -211,6 +211,8 @@ export async function createApp(dbPathArg?: string): Promise<void> {
   explorationContainer.add(expContent);
 
   const treePanelWidth = termW < 100 ? Math.floor(termW * 0.4) : termW < 160 ? 44 : 54;
+  // Width available for node content (right pane): term − tree panel − gaps/padding/scrollbar.
+  const contentWidth = Math.max(40, termW - treePanelWidth - 7);
 
   const treePanel = new BoxRenderable(renderer, {
     id: "tree-panel", width: treePanelWidth, height: "100%",
@@ -852,7 +854,7 @@ ${annotation.merged ? dim("Already merged.") : dim("m — merge  ·  d — dismi
     });
     treeSelect.setSelectedIndex(0);
 
-    nodeText.content = buildNodeContent(root, graph, allNodes, storage ?? undefined);
+    nodeText.content = buildNodeContent(root, graph, allNodes, storage ?? undefined, contentWidth);
     expFooterText.content = exploringFooter();
 
     mode = "exploring";
@@ -905,7 +907,7 @@ ${annotation.merged ? dim("Already merged.") : dim("m — merge  ·  d — dismi
 
   function showNode(node: LainNode) {
     if (!graph) return;
-    nodeText.content = buildNodeContent(node, graph, allNodes, storage ?? undefined);
+    nodeText.content = buildNodeContent(node, graph, allNodes, storage ?? undefined, contentWidth);
     nodeScroll.scrollTop = 0;
   }
 
@@ -1961,7 +1963,7 @@ ${dim(visible)}`;
 
     try {
       const orchestrator = new Orchestrator({
-        dbPath: newDbPath, agent, concurrency: config.concurrency, agentic: true, extensions, extraTools: mcpPool.tools, disabledTools: disabledToolIds,
+        dbPath: newDbPath, agent, concurrency: config.concurrency, agentic: true, extensions, agentMaxTokens: config.maxTokens, extraTools: mcpPool.tools, disabledTools: disabledToolIds,
         onEvent: (event) => {
           if (event.type === "plan:complete") {
             const d = event.data as { directions?: string[] } | undefined;

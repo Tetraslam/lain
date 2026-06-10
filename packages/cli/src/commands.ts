@@ -394,6 +394,7 @@ async function runExplore(args: ParsedArgs): Promise<void> {
     extensions,
     agentic,
     agentMaxSteps,
+    agentMaxTokens: config.maxTokens,
     extraTools: mcpPool?.tools ?? [],
     disabledTools: disabledToolIds,
     onEvent: (event) => {
@@ -813,9 +814,10 @@ async function runResume(args: ParsedArgs): Promise<void> {
     dbPath,
     agent,
     disabledTools: disabledToolIds,
-    concurrency: getNumFlag(args.flags, "concurrency", "c") ?? 5,
+    concurrency: getNumFlag(args.flags, "concurrency", "c") ?? config.concurrency,
     extensions: buildExtensionRegistry(),
     agentic,
+    agentMaxTokens: config.maxTokens,
     extraTools: mcpPool?.tools ?? [],
     onEvent: (event) => {
       if (event.type === "node:complete") {

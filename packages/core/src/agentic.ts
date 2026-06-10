@@ -177,10 +177,18 @@ export async function generateNodeAgentic(
 
   const dispatch: ToolDispatch = async (call) => {
     if (call.name === "submit_node") {
-      submitted = {
-        title: String(call.input.title ?? "").replace(/^#+\s*/, "").trim() || "Untitled",
-        content: String(call.input.content ?? "").trim(),
-      };
+      const title = String(call.input.title ?? "").replace(/^#+\s*/, "").trim();
+      const content = String(call.input.content ?? "").trim();
+      // Safety net: never save a blank node. If the body is empty (e.g. the
+      // tool-call JSON got truncated, or the model slipped up), ask it to
+      // resubmit the full content rather than aborting with nothing.
+      if (!content) {
+        return {
+          content: [{ type: "text", text: "Your submit_node call arrived with EMPTY content — it was likely cut off. Call submit_node again with the FULL node body in `content`; if it's very long, tighten it so the whole thing fits in one message." }] as ToolResultBlock[],
+          isError: true,
+        };
+      }
+      submitted = { title: title || "Untitled", content };
       abort.abort();
       return { content: [{ type: "text", text: "Node saved." }] as ToolResultBlock[], summary: submitted.title };
     }
