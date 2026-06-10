@@ -75,11 +75,24 @@ export function buildToolContext(args: {
   return args;
 }
 
+/** A tool id counts as web search if it's an MCP tool whose name implies it. */
+const WEB_SEARCH_RE = /(web[_-]?search|search|scrape|crawl|fetch|tavily|brave|exa|serp|google|bing|perplexity|firecrawl)/i;
+
+/**
+ * Does the active toolset include a web-search capability? We only consider MCP
+ * tools (prefix `mcp_`) so the built-in `search_nodes`/`search_corpus` don't
+ * count — those search the graph/corpus, not the live web.
+ */
+export function hasWebSearchTool(toolIds: string[]): boolean {
+  return toolIds.some((id) => id.startsWith("mcp_") && WEB_SEARCH_RE.test(id));
+}
+
 /**
  * The default toolbelt for node generation. `hasCorpus` controls whether the
- * corpus tools are advertised (no point offering them when nothing's ingested).
+ * corpus tools are advertised; `citations` adds the `cite`/`list_citations`
+ * tools (enabled for lenses that ground claims in web sources).
  */
-export function buildNodeTools(opts: { hasCorpus: boolean }): LainTool[] {
+export function buildNodeTools(opts: { hasCorpus: boolean; citations?: boolean }): LainTool[] {
   const tools: LainTool[] = [
     {
       spec: {
@@ -212,6 +225,52 @@ export function buildNodeTools(opts: { hasCorpus: boolean }): LainTool[] {
       },
     },
   ];
+
+  if (opts.citations) {
+    tools.push(
+      {
+        spec: {
+          name: "cite",
+          description:
+            "Register a real web source you actually retrieved (via your search/scrape tools) to back a specific claim, and get a citation marker like [3] to place inline next to that claim. Cite as you write — only sources you genuinely consulted, never invented ones. Reusing the same URL returns the same marker.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              url: { type: "string", description: "The source URL you retrieved." },
+              title: { type: "string", description: "The source's title or publisher." },
+              quote: { type: "string", description: "Optional: the exact line/snippet that supports the claim." },
+            },
+            required: ["url"],
+            additionalProperties: false,
+          },
+        },
+        async handler(input, ctx) {
+          const url = String(input.url ?? "").trim();
+          if (!/^https?:\/\//i.test(url)) return { ...text("cite requires a real http(s) URL you retrieved."), isError: true };
+          const idx = ctx.storage.addCitation({
+            explorationId: ctx.exploration.id,
+            nodeId: ctx.currentNodeId,
+            url,
+            title: input.title ? String(input.title) : undefined,
+            quote: input.quote ? String(input.quote) : undefined,
+          });
+          return { content: [{ type: "text", text: `Cited as [${idx}]. Place [${idx}] inline next to the claim it supports.` }], summary: `cite [${idx}] ${url}` };
+        },
+      },
+      {
+        spec: {
+          name: "list_citations",
+          description: "List the sources you've already cited for this node (with their [n] markers), so you can reuse a marker instead of duplicating a source.",
+          inputSchema: { type: "object", properties: {}, additionalProperties: false },
+        },
+        async handler(_input, ctx) {
+          const cites = ctx.storage.getCitationsForNode(ctx.currentNodeId);
+          if (cites.length === 0) return text("(no citations yet for this node)");
+          return text(cites.map((ccite) => `[${ccite.idx}] ${ccite.title || ccite.url} — ${ccite.url}`).join("\n"));
+        },
+      }
+    );
+  }
 
   if (opts.hasCorpus) {
     tools.push(

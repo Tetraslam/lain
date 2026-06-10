@@ -1,4 +1,4 @@
-import React, { useState, useRef, useCallback } from "react";
+import React, { useState, useRef, useCallback, useEffect } from "react";
 import { ToolPicker, type ToolCatalog, type ToolSelection } from "./ToolPicker";
 
 interface CreateModalProps {
@@ -14,6 +14,13 @@ function countActive(catalog: ToolCatalog | null, sel: ToolSelection): number {
     for (const t of g.tools) if (!sel.disabledTools.includes(t.id)) n++;
   }
   return n;
+}
+
+// Mirror of core's hasWebSearchTool: an MCP tool whose name implies live web search.
+const WEB_SEARCH_RE = /(web[_-]?search|search|scrape|crawl|fetch|tavily|brave|exa|serp|google|bing|perplexity|firecrawl)/i;
+function catalogHasWebSearch(catalog: ToolCatalog | null): boolean {
+  if (!catalog) return false;
+  return catalog.groups.some((g) => g.tools.some((t) => t.id.startsWith("mcp_") && WEB_SEARCH_RE.test(t.id)));
 }
 
 interface Activity {
@@ -41,7 +48,7 @@ const EXTENSIONS = [
   { value: "freeform", label: "Freeform", hint: "pure divergent thinking" },
   { value: "worldbuilding", label: "Worldbuilding", hint: "geography, cultures, magic — coins in-world names" },
   { value: "debate", label: "Debate", hint: "pro / con / steelman / critique" },
-  { value: "research", label: "Research", hint: "citations & methodology" },
+  { value: "research", label: "Research", hint: "cited web sources & methodology", requiresWebSearch: true },
 ];
 
 function humanSize(bytes: number): string {
@@ -179,6 +186,14 @@ export function CreateModal({ onClose, onCreated }: CreateModalProps) {
       return next;
     });
   };
+
+  // A lens that grounds claims in web sources (research) needs a web-search tool;
+  // load the catalog so we can warn (not block) if none is active.
+  const lensWantsWeb = !!EXTENSIONS.find((x) => x.value === ext)?.requiresWebSearch;
+  useEffect(() => {
+    if (lensWantsWeb && !toolCatalog && !toolsLoading) loadTools();
+  }, [lensWantsWeb, toolCatalog, toolsLoading, loadTools]);
+  const webSearchMissing = lensWantsWeb && !!toolCatalog && !catalogHasWebSearch(toolCatalog);
 
   const handleCreate = async (lockedMission: MissionType | null = null) => {
     if (!seed.trim() || phase === "creating") return;
@@ -340,6 +355,11 @@ export function CreateModal({ onClose, onCreated }: CreateModalProps) {
               </div>
             </div>
             <div className="lens-hint">{EXTENSIONS.find((x) => x.value === ext)?.hint}</div>
+            {webSearchMissing && (
+              <div className="lens-hint" style={{ color: "var(--warning, #e0af68)" }}>
+                ⚠ this lens cites real web sources, but no web-search tool is active — citations will be sparse. Add one (e.g. firecrawl) under Tools / your MCP servers.
+              </div>
+            )}
 
             {/* Corpus drop zone */}
             <div className="form-group">

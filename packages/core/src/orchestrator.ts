@@ -30,6 +30,7 @@ export interface ExtensionRegistryLike {
   runAfterGenerate(context: NodeContext, response: GenerateResponse, activeExtensions?: string[]): Promise<GenerateResponse>;
   runValidators(phase: "before:generate" | "after:generate", context: NodeContext, response?: GenerateResponse, activeExtensions?: string[]): { valid: boolean; errors: string[] };
   getTools?(activeExtensions?: string[]): ExtensionTool[];
+  get?(name: string): { requiresWebSearch?: boolean } | undefined;
 }
 
 export interface OrchestratorOptions {
@@ -516,6 +517,9 @@ export class Orchestrator {
     revision?: { assertions: { id: string; text: string }[]; critique: string }
   ): Promise<void> {
     this.storage.updateNodeStatus(node.id, "generating");
+    // Citations are per-(re)generation: clear any stale ones so a redirected or
+    // revised node re-grounds from scratch instead of accumulating dead markers.
+    this.storage.clearNodeCitations(node.id);
     this.emit({
       type: "node:generating",
       explorationId: exploration.id,
@@ -581,6 +585,7 @@ export class Orchestrator {
             ? this.extensions.getTools([exploration.extension])
             : [],
           disabledTools: this.disabledTools,
+          citations: this.extensions?.get?.(exploration.extension)?.requiresWebSearch ?? false,
           revision,
           maxSteps: this.agentMaxSteps,
           maxTokens: this.agentMaxTokens,

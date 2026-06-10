@@ -108,13 +108,22 @@ export function buildNodeTrailer(node: LainNode, graph: Graph, allNodes: LainNod
       for (const na of nodeAnnotations) notesStr += `  ◆ ${na.content}\n`;
     }
   }
+  let sourcesStr = "";
+  if (storage) {
+    const cites = storage.getCitationsForNode(node.id);
+    if (cites.length > 0) {
+      sourcesStr += `\n────────────────────────────────\nsources (${cites.length})\n`;
+      for (const ct of cites) sourcesStr += `  [${ct.idx}] ${ct.title || ct.url}\n      ${ct.url}\n`;
+    }
+  }
+
   const children = allNodes.filter((n) => n.parentId === node.id && n.status !== "pruned");
   let childrenStr = "";
   if (children.length > 0) {
     childrenStr += `\n────────────────────────────────\nchildren (${children.length})\n`;
     for (const child of children) childrenStr += `  ${child.branchIndex}. ${child.title || child.id}\n`;
   }
-  return `${crosslinksStr}${notesStr}${childrenStr}`;
+  return `${crosslinksStr}${sourcesStr}${notesStr}${childrenStr}`;
 }
 
 /** Build the styled content view for a single node (single StyledText; tables inline). */

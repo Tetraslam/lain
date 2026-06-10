@@ -5,7 +5,7 @@ import * as os from "os";
 import { execFileSync } from "child_process";
 import { fileURLToPath } from "url";
 import { Orchestrator } from "@lain/core";
-import { Storage, Graph, Sync, Exporter, CanvasExporter, SynthesisEngine, Watcher, Corpus, connectMcpServers, buildToolCatalog, planMission, interviewMission, CURRENT_SCHEMA_VERSION, checkForUpdate, clearUpdateCache, addRecentDb, type InterviewTurn } from "@lain/core";
+import { Storage, Graph, Sync, Exporter, CanvasExporter, SynthesisEngine, Watcher, Corpus, connectMcpServers, buildToolCatalog, planMission, interviewMission, CURRENT_SCHEMA_VERSION, checkForUpdate, clearUpdateCache, addRecentDb, hasWebSearchTool, type InterviewTurn } from "@lain/core";
 import {
   buildExtensionRegistry,
 } from "@lain/extensions";
@@ -362,6 +362,13 @@ async function runExplore(args: ParsedArgs): Promise<void> {
     }
     if (disabledToolIds.length > 0) console.log(`Tools: ${belt.activeCount} active (${disabledToolIds.length} disabled by selection)`);
   }
+  // The research lens grounds claims in cited web sources — warn (don't block) if none is available.
+  if (extensionsForCatalog.get(ext)?.requiresWebSearch) {
+    const activeMcpIds = (mcpPool?.tools ?? []).map((tl) => tl.spec.name).filter((id) => !disabledToolIds.includes(id));
+    if (!hasWebSearchTool(activeMcpIds)) {
+      console.warn(`  ⚠ the "${ext}" lens cites real web sources, but no web-search tool is active. Citations will be sparse — add one (e.g. firecrawl) via \`lain mcp add\` or mcpServers in your config.`);
+    }
+  }
 
   // Mission planning — the cognitive-frontloading gate. Interactively, the
   // architect interviews you until the goal is unambiguous, then you approve the
@@ -635,6 +642,12 @@ async function runShow(args: ParsedArgs): Promise<void> {
       const otherId = cl.sourceId === nodeId ? cl.targetId : cl.sourceId;
       console.log(`  - ${otherId}${cl.label ? ": " + cl.label : ""}`);
     }
+  }
+
+  const citations = storage.getCitationsForNode(nodeId);
+  if (citations.length > 0) {
+    console.log("\nSources:");
+    for (const ct of citations) console.log(`  [${ct.idx}] ${ct.title || ct.url}\n      ${ct.url}`);
   }
 
   storage.close();

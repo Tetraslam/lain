@@ -6,7 +6,7 @@ import { GraphOverlay } from "./GraphOverlay";
 import { HelpOverlay } from "./HelpOverlay";
 import { CorpusPanel } from "./CorpusPanel";
 
-interface ExplorationData { exploration: any; nodes: any[]; crosslinks: any[]; nodeAnnotations?: Record<string, any[]>; }
+interface ExplorationData { exploration: any; nodes: any[]; crosslinks: any[]; nodeAnnotations?: Record<string, any[]>; citations?: Record<string, any[]>; }
 
 function buildFlowLayout(data: ExplorationData): { nodes: Node[]; edges: Edge[] } {
   const { nodes: lainNodes, crosslinks } = data;
@@ -512,6 +512,19 @@ export function ExplorationView({ dbFile, onBack }: { dbFile: string; onBack: ()
                     </div>
                   );
                 })}
+              </div>
+            )}
+
+            {/* Sources (citations grounded via the cite tool) */}
+            {data.citations && data.citations[selectedId] && data.citations[selectedId].length > 0 && (
+              <div className="article-section">
+                <div className="article-section-title">Sources</div>
+                {data.citations[selectedId].map((ct: any) => (
+                  <div key={ct.id} className="crosslink-item">
+                    <span className="cl-label">[{ct.idx}]</span>{" "}
+                    <a href={ct.url} target="_blank" rel="noreferrer">{ct.title || ct.url}</a>
+                  </div>
+                ))}
               </div>
             )}
 

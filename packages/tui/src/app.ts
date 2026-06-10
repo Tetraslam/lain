@@ -16,7 +16,7 @@ import { toast, mountToaster } from "./toast.js";
 import { copyToClipboard } from "./clipboard.js";
 import { mountNodeContent, clearContainer } from "./content-view.js";
 import { tuneScroll } from "./scroll.js";
-import { Storage, Graph, Orchestrator, Sync, Exporter, CanvasExporter, SynthesisEngine, Corpus, connectMcpServers, buildToolCatalog, checkForUpdate, planMission, interviewMission, addRecentDb, type InterviewTurn } from "@lain/core";
+import { Storage, Graph, Orchestrator, Sync, Exporter, CanvasExporter, SynthesisEngine, Corpus, connectMcpServers, buildToolCatalog, checkForUpdate, planMission, interviewMission, addRecentDb, hasWebSearchTool, type InterviewTurn } from "@lain/core";
 import { buildExtensionRegistry } from "@lain/extensions";
 import { fileURLToPath } from "url";
 import type { LainNode, Exploration, Strategy, PlanDetail, Mission, SettingField, LainConfig, Credentials, ToolCatalog, ToolGroup, ToolSelection, McpServerConfig } from "@lain/shared";
@@ -1972,6 +1972,12 @@ ${dim(visible)}`;
     const disabledToolIds = resolveDisabledToolIds(built.catalog, selection);
     if (mcpPool.tools.length > 0) pushFeed(`mcp: ${mcpPool.tools.length} tool(s) from ${mcpPool.connections.length} server(s)`);
     if (disabledToolIds.length > 0) pushFeed(`tools: ${countActiveTools(built.catalog, selection)} active (${disabledToolIds.length} off)`);
+    // The research lens grounds claims in cited web sources — warn (don't block) if none is available.
+    const activeMcpIds = mcpPool.tools.map((tl) => tl.spec.name).filter((id) => !disabledToolIds.includes(id));
+    if (extensions.get(useExt)?.requiresWebSearch && !hasWebSearchTool(activeMcpIds)) {
+      pushFeed(`⚠ the ${useExt} lens cites real web sources, but no web-search tool is active — citations will be sparse. Add one (e.g. firecrawl) via the Tools/MCP overlay.`);
+      toast.error(`${useExt}: no web-search tool — add firecrawl (MCP) for citations`);
+    }
 
     try {
       const orchestrator = new Orchestrator({

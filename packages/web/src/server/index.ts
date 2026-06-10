@@ -235,15 +235,18 @@ Bun.serve({
       const exp = exps[0];
       const nodes = g.getAllNodes(exp.id);
       const crosslinks = g.getCrosslinks(exp.id);
-      // Gather node annotations
+      // Gather node annotations + citations (per node id)
       const nodeAnnotations: Record<string, any[]> = {};
+      const citations: Record<string, any[]> = {};
       for (const node of nodes) {
         const anns = s.getNodeAnnotations(node.id);
         if (anns.length > 0) nodeAnnotations[node.id] = anns;
+        const cites = s.getCitationsForNode(node.id);
+        if (cites.length > 0) citations[node.id] = cites;
       }
       s.close();
 
-      return json({ exploration: exp, nodes, crosslinks, nodeAnnotations });
+      return json({ exploration: exp, nodes, crosslinks, nodeAnnotations, citations });
     }
 
     // ---- Get single node ----

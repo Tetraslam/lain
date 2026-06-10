@@ -180,6 +180,16 @@ export class Exporter {
       lines.push("");
     }
 
+    // Sources (citations grounded via the cite tool)
+    const citations = this.storage.getCitationsForNode(node.id);
+    if (citations.length > 0) {
+      lines.push("## Sources");
+      for (const ct of citations) {
+        lines.push(`${ct.idx}. [${ct.title || ct.url}](${ct.url})${ct.quote ? ` — “${ct.quote}”` : ""}`);
+      }
+      lines.push("");
+    }
+
     // Children
     if (children.length > 0) {
       lines.push("## Children");

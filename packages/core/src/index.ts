@@ -10,6 +10,7 @@ export { Corpus, chunkText, tokenize, type IngestOptions, type IngestResult } fr
 export {
   buildNodeTools,
   buildToolContext,
+  hasWebSearchTool,
   BUILTIN_TOOL_INFO,
   CORPUS_TOOL_INFO,
   type LainTool,

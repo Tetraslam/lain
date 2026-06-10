@@ -14,6 +14,7 @@ import type {
   Mission,
   MissionReport,
   Finding,
+  Citation,
 } from "@lain/shared";
 
 const SCHEMA = `
@@ -160,6 +161,19 @@ CREATE TABLE IF NOT EXISTS finding (
 );
 CREATE INDEX IF NOT EXISTS idx_finding_exploration ON finding(exploration_id);
 
+CREATE TABLE IF NOT EXISTS citation (
+  id TEXT PRIMARY KEY,
+  exploration_id TEXT NOT NULL REFERENCES exploration(id),
+  node_id TEXT NOT NULL,
+  idx INTEGER NOT NULL,
+  url TEXT NOT NULL,
+  title TEXT,
+  quote TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_citation_exploration ON citation(exploration_id);
+CREATE INDEX IF NOT EXISTS idx_citation_node ON citation(node_id);
+
 CREATE TABLE IF NOT EXISTS meta (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
@@ -170,11 +184,13 @@ CREATE TABLE IF NOT EXISTS meta (
  * Current on-disk schema version. Bump when adding a migration step.
  *   1 = original (exploration/node/crosslink/synthesis/sync/annotations)
  *   2 = substrate (corpus, mission, finding tables)
+ *   3 = mission gained assertions/features (rebuild legacy NOT-NULL column)
+ *   4 = citation table (additive via IF NOT EXISTS; nothing to backfill)
  * All tables use CREATE TABLE IF NOT EXISTS, so opening an older db with newer
  * lain transparently adds missing tables; the version + migrations runner
  * exists for future destructive/altering changes that IF NOT EXISTS can't cover.
  */
-export const CURRENT_SCHEMA_VERSION = 3;
+export const CURRENT_SCHEMA_VERSION = 4;
 
 /**
  * Ordered, idempotent migrations for changes that additive CREATE-IF-NOT-EXISTS
@@ -976,6 +992,54 @@ export class Storage {
       nodeId: (r.node_id as string) ?? null,
       content: r.content as string,
       tags: r.tags ? (JSON.parse(r.tags as string) as string[]) : [],
+      createdAt: r.created_at as string,
+    };
+  }
+
+  // ---- Citations (web sources grounding a node's claims) ----
+
+  /**
+   * Record a source for a node and return its 1-based marker. Reusing a URL
+   * already cited on the same node returns the existing marker (dedup), so the
+   * agent can reference the same source repeatedly without duplicating it.
+   */
+  addCitation(input: { explorationId: string; nodeId: string; url: string; title?: string; quote?: string }): number {
+    const url = input.url.trim();
+    const existing = this.db
+      .prepare("SELECT idx FROM citation WHERE node_id = ? AND url = ? LIMIT 1")
+      .get(input.nodeId, url) as { idx?: number } | undefined;
+    if (existing?.idx) return existing.idx;
+    const next = (this.db.prepare("SELECT COALESCE(MAX(idx), 0) + 1 AS n FROM citation WHERE node_id = ?").get(input.nodeId) as { n: number }).n;
+    this.db
+      .prepare("INSERT INTO citation (id, exploration_id, node_id, idx, url, title, quote, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(generateId(), input.explorationId, input.nodeId, next, url, input.title?.trim() || null, input.quote?.trim() || null, new Date().toISOString());
+    return next;
+  }
+
+  getCitationsForNode(nodeId: string): Citation[] {
+    const rows = this.db.prepare("SELECT * FROM citation WHERE node_id = ? ORDER BY idx").all(nodeId) as Record<string, unknown>[];
+    return rows.map((r) => this.rowToCitation(r));
+  }
+
+  getCitations(explorationId: string): Citation[] {
+    const rows = this.db.prepare("SELECT * FROM citation WHERE exploration_id = ? ORDER BY node_id, idx").all(explorationId) as Record<string, unknown>[];
+    return rows.map((r) => this.rowToCitation(r));
+  }
+
+  /** Drop a node's citations (used when the node is regenerated/revised). */
+  clearNodeCitations(nodeId: string): void {
+    this.db.prepare("DELETE FROM citation WHERE node_id = ?").run(nodeId);
+  }
+
+  private rowToCitation(r: Record<string, unknown>): Citation {
+    return {
+      id: r.id as string,
+      explorationId: r.exploration_id as string,
+      nodeId: r.node_id as string,
+      idx: r.idx as number,
+      url: r.url as string,
+      title: (r.title as string) ?? "",
+      quote: (r.quote as string) ?? null,
       createdAt: r.created_at as string,
     };
   }

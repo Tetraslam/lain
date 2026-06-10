@@ -289,6 +289,23 @@ export interface Finding {
   createdAt: string;
 }
 
+/**
+ * A source a node-agent grounded a claim in, recorded via the `cite` tool. The
+ * agent references it inline as `[idx]`; surfaces render a per-node Sources list.
+ */
+export interface Citation {
+  id: string;
+  explorationId: string;
+  nodeId: string;
+  /** 1-based marker the agent uses inline ([1], [2], …); stable per node. */
+  idx: number;
+  url: string;
+  title: string;
+  /** Optional supporting quote/snippet from the source. */
+  quote: string | null;
+  createdAt: string;
+}
+
 // ============================================================================
 // Corpus Types (multimodal source material the agents can retrieve from)
 // ============================================================================
@@ -652,6 +669,14 @@ export interface LainExtension {
 
   /** Credentials this extension needs (user provides via `lain extensions auth`). */
   requiredAuth?: { key: string; description: string; required: boolean }[];
+
+  /**
+   * This lens is much stronger with a web-search tool (e.g. firecrawl via MCP):
+   * its node-agents are expected to ground claims in real sources and cite them.
+   * Surfaces warn at creation if no web-search tool is active, and the `cite`
+   * tool is enabled for these explorations.
+   */
+  requiresWebSearch?: boolean;
 
   /** Extension-specific config schema. */
   configSchema?: ConfigFieldDefinition[];

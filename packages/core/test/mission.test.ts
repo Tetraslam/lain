@@ -3,7 +3,7 @@ import { Storage } from "../src/storage.js";
 import { Graph } from "../src/graph.js";
 import { Orchestrator } from "../src/orchestrator.js";
 import { parseContract, interviewMission } from "../src/mission.js";
-import { buildNodeTools, buildToolContext } from "../src/tools.js";
+import { buildNodeTools, buildToolContext, hasWebSearchTool } from "../src/tools.js";
 import type { AgentProvider, GenerateRequest, GenerateResponse, PlanRequest, PlanResponse } from "@lain/shared";
 import * as fs from "fs";
 import * as path from "path";
@@ -246,5 +246,38 @@ describe("findings tools", () => {
     const text = out.content.map((c) => (c.type === "text" ? c.text : "")).join("");
     expect(text).toContain("spores carry messages");
     expect(storage.getFindings("e")).toHaveLength(1);
+  });
+
+  it("cite tool records sources, dedupes by url, and is off unless enabled", async () => {
+    expect(buildNodeTools({ hasCorpus: false }).some((t) => t.spec.name === "cite")).toBe(false);
+    const tools = buildNodeTools({ hasCorpus: false, citations: true });
+    const cite = tools.find((t) => t.spec.name === "cite")!;
+    expect(cite).toBeTruthy();
+    const ctx = buildToolContext({ graph, storage, corpus: null, exploration: graph.getExploration("e")!, currentNodeId: "root-1" });
+
+    const first = await cite.handler({ url: "https://example.com/a", title: "A" }, ctx);
+    expect(first.content.map((c) => (c.type === "text" ? c.text : "")).join("")).toContain("[1]");
+    const second = await cite.handler({ url: "https://example.com/b", title: "B" }, ctx);
+    expect(second.content.map((c) => (c.type === "text" ? c.text : "")).join("")).toContain("[2]");
+    // Reusing a URL returns the same marker (dedup), not a new one.
+    const dup = await cite.handler({ url: "https://example.com/a" }, ctx);
+    expect(dup.content.map((c) => (c.type === "text" ? c.text : "")).join("")).toContain("[1]");
+    // Non-URL is rejected.
+    const bad = await cite.handler({ url: "not a url" }, ctx);
+    expect(bad.isError).toBe(true);
+
+    const cites = storage.getCitationsForNode("root-1");
+    expect(cites.map((c) => c.idx)).toEqual([1, 2]);
+    expect(cites[0].url).toBe("https://example.com/a");
+
+    storage.clearNodeCitations("root-1");
+    expect(storage.getCitationsForNode("root-1")).toHaveLength(0);
+  });
+
+  it("hasWebSearchTool detects MCP web tools, not graph/corpus search", () => {
+    expect(hasWebSearchTool(["mcp_firecrawl_firecrawl_search", "search_nodes"])).toBe(true);
+    expect(hasWebSearchTool(["mcp_firecrawl_firecrawl_scrape"])).toBe(true);
+    expect(hasWebSearchTool(["search_nodes", "search_corpus", "outline"])).toBe(false);
+    expect(hasWebSearchTool(["mcp_linear_create_issue"])).toBe(false);
   });
 });

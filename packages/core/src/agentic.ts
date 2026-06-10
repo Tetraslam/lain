@@ -41,6 +41,8 @@ export interface AgenticGenerateDeps {
   extensionTools?: ExtensionTool[];
   /** Tool ids to drop from the assembled toolbelt (per-run/config selection). */
   disabledTools?: string[];
+  /** Enable the `cite`/`list_citations` tools (lenses that ground in web sources). */
+  citations?: boolean;
   /**
    * Mission revision mode: the node already has content but an independent
    * validator found it doesn't yet satisfy some assertions. The agent must
@@ -137,7 +139,7 @@ export async function generateNodeAgentic(
   );
   const disabled = new Set(deps.disabledTools ?? []);
   const tools: LainTool[] = [
-    ...buildNodeTools({ hasCorpus }),
+    ...buildNodeTools({ hasCorpus, citations: deps.citations }),
     ...adaptedExtensionTools,
     ...(deps.extraTools ?? []),
   ].filter((t) => !disabled.has(t.spec.name));
