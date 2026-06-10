@@ -735,6 +735,7 @@ ${annotation.merged ? dim("Already merged.") : dim("m — merge  ·  d — dismi
     try { rootBox.remove("synth-container"); } catch {}
 
     if (screen === "home") {
+      refreshHomeScreen(); // always reflect current dbs (e.g. a just-created exploration)
       rootBox.add(homeContainer);
       homeSelect.focusable = true;
       homeSelect.focus();
