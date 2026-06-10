@@ -228,20 +228,22 @@ export async function generateNodeAgentic(
     signal: linkedSignals,
   });
 
-  // Models sometimes end their turn announcing intent instead of actually
-  // calling submit_node. Nudge them to deliver the node via the tool.
-  for (let nudge = 0; !submitted && nudge < 2 && !deps.signal?.aborted; nudge++) {
+  // The agent sometimes ends its turn (or exhausts the step budget) still
+  // researching, announcing intent instead of delivering. Force the landing:
+  // re-run with ONLY submit_node available, so it has no choice but to write the
+  // node now with whatever it has gathered (no work — or its citations — lost).
+  for (let nudge = 0; !submitted && nudge < 3 && !deps.signal?.aborted; nudge++) {
     messages = [
       ...result.messages,
       userText(
-        "You ended your turn without calling submit_node. Do not write the node as prose. Call the submit_node tool now with the final `title` and `content`."
+        "Stop researching — you have enough. Call the submit_node tool RIGHT NOW with the final `title` and `content` (keep your inline [n] citation markers). No other tool is available; do not write prose."
       ),
     ];
     result = await runAgent({
       provider: deps.agent,
       system,
       messages,
-      tools: toolSpecs,
+      tools: [submitTool], // only submit_node — the agent must deliver
       dispatch,
       maxSteps: 2,
       maxTokens: deps.maxTokens,

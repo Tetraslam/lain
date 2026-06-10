@@ -311,7 +311,7 @@ async function runExplore(args: ParsedArgs): Promise<void> {
   const missionEnabled = missionRaw !== undefined && missionRaw !== false;
   const missionRefinement = typeof missionRaw === "string" ? missionRaw : undefined;
   const missionRounds = getNumFlag(args.flags, "mission-rounds") ?? config.defaultMissionRounds;
-  const agentMaxSteps = getNumFlag(args.flags, "max-steps") ?? 10;
+  const agentMaxSteps = getNumFlag(args.flags, "max-steps") ?? 50;
 
   // Generate a name from the seed
   const name = seed.length > 60 ? seed.slice(0, 57) + "..." : seed;
@@ -1976,7 +1976,7 @@ ${section("Options")}
   --mission [intent]     Interview → validation contract → pursue it autonomously
   --mission-rounds <n>   Max validate→fix rounds for a mission (default: 2)
   --non-interactive      Skip the mission interview; auto-derive the contract (also --yes)
-  --max-steps <n>        Max agent tool round-trips per node (default: 10)
+  --max-steps <n>        Max agent tool round-trips per node (default: 50)
   --disable-tool <id>    Drop a tool for this run (repeatable; also --enable-tool)
   --disable-group <id>   Drop a whole group, e.g. corpus / ext:worldbuilding / mcp:firecrawl
   --only-tools <ids>     Allowlist: enable ONLY these tools/groups (comma-separated)

@@ -39,7 +39,8 @@ export interface OrchestratorOptions {
   concurrency?: number;
   extensions?: ExtensionRegistryLike;
   onEvent?: LainEventHandler;
-  /** Max agent steps (tool round-trips) per node. Default 10. */
+  /** Max agent steps (tool round-trips) per node. Default 50 — research nodes
+   *  burn many steps on search/scrape/cite before they can submit. */
   agentMaxSteps?: number;
   /** Max output tokens per agent turn. Default 16384 (node bodies are long; a small cap truncates submit_node). */
   agentMaxTokens?: number;
@@ -77,7 +78,7 @@ export class Orchestrator {
     this.concurrency = options.concurrency ?? 5;
     this.extensions = options.extensions ?? null;
     this.onEvent = options.onEvent ?? (() => {});
-    this.agentMaxSteps = options.agentMaxSteps ?? 10;
+    this.agentMaxSteps = options.agentMaxSteps ?? 50;
     this.agentMaxTokens = options.agentMaxTokens ?? 16384;
     // Reuse the orchestrator's Storage for the corpus so they share one db handle.
     this.corpus = options.corpus ?? new Corpus(this.storage);
