@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# lain — short installer.
+# Fetches and runs the canonical bootstrap. Equivalent to:
+#   curl -fsSL https://raw.githubusercontent.com/Tetraslam/lain/main/bootstrap.sh | bash
+set -euo pipefail
+curl -fsSL https://raw.githubusercontent.com/Tetraslam/lain/main/bootstrap.sh | bash

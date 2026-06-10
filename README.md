@@ -14,7 +14,7 @@ itself — until something extraordinary emerges.
 ---
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Tetraslam/lain/main/bootstrap.sh | bash
+curl -fsSL https://tetraslam.github.io/lain/install | bash
 ```
 
 ```bash
