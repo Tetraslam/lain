@@ -46,7 +46,7 @@ command -v bun >/dev/null 2>&1 || { err "✗ bun is required and could not be in
 # so a genuinely fresh machine needs Node to BUILD even though lain RUNS on bun.
 if ! command -v node >/dev/null 2>&1; then
   echo "Installing Node.js (build-time)..."
-  NODE_VER="${LAIN_NODE_VERSION:-v22.12.0}"
+  NODE_VER="${LAIN_NODE_VERSION:-v22.22.3}"
   case "$(uname -s)" in
     Linux) NODE_OS=linux ;;
     Darwin) NODE_OS=darwin ;;
