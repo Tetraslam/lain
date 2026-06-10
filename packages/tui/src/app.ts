@@ -13,6 +13,7 @@ import {
 import { t, fg, bg, dim, bold, italic, underline, strikethrough, cyan, green, yellow, magenta } from "@opentui/core";
 import type { KeyEvent, SelectOption } from "@opentui/core";
 import { toast, mountToaster } from "./toast.js";
+import { copyToClipboard } from "./clipboard.js";
 import { Storage, Graph, Orchestrator, Sync, Exporter, CanvasExporter, SynthesisEngine, Corpus, connectMcpServers, buildToolCatalog, checkForUpdate, planMission, interviewMission, addRecentDb, type InterviewTurn } from "@lain/core";
 import { buildExtensionRegistry } from "@lain/extensions";
 import { fileURLToPath } from "url";
@@ -71,6 +72,20 @@ export async function createApp(dbPathArg?: string): Promise<void> {
     id: "root", width: "100%", height: "100%", flexDirection: "column", paddingLeft: 1, paddingRight: 1,
   });
   renderer.root.add(rootBox);
+
+  // ---- Copy-on-select (à la opencode) ----
+  // OpenTUI captures the mouse and highlights selectable text as you drag.
+  // On release, copy whatever is selected to the clipboard, then clear it.
+  // clearSelection is deferred to a microtask so the renderer can finish its
+  // own selection lifecycle first (otherwise the next drag silently no-ops).
+  renderer.root.onMouseUp = () => {
+    const text = renderer.getSelection()?.getSelectedText();
+    if (!text) return;
+    copyToClipboard(text);
+    const lines = text.split("\n").length;
+    toast.success(lines > 1 ? `Copied ${lines} lines` : "Copied to clipboard");
+    queueMicrotask(() => renderer.clearSelection());
+  };
 
   // ---- State ----
   let mode: AppMode = "home";
