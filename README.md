@@ -17,6 +17,9 @@ itself — until something extraordinary emerges.
 curl -fsSL https://tetraslam.github.io/lain/install | bash
 ```
 
+A self-contained binary — no Node, bun, or pnpm to install; just download and
+run. (No prebuilt binary for your platform? It falls back to a source build.)
+
 ```bash
 lain init                                   # pick a provider, paste a key
 lain "a religion that worships entropy" --mission
@@ -79,14 +82,24 @@ Bedrock · Anthropic · OpenAI · OpenRouter · any OpenAI-compatible endpoint
 
 ```bash
 lain doctor          # check install, config, credentials
-lain update          # pull + rebuild — your .db files and config stay untouched
+lain update          # update in place — your .db files and config stay untouched
 lain uninstall
 ```
 
 ## From source
 
-Requires [bun](https://bun.sh). `bash install.sh` builds and puts `lain` on your
-PATH; `pnpm test` runs the suite. Internals live in [`AGENTS.md`](./AGENTS.md).
+The installer ships a prebuilt binary; to build it yourself you need
+[bun](https://bun.sh) + [pnpm](https://pnpm.io):
+
+```bash
+pnpm install
+pnpm build:binary     # → dist-bin/lain-<os>-<arch>  (CLI + TUI + web in one file)
+pnpm test             # run the suite
+```
+
+Or force a from-source install (clones, provisions bun/node/pnpm, builds, puts a
+launcher on PATH): `LAIN_FROM_SOURCE=1 curl -fsSL https://tetraslam.github.io/lain/install | bash`.
+Internals live in [`AGENTS.md`](./AGENTS.md).
 
 <div align="center">
 <sub>named after lain iwakura. everything is connected.</sub>

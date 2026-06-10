@@ -1,0 +1,121 @@
+name: Release
+
+# Build the self-contained `lain` binary for every platform and publish a
+# GitHub Release. Triggered by pushing a version tag (v*), or manually via
+# workflow_dispatch (which makes a prerelease for testing).
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to build (e.g. 0.1.0). Makes a prerelease."
+        required: true
+        default: "0.0.0-test"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: build ${{ matrix.asset }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            asset: lain-linux-x64
+          - runner: ubuntu-24.04-arm
+            asset: lain-linux-arm64
+          - runner: macos-13
+            asset: lain-darwin-x64
+          - runner: macos-14
+            asset: lain-darwin-arm64
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Resolve version + commit
+        id: meta
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          else
+            VERSION="${{ github.event.inputs.version }}"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "commit=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Build binary
+        env:
+          LAIN_VERSION: ${{ steps.meta.outputs.version }}
+          LAIN_COMMIT: ${{ steps.meta.outputs.commit }}
+          LAIN_BRANCH: release
+        run: pnpm build:binary
+
+      - name: Checksum
+        shell: bash
+        run: |
+          cd dist-bin
+          if command -v sha256sum >/dev/null; then sha256sum "${{ matrix.asset }}" > "${{ matrix.asset }}.sha256";
+          else shasum -a 256 "${{ matrix.asset }}" > "${{ matrix.asset }}.sha256"; fi
+          cat "${{ matrix.asset }}.sha256"
+
+      - name: Smoke test the binary (native runner only)
+        shell: bash
+        run: |
+          ./dist-bin/${{ matrix.asset }} version
+          ./dist-bin/${{ matrix.asset }} doctor || true
+          ./dist-bin/${{ matrix.asset }} help | head -1
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: |
+            dist-bin/${{ matrix.asset }}
+            dist-bin/${{ matrix.asset }}.sha256
+          if-no-files-found: error
+
+  release:
+    name: publish release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: List artifacts
+        run: ls -lhR artifacts
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event_name == 'push' && github.ref_name || format('v{0}', github.event.inputs.version) }}
+          name: lain ${{ github.event_name == 'push' && github.ref_name || github.event.inputs.version }}
+          prerelease: ${{ github.event_name == 'workflow_dispatch' }}
+          generate_release_notes: true
+          files: artifacts/*
+          body: |
+            Self-contained `lain` binaries — no Node/pnpm/bun required, just download and run.
+
+            **Install (recommended):**
+            ```bash
+            curl -fsSL https://tetraslam.github.io/lain/install | bash
+            ```
+
+            Or grab the binary for your platform below, `chmod +x`, and put it on your PATH.

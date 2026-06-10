@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # lain — short installer.
-# Fetches and runs the canonical bootstrap. Equivalent to:
-#   curl -fsSL https://raw.githubusercontent.com/Tetraslam/lain/main/bootstrap.sh | bash
+# Downloads the prebuilt single binary (and falls back to a source build).
+# Equivalent to:
+#   curl -fsSL https://raw.githubusercontent.com/Tetraslam/lain/main/get.sh | bash
 set -euo pipefail
-# Cache-bust the raw fetch so installs always get the latest bootstrap
+# Cache-bust the raw fetch so installs always get the latest installer
 # (raw.githubusercontent has a multi-minute CDN TTL per edge).
-curl -fsSL "https://raw.githubusercontent.com/Tetraslam/lain/main/bootstrap.sh?cb=$(date +%s)" | bash
+curl -fsSL "https://raw.githubusercontent.com/Tetraslam/lain/main/get.sh?cb=$(date +%s)" | bash
