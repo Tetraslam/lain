@@ -3,4 +3,6 @@
 # Fetches and runs the canonical bootstrap. Equivalent to:
 #   curl -fsSL https://raw.githubusercontent.com/Tetraslam/lain/main/bootstrap.sh | bash
 set -euo pipefail
-curl -fsSL https://raw.githubusercontent.com/Tetraslam/lain/main/bootstrap.sh | bash
+# Cache-bust the raw fetch so installs always get the latest bootstrap
+# (raw.githubusercontent has a multi-minute CDN TTL per edge).
+curl -fsSL "https://raw.githubusercontent.com/Tetraslam/lain/main/bootstrap.sh?cb=$(date +%s)" | bash
