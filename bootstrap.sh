@@ -41,6 +41,31 @@ if ! command -v bun >/dev/null 2>&1; then
 fi
 command -v bun >/dev/null 2>&1 || { err "✗ bun is required and could not be installed."; exit 1; }
 
+# --- node: provision if missing (build-time only; runtime uses bun) ----------
+# The monorepo builds with pnpm + tsup, whose bins are `#!/usr/bin/env node`,
+# so a genuinely fresh machine needs Node to BUILD even though lain RUNS on bun.
+if ! command -v node >/dev/null 2>&1; then
+  echo "Installing Node.js (build-time)..."
+  NODE_VER="${LAIN_NODE_VERSION:-v22.12.0}"
+  case "$(uname -s)" in
+    Linux) NODE_OS=linux ;;
+    Darwin) NODE_OS=darwin ;;
+    *) err "✗ unsupported OS for auto Node install: $(uname -s)"; exit 1 ;;
+  esac
+  case "$(uname -m)" in
+    x86_64|amd64) NODE_ARCH=x64 ;;
+    aarch64|arm64) NODE_ARCH=arm64 ;;
+    *) err "✗ unsupported arch for auto Node install: $(uname -m)"; exit 1 ;;
+  esac
+  NODE_DIR="${LAIN_NODE_DIR:-$HOME/.local/share/lain-node}"
+  rm -rf "$NODE_DIR"; mkdir -p "$NODE_DIR"
+  curl -fsSL "https://nodejs.org/dist/${NODE_VER}/node-${NODE_VER}-${NODE_OS}-${NODE_ARCH}.tar.gz" \
+    | tar -xz -C "$NODE_DIR" --strip-components=1 \
+    || { err "✗ Node install failed (https://nodejs.org/dist/${NODE_VER})"; exit 1; }
+  ensure_path "$NODE_DIR/bin"
+fi
+command -v node >/dev/null 2>&1 || { err "✗ node is required to build and could not be installed."; exit 1; }
+
 # --- pnpm: provision if missing (corepack, else bun global) ------------------
 if ! command -v pnpm >/dev/null 2>&1; then
   echo "Provisioning pnpm..."
@@ -52,7 +77,7 @@ if ! command -v pnpm >/dev/null 2>&1; then
 fi
 command -v pnpm >/dev/null 2>&1 || { err "✗ pnpm could not be provisioned. Install it: https://pnpm.io"; exit 1; }
 
-echo "✓ bun $(bun --version)   ✓ pnpm $(pnpm --version)$(command -v git >/dev/null 2>&1 && echo "   ✓ git $(git --version | awk '{print $3}')" || echo "   · no git (tarball mode)")"
+echo "✓ bun $(bun --version)   ✓ node $(node --version)   ✓ pnpm $(pnpm --version)$(command -v git >/dev/null 2>&1 && echo "   ✓ git $(git --version | awk '{print $3}')" || echo "   · no git (tarball mode)")"
 echo
 
 # --- acquire source: git clone/update, else tarball --------------------------
