@@ -541,6 +541,10 @@ export async function createApp(dbPathArg?: string): Promise<void> {
   toolsBox.add(toolsTitle);
   const toolsBody = new TextRenderable(renderer, { id: "tools-body", content: "", width: "100%" });
   toolsBox.add(toolsBody);
+  const toolsInput = new InputRenderable(renderer, {
+    id: "tools-input", width: "100%", placeholder: "", visible: false,
+  });
+  toolsBox.add(toolsInput);
   const toolsFooter = new TextRenderable(renderer, { id: "tools-footer", content: "", width: "100%" });
   toolsBox.add(toolsFooter);
 
@@ -1752,6 +1756,8 @@ ${dim("↑↓")} ${fg(c.muted)("navigate")}   ${dim("↵")} ${fg(c.muted)("run")
   let toolsRunMode = false;
   let toolsResolve: ((sel: ToolSelection | null) => void) | null = null;
   let toolsReturnTo: "create" | "back" = "back";
+  // In-overlay "add MCP server" flow: a tiny 3-step prompt (name → url → token).
+  let toolsAdd: { step: "name" | "url" | "auth"; name: string; url: string } | null = null;
   const TOOLS_WINDOW = 16;
 
   async function buildTuiCatalog(): Promise<ToolCatalog> {
@@ -1777,6 +1783,23 @@ ${dim("↑↓")} ${fg(c.muted)("navigate")}   ${dim("↵")} ${fg(c.muted)("run")
   }
 
   function renderTools() {
+    // While adding an MCP server, the body becomes a focused prompt.
+    if (toolsAdd) {
+      const step = toolsAdd.step;
+      const stepLabel = step === "name" ? "name" : step === "url" ? "URL" : "auth";
+      toolsTitle.content = t`${bold(fg(c.accent)("add MCP server"))}  ${fg(c.muted)("·")}  ${dim(`step ${step === "name" ? 1 : step === "url" ? 2 : 3}/3 — ${stepLabel}`)}`;
+      const so = toolsAdd.name ? `name ${toolsAdd.name}` : "";
+      const su = toolsAdd.url ? `    url ${toolsAdd.url.slice(0, 50)}` : "";
+      toolsBody.content = t`${dim("Add a remote MCP server; its tools join the toolbelt for new runs.")}
+${fg(c.blue)(so)}${fg(c.blue)(su)}
+${dim(
+        step === "name" ? "Short local name, e.g. firecrawl" :
+        step === "url" ? "Streamable HTTP URL (may embed a key), e.g. https://mcp.firecrawl.dev/<key>/v2/mcp" :
+        "Optional Bearer token → sent as Authorization: Bearer <token>. Leave blank for none (or if the key is in the URL)."
+      )}`;
+      toolsFooter.content = t`  ${fg(c.muted)("enter")} ${step === "auth" ? "save" : "next"}  ${fg(c.muted)("·")}  ${dim("esc")} cancel`;
+      return;
+    }
     const total = countActiveTools(toolsCatalog, toolsSelection);
     toolsTitle.content = t`${bold(fg(c.accent)("tools"))}  ${dim(toolsRunMode ? "— this run only (d saves as default)" : "— default toolbelt for new runs")}  ${fg(c.muted)("·")}  ${fg(c.green)(`${total} active`)}`;
     if (toolsCursor < toolsScroll) toolsScroll = toolsCursor;
@@ -1805,7 +1828,7 @@ ${dim("↑↓")} ${fg(c.muted)("navigate")}   ${dim("↵")} ${fg(c.muted)("run")
     if (toolsRows.length === 0) lines.push(t`${dim("  (no tools)")}`);
     toolsBody.content = joinLinesST(lines);
     const scroll = toolsScroll + TOOLS_WINDOW < toolsRows.length || toolsScroll > 0 ? dim("  ↑/↓ scroll") : "";
-    toolsFooter.content = t`  ${fg(c.muted)("↑/↓")} move  ${fg(c.muted)("·")}  ${dim("space")} toggle  ${fg(c.muted)("·")}  ${dim("→")} expand  ${fg(c.muted)("·")}  ${dim("d")} save default  ${fg(c.muted)("·")}  ${dim("esc")} ${toolsRunMode ? "apply" : "close"}${scroll}`;
+    toolsFooter.content = t`  ${fg(c.muted)("↑/↓")} move  ${fg(c.muted)("·")}  ${dim("space")} toggle  ${fg(c.muted)("·")}  ${dim("→")} expand  ${fg(c.muted)("·")}  ${dim("a")} add mcp  ${fg(c.muted)("·")}  ${dim("x")} remove  ${fg(c.muted)("·")}  ${dim("d")} default  ${fg(c.muted)("·")}  ${dim("esc")} ${toolsRunMode ? "apply" : "close"}${scroll}`;
   }
 
   async function loadToolsOverlay() {
@@ -1873,6 +1896,74 @@ ${dim("↑↓")} ${fg(c.muted)("navigate")}   ${dim("↵")} ${fg(c.muted)("run")
     else toolsExpanded.delete(row.group.id);
     rebuildToolRows();
     renderTools();
+  }
+
+  // ---- Add / remove an MCP server, right here in the overlay ----
+
+  function startAddMcp() {
+    toolsAdd = { step: "name", name: "", url: "" };
+    toolsInput.value = "";
+    toolsInput.visible = true;
+    toolsInput.focus();
+    renderTools();
+  }
+
+  function cancelAddMcp() {
+    toolsAdd = null;
+    toolsInput.value = "";
+    toolsInput.visible = false;
+    toolsInput.blur();
+    renderTools();
+  }
+
+  async function advanceAddMcp() {
+    if (!toolsAdd) return;
+    const val = toolsInput.value.trim();
+    if (toolsAdd.step === "name") {
+      if (!val) { toast.warning("Enter a short name"); return; }
+      if (/\s/.test(val)) { toast.warning("Name can't contain spaces"); return; }
+      if ((loadConfig().mcpServers ?? {})[val]) { toast.warning(`"${val}" already exists`); return; }
+      toolsAdd.name = val;
+      toolsAdd.step = "url";
+      toolsInput.value = "";
+      renderTools();
+      return;
+    }
+    if (toolsAdd.step === "url") {
+      if (!/^https?:\/\//i.test(val)) { toast.warning("URL must start with http(s)://"); return; }
+      toolsAdd.url = val;
+      toolsAdd.step = "auth";
+      toolsInput.value = "";
+      renderTools();
+      return;
+    }
+    // auth step → persist + re-probe
+    const cfg: McpServerConfig = { url: toolsAdd.url, ...(val ? { headers: { Authorization: `Bearer ${val}` } } : {}) };
+    const servers = { ...(loadConfig().mcpServers ?? {}) };
+    servers[toolsAdd.name] = cfg;
+    saveConfig({ mcpServers: servers });
+    const name = toolsAdd.name;
+    toolsAdd = null;
+    toolsInput.value = "";
+    toolsInput.visible = false;
+    toolsInput.blur();
+    toast.success(`Added "${name}" — probing its tools…`);
+    await loadToolsOverlay();
+  }
+
+  async function removeMcpUnderCursor() {
+    const row = toolsCurrentRow();
+    if (!row || row.kind !== "group" || !row.group.id.startsWith("mcp:")) {
+      toast.warning("Move to an MCP server row (mcp:…) to remove it");
+      return;
+    }
+    const name = row.group.id.slice("mcp:".length);
+    const servers = { ...(loadConfig().mcpServers ?? {}) };
+    if (!servers[name]) { toast.warning(`No server "${name}" in config`); return; }
+    delete servers[name];
+    saveConfig({ mcpServers: servers });
+    toast.success(`Removed "${name}"`);
+    await loadToolsOverlay();
   }
 
   function closeTools(apply: boolean) {
@@ -2131,12 +2222,20 @@ ${dim(visible)}`;
 
     // ---- Tools mode ----
     if (mode === "tools") {
+      // Adding an MCP server: the input owns typing; we only handle enter/esc.
+      if (toolsAdd) {
+        if (key.name === "escape") { key.stopPropagation(); cancelAddMcp(); return; }
+        if (key.name === "return") { key.stopPropagation(); advanceAddMcp(); return; }
+        return; // let the focused input handle the keystroke
+      }
       if (key.name === "escape") { key.stopPropagation(); closeTools(true); return; }
       if (key.name === "up" || key.name === "k") { key.stopPropagation(); moveTools(-1); return; }
       if (key.name === "down" || key.name === "j") { key.stopPropagation(); moveTools(1); return; }
       if (key.name === "right" || key.name === "l") { key.stopPropagation(); expandToolsCurrent(true); return; }
       if (key.name === "left" || key.name === "h") { key.stopPropagation(); expandToolsCurrent(false); return; }
       if (key.name === "space" || key.name === "return") { key.stopPropagation(); toggleToolsCurrent(); return; }
+      if (key.name === "a") { key.stopPropagation(); startAddMcp(); return; }
+      if (key.name === "x") { key.stopPropagation(); removeMcpUnderCursor(); return; }
       if (key.name === "d") {
         key.stopPropagation();
         saveConfig({ tools: toolsSelection });
