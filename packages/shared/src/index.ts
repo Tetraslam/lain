@@ -406,8 +406,6 @@ export interface LainConfig {
   maxTokens: number;
   /** Max parallel agent calls during generation. */
   concurrency: number;
-  /** Whether new explorations default to the tool-using agentic substrate. */
-  defaultAgentic: boolean;
   /** Default validate→fix rounds for a mission. */
   defaultMissionRounds: number;
   watch: WatchConfig;
@@ -429,7 +427,6 @@ export const DEFAULT_CONFIG: LainConfig = {
   defaultExtension: "freeform",
   maxTokens: 16384,
   concurrency: 5,
-  defaultAgentic: false,
   defaultMissionRounds: 2,
   watch: {
     debounceMs: 500,

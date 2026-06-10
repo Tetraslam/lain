@@ -37,18 +37,11 @@ export interface OrchestratorOptions {
   dbPath: string;
   agent: AgentProvider;
   concurrency?: number;
-  streaming?: boolean; // Use streaming generation for real-time chunk events
   extensions?: ExtensionRegistryLike;
   onEvent?: LainEventHandler;
-  /**
-   * When true, each node is expanded by a tool-using agent (the substrate)
-   * rather than a single completion. Enables corpus retrieval, cross-node
-   * reading, and cross-branch linking.
-   */
-  agentic?: boolean;
-  /** Max agent steps (tool round-trips) per node when agentic. Default 10. */
+  /** Max agent steps (tool round-trips) per node. Default 10. */
   agentMaxSteps?: number;
-  /** Max output tokens per agent turn when agentic. Default 16384 (node bodies are long; a small cap truncates submit_node). */
+  /** Max output tokens per agent turn. Default 16384 (node bodies are long; a small cap truncates submit_node). */
   agentMaxTokens?: number;
   /** Shared corpus for retrieval tools (created from the same db if omitted). */
   corpus?: Corpus | null;
@@ -67,11 +60,9 @@ export class Orchestrator {
   private graph: Graph;
   private agent: AgentProvider;
   private concurrency: number;
-  private streaming: boolean;
   private extensions: ExtensionRegistryLike | null;
   private onEvent: LainEventHandler;
   private ownsStorage: boolean;
-  private agentic: boolean;
   private agentMaxSteps: number;
   private agentMaxTokens: number;
   private corpus: Corpus | null;
@@ -84,14 +75,12 @@ export class Orchestrator {
     this.graph = new Graph(this.storage);
     this.agent = options.agent;
     this.concurrency = options.concurrency ?? 5;
-    this.streaming = options.streaming ?? false;
     this.extensions = options.extensions ?? null;
     this.onEvent = options.onEvent ?? (() => {});
-    this.agentic = options.agentic ?? false;
     this.agentMaxSteps = options.agentMaxSteps ?? 10;
     this.agentMaxTokens = options.agentMaxTokens ?? 16384;
     // Reuse the orchestrator's Storage for the corpus so they share one db handle.
-    this.corpus = options.corpus ?? (this.agentic ? new Corpus(this.storage) : null);
+    this.corpus = options.corpus ?? new Corpus(this.storage);
     this.extraTools = options.extraTools ?? [];
     this.disabledTools = options.disabledTools ?? [];
   }
@@ -559,57 +548,34 @@ export class Orchestrator {
       : undefined;
 
     try {
-      const generateRequest = {
-        node,
-        ancestors,
-        siblings: siblings.filter((s) => s.status === "complete"),
+      // Every node is expanded by a tool-using agent (the substrate): it can
+      // read the graph, retrieve from the corpus, search/cite the web, and link
+      // across branches.
+      let response: GenerateResponse = await generateNodeAgentic(node, {
+        agent: this.agent,
+        graph: this.graph,
+        storage: this.storage,
+        corpus: this.corpus,
         exploration,
+        mission: this.storage.getMission(exploration.id),
         extensionSystemPrompt: extensionSystemPrompt || undefined,
-      };
-
-      let response: GenerateResponse;
-
-      if (this.agentic) {
-        // Substrate mode: expand the node with a tool-using agent that can
-        // read the graph, retrieve from the corpus, and link across branches.
-        response = await generateNodeAgentic(node, {
-          agent: this.agent,
-          graph: this.graph,
-          storage: this.storage,
-          corpus: this.corpus,
-          exploration,
-          mission: this.storage.getMission(exploration.id),
-          extensionSystemPrompt: extensionSystemPrompt || undefined,
-          extraTools: this.extraTools,
-          extensionTools: this.extensions?.getTools
-            ? this.extensions.getTools([exploration.extension])
-            : [],
-          disabledTools: this.disabledTools,
-          citations: this.extensions?.get?.(exploration.extension)?.requiresWebSearch ?? false,
-          revision,
-          maxSteps: this.agentMaxSteps,
-          maxTokens: this.agentMaxTokens,
-          onStep: (step: AgentStepEvent) =>
-            this.emit({
-              type: "node:agent-step",
-              explorationId: exploration.id,
-              nodeId: node.id,
-              data: step,
-            }),
-        });
-      } else if (this.streaming) {
-        // Stream mode: emit content chunks in real-time
-        response = await this.agent.generateStream(generateRequest, (chunk) => {
+        extraTools: this.extraTools,
+        extensionTools: this.extensions?.getTools
+          ? this.extensions.getTools([exploration.extension])
+          : [],
+        disabledTools: this.disabledTools,
+        citations: this.extensions?.get?.(exploration.extension)?.requiresWebSearch ?? false,
+        revision,
+        maxSteps: this.agentMaxSteps,
+        maxTokens: this.agentMaxTokens,
+        onStep: (step: AgentStepEvent) =>
           this.emit({
-            type: "node:content-chunk",
+            type: "node:agent-step",
             explorationId: exploration.id,
             nodeId: node.id,
-            data: { chunk },
-          });
-        });
-      } else {
-        response = await this.agent.generate(generateRequest);
-      }
+            data: step,
+          }),
+      });
 
       // Run after:generate hook — extensions can modify response
       if (this.extensions) {

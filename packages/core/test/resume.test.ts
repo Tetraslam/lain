@@ -2,22 +2,21 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { Orchestrator } from "../src/orchestrator.js";
 import { Storage } from "../src/storage.js";
 import { Graph } from "../src/graph.js";
-import type { AgentProvider, GenerateRequest, GenerateResponse, PlanRequest, PlanResponse } from "@lain/shared";
+import type { AgentProvider, GenerateResponse, PlanRequest, PlanResponse, ConverseRequest, ConverseResult } from "@lain/shared";
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
+import { parseNodeId, submitNodeTurn } from "./_agentmock.js";
 
 class MockAgent implements AgentProvider {
   gen = 0;
-  async generate(request: GenerateRequest): Promise<GenerateResponse> {
+  async converse(request: ConverseRequest): Promise<ConverseResult> {
     this.gen++;
-    return { title: `T ${request.node.id}`, content: `C ${request.node.id}`, model: "mock", provider: "anthropic" };
+    const id = parseNodeId(request.messages);
+    return submitNodeTurn(`T ${id}`, `C ${id}`);
   }
-  async generateStream(request: GenerateRequest, onChunk: (c: string) => void): Promise<GenerateResponse> {
-    const r = await this.generate(request);
-    onChunk(r.content);
-    return r;
-  }
+  async generate(): Promise<GenerateResponse> { throw new Error("not used"); }
+  async generateStream(): Promise<GenerateResponse> { throw new Error("not used"); }
   async plan(request: PlanRequest): Promise<PlanResponse> {
     return { directions: Array.from({ length: request.n }, (_, i) => `dir ${i + 1}`) };
   }

@@ -306,13 +306,11 @@ async function runExplore(args: ParsedArgs): Promise<void> {
   const ext = getFlag(args.flags, "ext", "extension") ?? config.defaultExtension;
   const outputDb = getFlag(args.flags, "output", "o", "db");
   const concurrency = getNumFlag(args.flags, "concurrency", "c") ?? config.concurrency;
-  const streaming = getBoolFlag(args.flags, "stream");
   const corpusPath = getFlag(args.flags, "corpus");
   const missionRaw = args.flags["mission"];
   const missionEnabled = missionRaw !== undefined && missionRaw !== false;
   const missionRefinement = typeof missionRaw === "string" ? missionRaw : undefined;
   const missionRounds = getNumFlag(args.flags, "mission-rounds") ?? config.defaultMissionRounds;
-  const agentic = getBoolFlag(args.flags, "agentic", "agent") || config.defaultAgentic || !!corpusPath || missionEnabled;
   const agentMaxSteps = getNumFlag(args.flags, "max-steps") ?? 10;
 
   // Generate a name from the seed
@@ -339,9 +337,7 @@ async function runExplore(args: ParsedArgs): Promise<void> {
     `  Est. cost: ~$${estimate.estimatedCostUsd.toFixed(3)} (${estimate.model})`
   );
   console.log(`Strategy: ${strategy} | Plan detail: ${planDetail} | Concurrency: ${concurrency} | DB: ${dbFileName}`);
-  if (agentic) {
-    console.log(`Mode: agentic (nodes are tool-using agents${corpusPath ? `, corpus: ${corpusPath}` : ""})`);
-  }
+  console.log(`Nodes are tool-using agents${corpusPath ? ` (corpus: ${corpusPath})` : ""}.`);
 
   // Create provider
   const provider = config.defaultProvider;
@@ -352,7 +348,7 @@ async function runExplore(args: ParsedArgs): Promise<void> {
   const extensionsForCatalog = buildExtensionRegistry();
   let mcpPool: McpPoolType | null = null;
   let disabledToolIds: string[] = [];
-  if (agentic) {
+  {
     const belt = await assembleRunToolbelt(config, args, extensionsForCatalog, { hasCorpus: !!corpusPath, ext });
     mcpPool = belt.mcpPool;
     disabledToolIds = belt.disabledToolIds;
@@ -397,9 +393,7 @@ async function runExplore(args: ParsedArgs): Promise<void> {
     dbPath,
     agent,
     concurrency,
-    streaming,
     extensions,
-    agentic,
     agentMaxSteps,
     agentMaxTokens: config.maxTokens,
     extraTools: mcpPool?.tools ?? [],
@@ -420,15 +414,8 @@ async function runExplore(args: ParsedArgs): Promise<void> {
         }
         case "node:complete":
           const data = event.data as { title?: string } | undefined;
-          console.log(`${agentic ? "\n " : " "}done — "${data?.title || "untitled"}"`);
+          console.log(`\n done — "${data?.title || "untitled"}"`);
           break;
-        case "node:content-chunk": {
-          if (streaming) {
-            const chunkData = event.data as { chunk?: string } | undefined;
-            if (chunkData?.chunk) process.stdout.write(chunkData.chunk);
-          }
-          break;
-        }
         case "plan:complete": {
           const planData = event.data as { directions?: string[] } | undefined;
           if (planData?.directions) {
@@ -807,15 +794,14 @@ async function runResume(args: ParsedArgs): Promise<void> {
   const hasCorpus = probe.getCorpusSources(exp.id).length > 0;
   probe.close();
 
-  const agentic = getBoolFlag(args.flags, "agentic", "agent") || hasMission || hasCorpus;
-  const tags = [agentic ? "agentic" : null, hasCorpus ? "corpus" : null, hasMission ? "mission" : null].filter(Boolean);
+  const tags = [hasCorpus ? "corpus" : null, hasMission ? "mission" : null].filter(Boolean);
   console.log(`Resuming "${exp.name}" — ${pending.length} incomplete node(s)${tags.length ? ` (${tags.join(", ")})` : ""}`);
 
   const agent = createProviderFromCredentials(config.defaultProvider, config, credentials);
   const resumeRegistry = buildExtensionRegistry();
   let mcpPool: McpPoolType | null = null;
   let disabledToolIds: string[] = [];
-  if (agentic) {
+  {
     const belt = await assembleRunToolbelt(config, args, resumeRegistry, { hasCorpus, ext: exp.extension });
     mcpPool = belt.mcpPool;
     disabledToolIds = belt.disabledToolIds;
@@ -829,7 +815,6 @@ async function runResume(args: ParsedArgs): Promise<void> {
     disabledTools: disabledToolIds,
     concurrency: getNumFlag(args.flags, "concurrency", "c") ?? config.concurrency,
     extensions: buildExtensionRegistry(),
-    agentic,
     agentMaxTokens: config.maxTokens,
     extraTools: mcpPool?.tools ?? [],
     onEvent: (event) => {
@@ -1987,9 +1972,8 @@ ${section("Options")}
   --db <file>            Database file to use
   -o, --output <file>    Output database filename
   -c, --concurrency <n>  Max parallel agent calls (default: 5)
-  --agentic              Expand nodes as tool-using agents (graph + corpus + findings + linking)
-  --corpus <path>        Ingest a file/dir as source material before generating (implies --agentic)
-  --mission [intent]     Interview → validation contract → pursue it autonomously (implies --agentic)
+  --corpus <path>        Ingest a file/dir as source material before generating
+  --mission [intent]     Interview → validation contract → pursue it autonomously
   --mission-rounds <n>   Max validate→fix rounds for a mission (default: 2)
   --non-interactive      Skip the mission interview; auto-derive the contract (also --yes)
   --max-steps <n>        Max agent tool round-trips per node (default: 10)

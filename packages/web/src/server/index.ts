@@ -290,7 +290,7 @@ Bun.serve({
       let body: {
         seed: string; n?: number; m?: number; extension?: string;
         strategy?: string; planDetail?: string;
-        agentic?: boolean; corpusSources?: { name: string; text: string }[];
+        corpusSources?: { name: string; text: string }[];
         mission?: Mission | null; missionRounds?: number;
         toolSelection?: ToolSelection | null; saveToolsDefault?: boolean;
       };
@@ -305,7 +305,6 @@ Bun.serve({
           n: Number(form.get("n")) || undefined,
           m: Number(form.get("m")) || undefined,
           extension: (form.get("extension") as string) || undefined,
-          agentic: form.get("agentic") === "true",
           mission: typeof missionRaw === "string" && missionRaw ? JSON.parse(missionRaw) as Mission : null,
           toolSelection: typeof selRaw === "string" && selRaw ? JSON.parse(selRaw) as ToolSelection : null,
           saveToolsDefault: form.get("saveToolsDefault") === "true",
@@ -347,17 +346,12 @@ Bun.serve({
             controller.enqueue(new TextEncoder().encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
           };
 
-          // Uploaded files, inline sources, or a mission contract all imply
-          // agentic (grounded) mode — missions require the tool-using substrate.
-          const hasMission = !!(body.mission && body.mission.assertions?.length);
-          const agentic = (body.agentic ?? false) || uploadedFiles.length > 0 || (body.corpusSources?.length ?? 0) > 0 || hasMission;
-
           // Resolve the run's tool selection (per-run override or config default),
           // connect only the enabled MCP servers, and compute disabled tool ids.
           const selection = normalizeToolSelection(body.toolSelection ?? config.tools);
           let mcpPool: Awaited<ReturnType<typeof buildToolCatalog>>["mcpPool"] = undefined;
           let disabledToolIds: string[] = [];
-          if (agentic) {
+          {
             const enabledServers: Record<string, McpServerConfig> = {};
             for (const [name, cfg] of Object.entries(config.mcpServers ?? {})) {
               if (!cfg.disabled && !selection.disabledGroups.includes(`mcp:${name}`)) enabledServers[name] = cfg;
@@ -375,7 +369,7 @@ Bun.serve({
 
           try {
             const orchestrator = new Orchestrator({
-              dbPath, agent, concurrency: config.concurrency, streaming: !agentic, extensions, agentic,
+              dbPath, agent, concurrency: config.concurrency, extensions,
               agentMaxTokens: config.maxTokens,
               extraTools: mcpPool?.tools ?? [],
               disabledTools: disabledToolIds,
@@ -446,7 +440,7 @@ Bun.serve({
 
     // ---- Extend ----
     if (p === "/api/extend" && req.method === "POST") {
-      const { dbFile, nodeId, n, agentic } = await req.json() as { dbFile: string; nodeId: string; n?: number; agentic?: boolean };
+      const { dbFile, nodeId, n } = await req.json() as { dbFile: string; nodeId: string; n?: number };
       const dbPath = safeDbPath(dbFile); if (!dbPath) return json({ error: "Invalid database path" }, 400);
       const config = loadConfig();
       const credentials = loadCredentials();
@@ -459,17 +453,15 @@ Bun.serve({
       s.close();
       if (!exp) return json({ error: "No exploration" }, 404);
 
-      // Auto-enable agentic if this exploration already has corpus material.
       const probe = new Storage(dbPath);
       const hasCorpus = new Corpus(probe).listSources(exp.id).length > 0;
       probe.close();
-      const useAgentic = agentic ?? hasCorpus;
 
       // Honor the default tool selection: connect only enabled MCP servers + drop disabled tools.
       const selection = normalizeToolSelection(config.tools);
       let mcpPool: Awaited<ReturnType<typeof buildToolCatalog>>["mcpPool"] = undefined;
       let disabledToolIds: string[] = [];
-      if (useAgentic) {
+      {
         const enabledServers: Record<string, McpServerConfig> = {};
         for (const [name, cfg] of Object.entries(config.mcpServers ?? {})) {
           if (!cfg.disabled && !selection.disabledGroups.includes(`mcp:${name}`)) enabledServers[name] = cfg;
@@ -483,7 +475,7 @@ Bun.serve({
       }
 
       const orchestrator = new Orchestrator({
-        dbPath: dbPath, agent, streaming: !useAgentic, extensions, agentic: useAgentic,
+        dbPath: dbPath, agent, extensions,
         agentMaxTokens: config.maxTokens,
         extraTools: mcpPool?.tools ?? [], disabledTools: disabledToolIds,
       });

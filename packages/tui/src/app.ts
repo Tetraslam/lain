@@ -950,8 +950,7 @@ ${annotation.merged ? dim("Already merged.") : dim("m — merge  ·  d — dismi
       const config = loadConfig();
       const credentials = loadCredentials();
       const agent = createProviderFromCredentials(config, credentials);
-      const grounded = corpusCount() > 0 || !!storage.getMission(exploration.id);
-      const orchestrator = new Orchestrator({ dbPath, agent, agentic: grounded });
+      const orchestrator = new Orchestrator({ dbPath, agent });
       const { generated, created } = await orchestrator.resume(exploration.id);
       orchestrator.close();
       storage.close();
@@ -1358,7 +1357,7 @@ ${dim("↑↓")} ${fg(c.muted)("navigate")}   ${dim("↵")} ${fg(c.muted)("run")
       const config = loadConfig();
       const credentials = loadCredentials();
       const agent = createProviderFromCredentials(config, credentials);
-      const orchestrator = new Orchestrator({ dbPath, agent, agentic: hasCorpus });
+      const orchestrator = new Orchestrator({ dbPath, agent });
       const children = await orchestrator.extendNode(exploration.id, node.id, exploration.n);
       orchestrator.close();
       if (storage) storage.close();
@@ -1384,8 +1383,7 @@ ${dim("↑↓")} ${fg(c.muted)("navigate")}   ${dim("↵")} ${fg(c.muted)("run")
         const config = loadConfig();
         const credentials = loadCredentials();
         const agent = createProviderFromCredentials(config, credentials);
-        const hasCorpus = storage ? new Corpus(storage).listSources(exploration!.id).length > 0 : false;
-        const orchestrator = new Orchestrator({ dbPath, agent, agentic: hasCorpus });
+        const orchestrator = new Orchestrator({ dbPath, agent });
         await orchestrator.redirectNode(exploration!.id, node.id);
         orchestrator.close();
         if (storage) storage.close();
@@ -1981,7 +1979,7 @@ ${dim(visible)}`;
 
     try {
       const orchestrator = new Orchestrator({
-        dbPath: newDbPath, agent, concurrency: config.concurrency, agentic: true, extensions, agentMaxTokens: config.maxTokens, extraTools: mcpPool.tools, disabledTools: disabledToolIds,
+        dbPath: newDbPath, agent, concurrency: config.concurrency, extensions, agentMaxTokens: config.maxTokens, extraTools: mcpPool.tools, disabledTools: disabledToolIds,
         onEvent: (event) => {
           if (event.type === "plan:complete") {
             const d = event.data as { directions?: string[] } | undefined;

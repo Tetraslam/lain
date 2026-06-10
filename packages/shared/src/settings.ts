@@ -116,8 +116,6 @@ export const SETTINGS_FIELDS: SettingField[] = [
     ] },
 
   // ---- Agent behavior ----
-  { key: "defaultAgentic", label: "Agentic by default", type: "boolean", section: "behavior", store: "config",
-    description: "New explorations use the tool-using substrate (research graph + corpus, link across branches)." },
   { key: "maxTokens", label: "Max tokens", type: "number", section: "behavior", store: "config", min: 256, max: 32000, step: 256,
     description: "Token budget per model completion." },
   { key: "concurrency", label: "Concurrency", type: "number", section: "behavior", store: "config", min: 1, max: 20,

@@ -22,10 +22,10 @@ describe("coerceSettingValue", () => {
   });
 
   it("parses booleans loosely", () => {
-    expect(coerceSettingValue(field("defaultAgentic"), "true")).toEqual({ ok: true, value: true });
-    expect(coerceSettingValue(field("defaultAgentic"), "off")).toEqual({ ok: true, value: false });
-    expect(coerceSettingValue(field("defaultAgentic"), false)).toEqual({ ok: true, value: false });
-    expect(coerceSettingValue(field("defaultAgentic"), "maybe").ok).toBe(false);
+    expect(coerceSettingValue(field("synthesis.autoMerge"), "true")).toEqual({ ok: true, value: true });
+    expect(coerceSettingValue(field("synthesis.autoMerge"), "off")).toEqual({ ok: true, value: false });
+    expect(coerceSettingValue(field("synthesis.autoMerge"), false)).toEqual({ ok: true, value: false });
+    expect(coerceSettingValue(field("synthesis.autoMerge"), "maybe").ok).toBe(false);
   });
 
   it("validates select options", () => {

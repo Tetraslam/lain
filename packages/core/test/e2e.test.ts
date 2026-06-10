@@ -10,36 +10,28 @@ import type {
   GenerateResponse,
   PlanRequest,
   PlanResponse,
+  ConverseRequest,
+  ConverseResult,
   LainEvent,
 } from "@lain/shared";
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
 import matter from "gray-matter";
+import { parseNodeId, submitNodeTurn } from "./_agentmock.js";
 
-// Mock agent that generates deterministic content
+// Mock agent: every node is generated via the agentic loop (converse → submit_node).
 class MockAgent implements AgentProvider {
   callCount = 0;
 
-  async generate(request: GenerateRequest): Promise<GenerateResponse> {
+  async converse(request: ConverseRequest): Promise<ConverseResult> {
     this.callCount++;
-    const direction = request.node.planSummary || "general exploration";
-    return {
-      title: `Node ${request.node.id}: ${direction.slice(0, 30)}`,
-      content: `This explores "${direction}" branching from "${request.ancestors.at(-1)?.title || "root"}".\n\nDepth: ${request.node.depth}, Branch: ${request.node.branchIndex}.\n\nSiblings already exploring: ${request.siblings.map((s) => s.title).join(", ") || "none"}.`,
-      model: "mock-model",
-      provider: "anthropic",
-    };
+    const id = parseNodeId(request.messages);
+    return submitNodeTurn(`Node ${id}`, `Content for node ${id}.`);
   }
 
-  async generateStream(
-    request: GenerateRequest,
-    onChunk: (chunk: string) => void
-  ): Promise<GenerateResponse> {
-    const result = await this.generate(request);
-    onChunk(result.title + "\n" + result.content);
-    return result;
-  }
+  async generate(): Promise<GenerateResponse> { throw new Error("not used"); }
+  async generateStream(): Promise<GenerateResponse> { throw new Error("not used"); }
 
   async plan(request: PlanRequest): Promise<PlanResponse> {
     const directions: string[] = [];
@@ -134,20 +126,15 @@ describe("End-to-end exploration", () => {
   it("generates with depth-first strategy — first child goes deep before siblings", async () => {
     const generationOrder: string[] = [];
 
-    // Track-order agent
+    // Track-order agent (records generation order via the agentic converse call)
     const agent: AgentProvider = {
-      async generate(request) {
-        generationOrder.push(request.node.id);
-        return {
-          title: `Node ${request.node.id}`,
-          content: `Content for ${request.node.id}`,
-          model: "mock",
-          provider: "anthropic",
-        };
+      async converse(request) {
+        const id = parseNodeId(request.messages);
+        generationOrder.push(id);
+        return submitNodeTurn(`Node ${id}`, `Content for ${id}`);
       },
-      async generateStream(request, onChunk) {
-        return this.generate(request);
-      },
+      async generate() { throw new Error("not used"); },
+      async generateStream() { throw new Error("not used"); },
       async plan(request) {
         return {
           directions: Array.from({ length: request.n }, (_, i) => `Dir ${i + 1}`),
@@ -261,7 +248,7 @@ describe("End-to-end exploration", () => {
     const filePath = path.join(outputDir, "root-1.md");
     const original = fs.readFileSync(filePath, "utf-8");
     const edited = original.replace(
-      /This explores .*/,
+      /Content for node .*/,
       "AGENT EDITED: This is a new insight about the direction."
     );
     fs.writeFileSync(filePath, edited);

@@ -4,7 +4,8 @@ import { Graph } from "../src/graph.js";
 import { Orchestrator } from "../src/orchestrator.js";
 import { parseContract, interviewMission } from "../src/mission.js";
 import { buildNodeTools, buildToolContext, hasWebSearchTool } from "../src/tools.js";
-import type { AgentProvider, GenerateRequest, GenerateResponse, PlanRequest, PlanResponse } from "@lain/shared";
+import type { AgentProvider, GenerateResponse, PlanRequest, PlanResponse, ConverseRequest, ConverseResult } from "@lain/shared";
+import { parseNodeId, submitNodeTurn } from "./_agentmock.js";
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
@@ -58,12 +59,12 @@ describe("Mission storage", () => {
 // pass, then everything met after a fix — exercising the autonomous fix loop.
 class MockMissionAgent implements AgentProvider {
   validateCalls = 0;
-  async generate(request: GenerateRequest): Promise<GenerateResponse> {
-    return { title: `T ${request.node.id}`, content: `C ${request.node.id}: ${request.node.planSummary ?? ""}`, model: "mock", provider: "anthropic" };
+  async converse(request: ConverseRequest): Promise<ConverseResult> {
+    const id = parseNodeId(request.messages);
+    return submitNodeTurn(`T ${id}`, `C ${id}`);
   }
-  async generateStream(request: GenerateRequest, onChunk: (c: string) => void): Promise<GenerateResponse> {
-    const r = await this.generate(request); onChunk(r.content); return r;
-  }
+  async generate(): Promise<GenerateResponse> { throw new Error("not used"); }
+  async generateStream(): Promise<GenerateResponse> { throw new Error("not used"); }
   async plan(request: PlanRequest): Promise<PlanResponse> {
     return { directions: Array.from({ length: request.n }, (_, i) => `dir ${i + 1}`) };
   }
@@ -181,13 +182,13 @@ describe("mission lifecycle (plan → validate → fix → revalidate)", () => {
     // REVISE the cited node (regenerate it), never spawn a new node.
     const regenerated: string[] = [];
     class ReviseAgent implements AgentProvider {
-      async generate(r: GenerateRequest): Promise<GenerateResponse> {
-        regenerated.push(r.node.id);
-        return { title: `T ${r.node.id}`, content: `C ${r.node.id} #${regenerated.filter((x) => x === r.node.id).length}`, model: "mock", provider: "anthropic" };
+      async converse(request: ConverseRequest): Promise<ConverseResult> {
+        const id = parseNodeId(request.messages);
+        regenerated.push(id);
+        return submitNodeTurn(`T ${id}`, `C ${id} #${regenerated.filter((x) => x === id).length}`);
       }
-      async generateStream(r: GenerateRequest, on: (c: string) => void): Promise<GenerateResponse> {
-        const x = await this.generate(r); on(x.content); return x;
-      }
+      async generate(): Promise<GenerateResponse> { throw new Error("not used"); }
+      async generateStream(): Promise<GenerateResponse> { throw new Error("not used"); }
       async plan(r: PlanRequest): Promise<PlanResponse> { return { directions: Array.from({ length: r.n }, (_, i) => `d${i + 1}`) }; }
       async generateRaw(system: string): Promise<string> {
         if (system.includes("orchestrator of an ideation mission")) {

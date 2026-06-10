@@ -64,7 +64,6 @@ export function CreateModal({ onClose, onCreated }: CreateModalProps) {
   const [n, setN] = useState("3");
   const [m, setM] = useState("2");
   const [ext, setExt] = useState("freeform");
-  const [agentic, setAgentic] = useState(false);
   const [mission, setMission] = useState(false);
   const [files, setFiles] = useState<File[]>([]);
   // Per-run tool selection
@@ -90,7 +89,7 @@ export function CreateModal({ onClose, onCreated }: CreateModalProps) {
   const [refining, setRefining] = useState(false);
   const [refineText, setRefineText] = useState("");
 
-  const grounded = agentic || files.length > 0;
+  const hasCorpus = files.length > 0;
 
   const pushActivity = useCallback((a: Omit<Activity, "id">) => {
     setActivity((prev) => [...prev, { ...a, id: activityCounter++ }].slice(-60));
@@ -202,7 +201,7 @@ export function CreateModal({ onClose, onCreated }: CreateModalProps) {
     setDoneCount(0);
     pushActivity({
       kind: "info",
-      text: lockedMission ? "Pursuing the mission…" : grounded ? "Seeding agents with your material…" : "Beginning exploration…",
+      text: lockedMission ? "Pursuing the mission…" : hasCorpus ? "Seeding agents with your material…" : "Beginning exploration…",
     });
 
     try {
@@ -218,7 +217,6 @@ export function CreateModal({ onClose, onCreated }: CreateModalProps) {
         form.append("n", n);
         form.append("m", m);
         form.append("extension", ext);
-        form.append("agentic", "true");
         if (lockedMission) form.append("mission", JSON.stringify(lockedMission));
         if (toolSelection) form.append("toolSelection", JSON.stringify(toolSelection));
         if (saveToolsDefault) form.append("saveToolsDefault", "true");
@@ -230,7 +228,7 @@ export function CreateModal({ onClose, onCreated }: CreateModalProps) {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             seed, n: parseInt(n) || 3, m: parseInt(m) || 2, extension: ext,
-            agentic: grounded || !!lockedMission, mission: lockedMission,
+            mission: lockedMission,
             toolSelection, saveToolsDefault,
           }),
         });
@@ -396,15 +394,6 @@ export function CreateModal({ onClose, onCreated }: CreateModalProps) {
               </div>
             </div>
 
-            <label className={`agentic-toggle${grounded ? " on" : ""}`} onClick={() => files.length === 0 && setAgentic(!agentic)}>
-              <span className={`toggle-switch${grounded ? " on" : ""}`}><span className="toggle-knob" /></span>
-              <span className="toggle-label">
-                <strong>Agentic mode</strong>
-                <em>{grounded ? "nodes research the graph + your corpus, and link across branches" : "one-shot generation (faster, less grounded)"}</em>
-              </span>
-              {files.length > 0 && <span className="toggle-forced">on — corpus attached</span>}
-            </label>
-
             <label className={`agentic-toggle${mission ? " on" : ""}`} onClick={() => setMission(!mission)}>
               <span className={`toggle-switch${mission ? " on" : ""}`}><span className="toggle-knob" /></span>
               <span className="toggle-label">
@@ -444,7 +433,7 @@ export function CreateModal({ onClose, onCreated }: CreateModalProps) {
             <div className="modal-actions">
               <button className="btn" onClick={onClose}>Cancel</button>
               <button className="btn btn-primary" onClick={primaryAction} disabled={!seed.trim()}>
-                {mission ? "Plan mission ◇" : `Explore ${grounded ? "↬" : "→"}`}
+                {mission ? "Plan mission ◇" : `Explore ${hasCorpus ? "↬" : "→"}`}
               </button>
             </div>
           </>
