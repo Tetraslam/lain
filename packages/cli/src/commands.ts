@@ -309,7 +309,9 @@ async function runExplore(args: ParsedArgs): Promise<void> {
   const concurrency = getNumFlag(args.flags, "concurrency", "c") ?? config.concurrency;
   const corpusPath = getFlag(args.flags, "corpus");
   const missionRaw = args.flags["mission"];
-  const missionEnabled = missionRaw !== undefined && missionRaw !== false;
+  const missionJsonArg = getFlag(args.flags, "mission-json");
+  // A prebuilt mission implies --mission, so agents can script the whole thing.
+  const missionEnabled = missionRaw !== undefined && missionRaw !== false || !!missionJsonArg;
   const missionRefinement = typeof missionRaw === "string" ? missionRaw : undefined;
   const missionRounds = getNumFlag(args.flags, "mission-rounds") ?? config.defaultMissionRounds;
   const agentMaxSteps = getNumFlag(args.flags, "max-steps") ?? 50;
@@ -374,7 +376,11 @@ async function runExplore(args: ParsedArgs): Promise<void> {
   const interactive = !!process.stdin.isTTY && !!process.stdout.isTTY
     && !getBoolFlag(args.flags, "non-interactive", "yes", "no-interview");
   if (missionEnabled) {
-    if (interactive) {
+    if (missionJsonArg) {
+      // Prebuilt mission (fully scriptable): a JSON file path or inline JSON.
+      plannedMission = loadMissionJson(missionJsonArg, explorationId);
+      console.log(`Using provided mission contract (${plannedMission.assertions.length} assertions).`);
+    } else if (interactive) {
       plannedMission = await runMissionInterview(agent, explorationId, seed, n, ext, missionRefinement);
       if (!plannedMission) {
         console.log("Mission cancelled.");
@@ -1259,6 +1265,29 @@ function displaySettingValue(field: SettingField, raw: unknown): string {
   return c.fg(String(raw));
 }
 
+/** Load a prebuilt mission from a JSON file path or inline JSON (for scripting). */
+function loadMissionJson(arg: string, explorationId: string): Mission {
+  const raw = fs.existsSync(arg) ? fs.readFileSync(arg, "utf-8") : arg;
+  let parsed: any;
+  try { parsed = JSON.parse(raw); }
+  catch { throw new Error(`--mission-json: not valid JSON (and not a file path): ${arg.slice(0, 60)}`); }
+  if (!parsed || typeof parsed.intent !== "string" || !Array.isArray(parsed.assertions)) {
+    throw new Error('--mission-json must be an object with "intent" (string) and "assertions" (array of {id,text}).');
+  }
+  const assertions = parsed.assertions.map((a: any, i: number) => {
+    if (!a || typeof a.text !== "string") throw new Error(`--mission-json: assertion ${i} needs a "text" string.`);
+    return { id: typeof a.id === "string" && a.id ? a.id : `A${i + 1}`, text: a.text };
+  });
+  const features = Array.isArray(parsed.features)
+    ? parsed.features.map((f: any, i: number) => ({
+        id: typeof f.id === "string" && f.id ? f.id : `F${i + 1}`,
+        angle: String(f.angle ?? ""),
+        assertions: Array.isArray(f.assertions) ? f.assertions.map(String) : [],
+      }))
+    : [];
+  return { explorationId, intent: parsed.intent, assertions, features, createdAt: new Date().toISOString() };
+}
+
 async function runConfig(args: ParsedArgs): Promise<void> {
   const subcommand = args.positional[0] || "list";
   const isLocal = getBoolFlag(args.flags, "local");
@@ -2010,6 +2039,7 @@ ${section("Options")}
   -c, --concurrency <n>  Max parallel agent calls (default: 5)
   --corpus <path>        Ingest a file/dir as source material before generating
   --mission [intent]     Interview → validation contract → pursue it autonomously
+  --mission-json <j>     Use a prebuilt mission (JSON file or inline) — scriptable
   --mission-rounds <n>   Max validate→fix rounds for a mission (default: 2)
   --non-interactive      Skip the mission interview; auto-derive the contract (also --yes)
   --max-steps <n>        Max agent tool round-trips per node (default: 50)
