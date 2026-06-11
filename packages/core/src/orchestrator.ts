@@ -327,23 +327,32 @@ export class Orchestrator {
         (n) => n.status === "complete"
       );
 
-      // Plan all parents at this depth concurrently
+      // Plan all parents at this depth concurrently. Isolate per-parent
+      // planning failures so one bad parent doesn't abort the whole depth.
       const planResults = await this.runConcurrent(
         activeNodes,
         async (node) => {
-          const summaries = await this.planBranches(
-            node,
-            exploration,
-            exploration.n
-          );
-          return { node, summaries };
+          try {
+            const summaries = await this.planBranches(node, exploration, exploration.n);
+            return { node, summaries };
+          } catch (error) {
+            this.emit({
+              type: "error",
+              explorationId: exploration.id,
+              nodeId: node.id,
+              data: { error: `planning failed: ${error instanceof Error ? error.message : String(error)}` },
+            });
+            return null;
+          }
         },
         this.concurrency
       );
 
       // Create all pending children
       const allChildren: LainNode[] = [];
-      for (const { node, summaries } of planResults) {
+      for (const planned of planResults) {
+        if (!planned) continue;
+        const { node, summaries } = planned;
         const children = this.graph.createChildNodes(
           exploration.id,
           node.id,
@@ -393,14 +402,17 @@ export class Orchestrator {
       planSummaries
     );
 
-    // Generate first child and recurse deep
+    // Generate first child and recurse deep. Only recurse if it completed —
+    // a failed (pending) node has no content to plan further branches from.
     if (children.length > 0) {
-      await this.generateNode(children[0], exploration);
-      await this.expandNodeDF(
-        this.graph.getNode(children[0].id)!,
-        exploration,
-        currentDepth + 1
-      );
+      const ok = await this.generateNodeSafe(children[0], exploration);
+      if (ok) {
+        await this.expandNodeDF(
+          this.graph.getNode(children[0].id)!,
+          exploration,
+          currentDepth + 1
+        );
+      }
     }
 
     // Generate remaining siblings concurrently
@@ -408,13 +420,15 @@ export class Orchestrator {
       const remaining = children.slice(1);
       await this.generateNodesBatch(remaining, exploration);
 
-      // Recurse into remaining siblings concurrently
-      // (each sibling's subtree is independent)
+      // Recurse into remaining siblings concurrently (each subtree is
+      // independent). Skip any that failed to generate — they stay pending.
       await this.runConcurrent(
         remaining,
         async (child) => {
           const updated = this.graph.getNode(child.id)!;
-          await this.expandNodeDF(updated, exploration, currentDepth + 1);
+          if (updated.status === "complete") {
+            await this.expandNodeDF(updated, exploration, currentDepth + 1);
+          }
         },
         this.concurrency
       );
@@ -629,7 +643,27 @@ export class Orchestrator {
   }
 
   /**
-   * Generate a batch of nodes with concurrency limit.
+   * Generate one node, isolating its failure: a single node erroring out must
+   * NOT abort its siblings or the whole run. On failure the node is already
+   * left "pending" and an error event emitted by generateNode(), so it's
+   * cleanly resumable later (`lain resume`). Returns whether it completed.
+   */
+  private async generateNodeSafe(
+    node: LainNode,
+    exploration: Exploration
+  ): Promise<boolean> {
+    try {
+      await this.generateNode(node, exploration);
+      return true;
+    } catch {
+      return false; // already marked pending + error emitted in generateNode
+    }
+  }
+
+  /**
+   * Generate a batch of nodes with concurrency limit. Per-node failures are
+   * isolated — the batch always settles, completed nodes persist, failed ones
+   * stay pending.
    */
   private async generateNodesBatch(
     nodes: LainNode[],
@@ -637,7 +671,7 @@ export class Orchestrator {
   ): Promise<void> {
     await this.runConcurrent(
       nodes,
-      (node) => this.generateNode(node, exploration),
+      (node) => this.generateNodeSafe(node, exploration),
       this.concurrency
     );
   }

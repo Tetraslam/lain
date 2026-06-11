@@ -64,6 +64,8 @@ export interface ConverseRequest {
   tools?: ToolSpec[];
   maxTokens?: number;
   temperature?: number;
+  /** Caller cancellation, threaded into the provider's HTTP call. */
+  signal?: AbortSignal;
 }
 
 /** Result of one Converse turn — the assistant's content blocks + stop reason. */

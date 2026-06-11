@@ -18,6 +18,7 @@ import type {
   SynthesizeResponse,
 } from "@lain/shared";
 import { userText } from "@lain/shared";
+import { fetchWithRetry } from "./http.js";
 import {
   buildGeneratePrompt,
   buildPlanPrompt,
@@ -81,7 +82,7 @@ export class OpenAIProvider implements AgentProvider {
       body.tool_choice = "auto";
     }
 
-    const response = await fetch(`${this.baseUrl}/chat/completions`, {
+    const response = await fetchWithRetry(`${this.baseUrl}/chat/completions`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -89,7 +90,7 @@ export class OpenAIProvider implements AgentProvider {
         ...this.headers,
       },
       body: JSON.stringify(body),
-    });
+    }, { signal: request.signal });
 
     if (!response.ok) {
       const errBody = await response.text();

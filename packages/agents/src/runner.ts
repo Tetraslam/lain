@@ -96,6 +96,7 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
       tools: opts.tools,
       maxTokens: opts.maxTokens,
       temperature: opts.temperature,
+      signal: opts.signal,
     });
 
     if (result.usage) {

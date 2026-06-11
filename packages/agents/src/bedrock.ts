@@ -13,6 +13,7 @@ import type {
   StopReason,
   Provider,
 } from "@lain/shared";
+import { fetchWithRetry } from "./http.js";
 import { buildGeneratePrompt, buildPlanPrompt, buildSynthesizePrompt, parseSynthesizeResponse } from "./prompts.js";
 import {
   toBedrockMessages,
@@ -96,14 +97,14 @@ export class BedrockProvider implements AgentProvider {
       body.toolConfig = toBedrockTools(request.tools);
     }
 
-    const response = await fetch(url, {
+    const response = await fetchWithRetry(url, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${this.apiKey}`,
       },
       body: JSON.stringify(body),
-    });
+    }, { signal: request.signal });
 
     if (!response.ok) {
       const errorBody = await response.text();
@@ -184,7 +185,7 @@ export class BedrockProvider implements AgentProvider {
       },
     };
 
-    const response = await fetch(url, {
+    const response = await fetchWithRetry(url, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -238,7 +239,7 @@ export class BedrockProvider implements AgentProvider {
       inferenceConfig: { maxTokens },
     };
 
-    const response = await fetch(url, {
+    const response = await fetchWithRetry(url, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",

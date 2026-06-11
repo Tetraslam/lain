@@ -226,6 +226,12 @@ export class Storage {
     this.db = new Database(dbPath, { create: true });
     this.db.run("PRAGMA journal_mode = WAL");
     this.db.run("PRAGMA foreign_keys = ON");
+    // Wait (up to 5s) for a held write lock instead of failing instantly with
+    // SQLITE_BUSY — surfaces with concurrent surfaces (CLI + web + watcher).
+    this.db.run("PRAGMA busy_timeout = 5000");
+    // Safe to relax fsync durability under WAL; big write speedup, and a crash
+    // can at worst lose the last transaction (never corrupts the db).
+    this.db.run("PRAGMA synchronous = NORMAL");
     this.db.exec(SCHEMA);
     this.migrate();
   }
@@ -487,15 +493,21 @@ export class Storage {
   }
 
   getAncestors(nodeId: string): LainNode[] {
-    const ancestors: LainNode[] = [];
-    let current = this.getNode(nodeId);
-    while (current?.parentId) {
-      const parent = this.getNode(current.parentId);
-      if (!parent) break;
-      ancestors.unshift(parent); // oldest first
-      current = parent;
-    }
-    return ancestors;
+    // Single recursive CTE instead of one query per ancestor (was O(depth)
+    // round-trips on a hot path — every agentic node reads its ancestor chain).
+    const rows = this.db
+      .prepare(
+        `WITH RECURSIVE ancestors(id) AS (
+           SELECT parent_id FROM node WHERE id = ?
+           UNION ALL
+           SELECT n.parent_id FROM node n JOIN ancestors a ON n.id = a.id
+           WHERE n.parent_id IS NOT NULL
+         )
+         SELECT node.* FROM node JOIN ancestors ON node.id = ancestors.id
+         ORDER BY node.depth ASC`
+      )
+      .all(nodeId) as Record<string, unknown>[];
+    return rows.map((r) => this.rowToNode(r)); // oldest first (root → parent)
   }
 
   private rowToNode(row: Record<string, unknown>): LainNode {
