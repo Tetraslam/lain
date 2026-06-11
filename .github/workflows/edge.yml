@@ -1,9 +1,9 @@
-name: Edge
+name: Release
 
-# Rolling "edge" channel: after CI passes on main, rebuild the binaries from
-# that commit and update a single `edge` release in place. The installer pulls
-# from the `edge` tag by default, so installs always track the latest commit
-# that passed CI — no manual version bump or tagging needed.
+# The one and only release: after CI passes on main, rebuild the binaries from
+# that commit and update a single rolling release in place, marked "latest".
+# Version is the commit count (0.1.<count>), so it bumps automatically — no
+# manual tagging. The installer always grabs this latest build.
 on:
   workflow_run:
     workflows: ["CI"]
@@ -112,19 +112,20 @@ jobs:
           set -e
           SHA="${{ github.event.workflow_run.head_sha || github.sha }}"
           VERSION="${{ steps.meta.outputs.version }}"
-          NOTES="Rolling build of the latest commit on \`main\` (\`${SHA:0:7}\`, v${VERSION}) that passed CI.
+          NOTES="The latest build — rebuilt from \`main\` (\`${SHA:0:7}\`, v${VERSION}) on every commit that passes CI.
 
-          Install (tracks this channel automatically):
+          Install (always grabs this build):
           \`\`\`bash
           curl -fsSL https://tetraslam.github.io/lain/install | bash
-          \`\`\`
-          Pin a stable release instead with \`LAIN_VERSION_TAG=vX.Y.Z\`."
-          # Create the release once; thereafter just refresh assets + notes in
-          # place (no delete → no window where the download 404s).
+          \`\`\`"
+          # Single rolling release, always marked latest. Create it once; after
+          # that just refresh assets + notes in place (no delete → no window
+          # where the download 404s). Tag name is internal plumbing — installs
+          # resolve via releases/latest/download.
           if ! gh release view edge >/dev/null 2>&1; then
-            gh release create edge --target "$SHA" --prerelease \
-              --title "lain edge (v${VERSION})" --notes "$NOTES" artifacts/*
+            gh release create edge --target "$SHA" --latest \
+              --title "lain v${VERSION}" --notes "$NOTES" artifacts/*
           else
             gh release upload edge artifacts/* --clobber
-            gh release edit edge --title "lain edge (v${VERSION})" --notes "$NOTES"
+            gh release edit edge --latest --title "lain v${VERSION}" --notes "$NOTES"
           fi
