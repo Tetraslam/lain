@@ -8,17 +8,20 @@
 # It needs only curl + bash. The binary is fully self-contained (Bun runtime +
 # CLI + TUI + web all baked in) — no Node/pnpm/bun required to run it.
 #
+# By default it tracks the rolling "edge" channel — the binary rebuilt from the
+# latest commit on main that passed CI — so installs stay as fresh as a git pull.
+#
 # Env overrides:
 #   LAIN_FROM_SOURCE=1   skip the binary, build from source instead
 #   LAIN_BIN_DIR         where to install the launcher (default: ~/.local/bin)
 #   LAIN_REPO            owner/repo (default: Tetraslam/lain)
-#   LAIN_VERSION_TAG     release tag to install (default: latest)
+#   LAIN_VERSION_TAG     release tag to install (default: edge; e.g. v0.1.0, or "latest")
 #
 set -euo pipefail
 
 REPO="${LAIN_REPO:-Tetraslam/lain}"
 BIN_DIR="${LAIN_BIN_DIR:-$HOME/.local/bin}"
-TAG="${LAIN_VERSION_TAG:-latest}"
+TAG="${LAIN_VERSION_TAG:-edge}"
 
 say()  { printf '\033[38;2;187;154;247m%s\033[0m\n' "$*"; }
 info() { printf '%s\n' "$*"; }

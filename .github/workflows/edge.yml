@@ -1,0 +1,130 @@
+name: Edge
+
+# Rolling "edge" channel: after CI passes on main, rebuild the binaries from
+# that commit and update a single `edge` release in place. The installer pulls
+# from the `edge` tag by default, so installs always track the latest commit
+# that passed CI — no manual version bump or tagging needed.
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# Only the newest commit's edge build matters — cancel superseded ones.
+concurrency:
+  group: edge
+  cancel-in-progress: true
+
+jobs:
+  build:
+    # Gate on a successful CI run on main (or a manual dispatch).
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main')
+    name: build ${{ matrix.asset }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: ubuntu-latest, asset: lain-linux-x64 }
+          - { runner: ubuntu-24.04-arm, asset: lain-linux-arm64 }
+          - { runner: macos-14, asset: lain-darwin-arm64 }
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          fetch-depth: 0 # need full history for the commit-count version
+
+      - uses: pnpm/action-setup@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Resolve auto version
+        id: meta
+        shell: bash
+        run: |
+          BASE=$(python3 -c "import json;print('.'.join(json.load(open('packages/cli/package.json'))['version'].split('.')[:2]))")
+          echo "version=${BASE}.$(git rev-list --count HEAD)" >> "$GITHUB_OUTPUT"
+          echo "commit=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Build binary
+        env:
+          LAIN_VERSION: ${{ steps.meta.outputs.version }}
+          LAIN_COMMIT: ${{ steps.meta.outputs.commit }}
+          LAIN_BRANCH: edge
+        run: pnpm build:binary
+
+      - name: Checksum
+        shell: bash
+        run: |
+          cd dist-bin
+          if command -v sha256sum >/dev/null; then sha256sum "${{ matrix.asset }}" > "${{ matrix.asset }}.sha256";
+          else shasum -a 256 "${{ matrix.asset }}" > "${{ matrix.asset }}.sha256"; fi
+
+      - name: Smoke test
+        shell: bash
+        run: ./dist-bin/${{ matrix.asset }} version
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: |
+            dist-bin/${{ matrix.asset }}
+            dist-bin/${{ matrix.asset }}.sha256
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Resolve auto version
+        id: meta
+        shell: bash
+        run: |
+          BASE=$(python3 -c "import json;print('.'.join(json.load(open('packages/cli/package.json'))['version'].split('.')[:2]))")
+          echo "version=${BASE}.$(git rev-list --count HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Update the edge release (in place, no gap)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          SHA="${{ github.event.workflow_run.head_sha || github.sha }}"
+          VERSION="${{ steps.meta.outputs.version }}"
+          NOTES="Rolling build of the latest commit on \`main\` (\`${SHA:0:7}\`, v${VERSION}) that passed CI.
+
+          Install (tracks this channel automatically):
+          \`\`\`bash
+          curl -fsSL https://tetraslam.github.io/lain/install | bash
+          \`\`\`
+          Pin a stable release instead with \`LAIN_VERSION_TAG=vX.Y.Z\`."
+          # Create the release once; thereafter just refresh assets + notes in
+          # place (no delete → no window where the download 404s).
+          if ! gh release view edge >/dev/null 2>&1; then
+            gh release create edge --target "$SHA" --prerelease \
+              --title "lain edge (v${VERSION})" --notes "$NOTES" artifacts/*
+          else
+            gh release upload edge artifacts/* --clobber
+            gh release edit edge --title "lain edge (v${VERSION})" --notes "$NOTES"
+          fi

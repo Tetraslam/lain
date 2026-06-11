@@ -18,7 +18,10 @@ curl -fsSL https://tetraslam.github.io/lain/install | bash
 ```
 
 A self-contained binary — no Node, bun, or pnpm to install; just download and
-run. (No prebuilt binary for your platform? It falls back to a source build.)
+run. It tracks the rolling **edge** channel (the latest commit that passed CI),
+so re-running it — or `lain update` — always gets the newest build. Pin a
+stable release with `LAIN_VERSION_TAG=vX.Y.Z`. (No prebuilt binary for your
+platform? It falls back to a source build.)
 
 ```bash
 lain init                                   # pick a provider, paste a key

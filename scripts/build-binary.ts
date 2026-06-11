@@ -68,9 +68,15 @@ function main() {
   const { bunTarget, variant, asset } = hostTarget();
   const version = (() => {
     if (process.env.LAIN_VERSION) return process.env.LAIN_VERSION;
-    // Raw version (no leading "v") — the banner adds its own "v" prefix.
-    try { return JSON.parse(fs.readFileSync(path.join(REPO, "packages/cli/package.json"), "utf-8")).version; }
-    catch { return "0.0.0"; }
+    // Auto-version: <major.minor> from package.json + commit count as the patch,
+    // so every commit bumps the version automatically (no leading "v" — the
+    // banner adds it). Falls back to the package.json version off a git checkout.
+    try {
+      const pkg = JSON.parse(fs.readFileSync(path.join(REPO, "packages/cli/package.json"), "utf-8")).version as string;
+      const base = pkg.split(".").slice(0, 2).join(".");
+      const count = capture("git", ["-C", REPO, "rev-list", "--count", "HEAD"]);
+      return count ? `${base}.${count}` : pkg;
+    } catch { return "0.0.0"; }
   })();
   const commit = process.env.LAIN_COMMIT || capture("git", ["-C", REPO, "rev-parse", "--short", "HEAD"]) || "unknown";
   const branch = process.env.LAIN_BRANCH || "release";
