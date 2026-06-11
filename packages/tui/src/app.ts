@@ -549,6 +549,90 @@ export async function createApp(dbPathArg?: string): Promise<void> {
   toolsBox.add(toolsFooter);
 
   // ===========================================================================
+  // PROMPT OVERLAY (reusable single-line text prompt → Promise<string|null>)
+  // ===========================================================================
+  const promptOverlay = new BoxRenderable(renderer, {
+    id: "prompt-overlay", width: "100%", height: "100%",
+    position: "absolute", left: 0, top: 0, justifyContent: "center", alignItems: "center",
+  });
+  const promptBox = new BoxRenderable(renderer, {
+    id: "prompt-box", width: 80, border: true, borderStyle: "rounded", borderColor: c.accent,
+    flexDirection: "column", backgroundColor: c.surface,
+    paddingLeft: 2, paddingRight: 2, paddingTop: 1, paddingBottom: 1, gap: 1,
+  });
+  promptOverlay.add(promptBox);
+  const promptTitle = new TextRenderable(renderer, { id: "prompt-title", content: "" });
+  promptBox.add(promptTitle);
+  const promptHint = new TextRenderable(renderer, { id: "prompt-hint", content: "", width: "100%" });
+  promptBox.add(promptHint);
+  const promptInput = new InputRenderable(renderer, { id: "prompt-input", width: "100%", placeholder: "" });
+  promptBox.add(promptInput);
+  const promptFooter = new TextRenderable(renderer, { id: "prompt-footer", content: t`  ${fg(c.muted)("enter")} ok  ${fg(c.muted)("·")}  ${dim("esc")} cancel`, width: "100%" });
+  promptBox.add(promptFooter);
+
+  let promptResolve: ((v: string | null) => void) | null = null;
+  /** Show a single-line prompt; resolves with the entered text, or null on esc. */
+  function askPrompt(opts: { title: string; hint?: string; placeholder?: string; initial?: string }): Promise<string | null> {
+    // Note: a `t` template with a single interpolation and empty literals
+    // produces a chunkless StyledText in OpenTUI — always include a literal.
+    promptTitle.content = t`  ${bold(fg(c.accent)(opts.title))}`;
+    promptHint.content = opts.hint ? t`  ${dim(opts.hint)}` : t`  `;
+    previousMode = mode === "prompt" || mode === "info" ? previousMode : mode;
+    mode = "prompt";
+    showScreen("prompt"); // mount first, then set input props (matches the palette)
+    promptInput.placeholder = opts.placeholder ?? "";
+    promptInput.value = opts.initial ?? "";
+    promptInput.focus();
+    return new Promise((resolve) => { promptResolve = resolve; });
+  }
+  function closePrompt(value: string | null) {
+    const r = promptResolve; promptResolve = null;
+    mode = previousMode;
+    restoreScreenForMode();
+    r?.(value);
+  }
+
+  // ===========================================================================
+  // INFO OVERLAY (reusable read-only viewer — mission report, search results …)
+  // ===========================================================================
+  const infoOverlay = new BoxRenderable(renderer, {
+    id: "info-overlay", width: "100%", height: "100%",
+    position: "absolute", left: 0, top: 0, justifyContent: "center", alignItems: "center",
+  });
+  const infoBox = new BoxRenderable(renderer, {
+    id: "info-box", width: 86, border: true, borderStyle: "rounded", borderColor: c.accent,
+    flexDirection: "column", backgroundColor: c.surface,
+    paddingLeft: 2, paddingRight: 2, paddingTop: 1, paddingBottom: 1, gap: 1,
+  });
+  infoOverlay.add(infoBox);
+  const infoTitle = new TextRenderable(renderer, { id: "info-title", content: "" });
+  infoBox.add(infoTitle);
+  const infoBody = new TextRenderable(renderer, { id: "info-body", content: "", width: "100%" });
+  infoBox.add(infoBody);
+  const infoFooter = new TextRenderable(renderer, { id: "info-footer", content: t`  ${dim("esc")} close`, width: "100%" });
+  infoBox.add(infoFooter);
+
+  function showInfo(title: StyledText | string, body: StyledText | string) {
+    infoTitle.content = typeof title === "string" ? t`  ${bold(fg(c.accent)(title))}` : title;
+    infoBody.content = body;
+    previousMode = mode === "info" || mode === "prompt" ? previousMode : mode;
+    mode = "info";
+    showScreen("info");
+  }
+  function closeInfo() {
+    mode = previousMode;
+    restoreScreenForMode();
+  }
+
+  /** Re-show whichever base screen the current mode belongs to. */
+  function restoreScreenForMode() {
+    if (mode === "home") showScreen("home");
+    else if (mode === "graph") showScreen("graph");
+    else if (mode === "synthesis") showScreen("synthesis");
+    else showScreen("exploration");
+  }
+
+  // ===========================================================================
   // SYNTHESIS VIEW
   // ===========================================================================
 
@@ -730,7 +814,7 @@ ${annotation.merged ? dim("Already merged.") : dim("m — merge  ·  d — dismi
   // Screen management
   // ===========================================================================
 
-  function showScreen(screen: "home" | "exploration" | "palette" | "create" | "interview" | "settings" | "tools" | "graph" | "synthesis") {
+  function showScreen(screen: "home" | "exploration" | "palette" | "create" | "interview" | "settings" | "tools" | "graph" | "synthesis" | "prompt" | "info") {
     try { rootBox.remove("home-container"); } catch {}
     try { rootBox.remove("exp-container"); } catch {}
     try { rootBox.remove("graph-container"); } catch {}
@@ -739,6 +823,8 @@ ${annotation.merged ? dim("Already merged.") : dim("m — merge  ·  d — dismi
     try { rootBox.remove("interview-overlay"); } catch {}
     try { rootBox.remove("settings-overlay"); } catch {}
     try { rootBox.remove("tools-overlay"); } catch {}
+    try { rootBox.remove("prompt-overlay"); } catch {}
+    try { rootBox.remove("info-overlay"); } catch {}
     try { rootBox.remove("synth-container"); } catch {}
 
     if (screen === "home") {
@@ -821,6 +907,15 @@ ${annotation.merged ? dim("Already merged.") : dim("m — merge  ·  d — dismi
       treeSelect.blur();
       synthSelect.focusable = true;
       synthSelect.focus();
+    } else if (screen === "prompt" || screen === "info") {
+      // Layer the overlay over whichever base screen we came from.
+      if (previousMode === "graph") rootBox.add(graphContainer);
+      else if (previousMode === "synthesis") rootBox.add(synthContainer);
+      else if (previousMode === "home" || !exploration) rootBox.add(homeContainer);
+      else rootBox.add(explorationContainer);
+      homeSelect.focusable = false; homeSelect.blur();
+      treeSelect.focusable = false; treeSelect.blur();
+      rootBox.add(screen === "prompt" ? promptOverlay : infoOverlay);
     }
   }
 
@@ -976,8 +1071,82 @@ ${annotation.merged ? dim("Already merged.") : dim("m — merge  ·  d — dismi
     const m = storage.getMission(exploration.id);
     if (!m || m.assertions.length === 0) { toast.info('No mission. Create with: lain "<seed>" --mission'); return; }
     const r = storage.getLatestMissionReport(exploration.id);
+    const verdict = new Map((r?.results ?? []).map((x) => [x.id, x] as const));
     const met = r ? r.results.filter((x) => x.status === "met").length : 0;
-    toast.info(`Mission: ${met}/${m.assertions.length} met${r ? ` (round ${r.round})` : " — not validated"}. Full report: lain mission`);
+    const lines: (StyledText | string)[] = [];
+    for (const ln of wrapText(m.intent, 80).split("\n")) lines.push(t`${fg(c.fg)(ln)}`);
+    lines.push("");
+    for (const a of m.assertions) {
+      const v = verdict.get(a.id);
+      const glyph = v?.status === "met" ? fg(c.green)("✓") : v?.status === "partial" ? fg(c.yellow)("◐") : v?.status === "unmet" ? fg(c.red)("✗") : dim("·");
+      lines.push(t`${glyph} ${dim(a.id)} ${fg(c.bright)(a.text)}`);
+      if (v?.evidence) for (const ln of wrapText(v.evidence, 76).split("\n")) lines.push(t`      ${dim(ln)}`);
+    }
+    if (m.features.length) {
+      lines.push("");
+      lines.push(t`${dim("features")}`);
+      for (const f of m.features) lines.push(t`  ${fg(c.blue)(f.id)} ${fg(c.fg)(f.angle)}  ${dim("→ " + f.assertions.join(", "))}`);
+    }
+    const status = r ? `${met}/${m.assertions.length} met${r.satisfied ? " — satisfied" : ""} · round ${r.round}` : "not validated yet";
+    showInfo(t`${bold(fg(c.accent)("mission"))}  ${fg(c.muted)("·")}  ${dim(status)}`, joinLinesST(lines));
+  }
+
+  async function doLink() {
+    if (!graph || !exploration) return;
+    const src = selectedNode();
+    if (!src) { toast.warning("Select a node to link from"); return; }
+    const target = (await askPrompt({
+      title: `cross-link from ${src.id}`,
+      hint: "Enter the target node id (e.g. root-2-1). A directed link is added.",
+      placeholder: "target node id",
+    }))?.trim();
+    if (!target) return;
+    if (target === src.id) { toast.warning("Can't link a node to itself"); return; }
+    if (!graph.getNode(target)) { toast.warning(`No node "${target}"`); return; }
+    const label = (await askPrompt({ title: `link ${src.id} → ${target}`, hint: "Optional label for the relationship.", placeholder: "label (optional)" }))?.trim();
+    graph.addCrosslink(src.id, target, label || undefined);
+    toast.success(`Linked ${src.id} → ${target}`);
+    refreshTree();
+  }
+
+  async function doAddCorpus() {
+    if (!storage || !exploration) return;
+    const p = (await askPrompt({
+      title: "add corpus",
+      hint: "Path to a file or directory to ingest as source material for the agents.",
+      placeholder: "/path/to/file-or-dir",
+    }))?.trim();
+    if (!p) return;
+    const resolved = path.resolve(p.replace(/^~/, process.env.HOME ?? "~"));
+    if (!fs.existsSync(resolved)) { toast.warning(`No such path: ${resolved}`); return; }
+    const loading = toast.loading(`Ingesting ${path.basename(resolved)}…`);
+    try {
+      const corpus = new Corpus(storage);
+      const stat = fs.statSync(resolved);
+      const sources = stat.isDirectory() ? await corpus.ingestDirectory(exploration.id, resolved) : [await corpus.ingestFile(exploration.id, resolved)];
+      const chunks = sources.reduce((a, s) => a + (s.chunkCount ?? 0), 0);
+      toast.dismiss(loading);
+      toast.success(`Ingested ${sources.length} source(s), ${chunks} chunk(s)`);
+    } catch (err: any) {
+      toast.dismiss(loading);
+      toast.warning(`Ingest failed: ${err.message}`);
+    }
+  }
+
+  async function doSearchCorpus() {
+    if (!storage || !exploration) return;
+    if (new Corpus(storage).listSources(exploration.id).length === 0) { toast.info("No corpus yet — add some with the corpus action"); return; }
+    const q = (await askPrompt({ title: "search corpus", hint: "BM25 search over the ingested material.", placeholder: "query" }))?.trim();
+    if (!q) return;
+    const hits = new Corpus(storage).search(exploration.id, q, 8);
+    if (hits.length === 0) { showInfo(t`${bold(fg(c.accent)("corpus"))}  ${dim(`· no matches for "${q}"`)}`, dim("Nothing matched. Try different terms.")); return; }
+    const lines: (StyledText | string)[] = [];
+    for (const h of hits) {
+      lines.push(t`${fg(c.green)(`▸ ${h.sourceName}`)}  ${dim(`score ${(h.score ?? 0).toFixed(2)}`)}`);
+      for (const ln of wrapText((h.chunk.text ?? "").slice(0, 280), 80).split("\n")) lines.push(t`  ${fg(c.fg)(ln)}`);
+      lines.push("");
+    }
+    showInfo(t`${bold(fg(c.accent)("corpus"))}  ${fg(c.muted)("·")}  ${dim(`${hits.length} hits for "${q}"`)}`, joinLinesST(lines));
   }
 
   async function doCheckUpdate() {
@@ -1013,7 +1182,7 @@ ${annotation.merged ? dim("Already merged.") : dim("m — merge  ·  d — dismi
       pruneNode: doPrune,
       extendNode: doExtend,
       redirectNode: doRedirect,
-      linkNode: () => toast.info("Cross-linking from the TUI is coming — for now: lain link <a> <b>"),
+      linkNode: doLink,
       graphView: enterGraphMode,
       backToTree: () => { if (mode === "graph") exitGraphMode(); else enterExploringMode(); },
       scrollTop: () => { nodeScroll.scrollTop = 0; },
@@ -1026,8 +1195,8 @@ ${annotation.merged ? dim("Already merged.") : dim("m — merge  ·  d — dismi
       exportMarkdown: doExport,
       exportCanvas: doCanvasExport,
       syncObsidian: doSync,
-      addCorpus: () => toast.info("Add corpus via CLI: lain corpus add <path> --db " + path.basename(dbPath)),
-      searchCorpus: () => toast.info("Search corpus via CLI: lain corpus search <query> --db " + path.basename(dbPath)),
+      addCorpus: doAddCorpus,
+      searchCorpus: doSearchCorpus,
       backToHome: () => { mode = "home"; showScreen("home"); },
       openSettings,
       openTools,
@@ -2198,6 +2367,20 @@ ${dim(visible)}`;
         key.stopPropagation();
         return;
       }
+    }
+
+    // ---- Prompt mode (generic single-line input) ----
+    if (mode === "prompt") {
+      if (key.name === "escape") { key.stopPropagation(); closePrompt(null); return; }
+      if (key.name === "return") { key.stopPropagation(); closePrompt(promptInput.value); return; }
+      return; // let the input handle typing
+    }
+
+    // ---- Info mode (read-only viewer) ----
+    if (mode === "info") {
+      if (key.name === "escape" || key.name === "return" || key.name === "q") { key.stopPropagation(); closeInfo(); return; }
+      key.stopPropagation();
+      return;
     }
 
     // ---- Settings mode ----
