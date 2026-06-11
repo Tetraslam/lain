@@ -26,16 +26,21 @@ beforeAll(async () => {
   home = fs.mkdtempSync(path.join(os.tmpdir(), "lain-api-home-"));
   work = fs.mkdtempSync(path.join(os.tmpdir(), "lain-api-work-"));
   const s = new Storage(path.join(work, "fixture.db"));
-  new Graph(s).createExploration({
+  const g = new Graph(s);
+  g.createExploration({
     id: "apifix01", name: "api fixture exploration", seed: "seed",
-    n: 2, m: 1, strategy: "bf", planDetail: "sentence", extension: "freeform",
+    n: 1, m: 1, strategy: "bf", planDetail: "sentence", extension: "freeform",
   });
+  // Complete the single expected child so the tree is full → resume is a no-op.
+  const child = g.createChildNodes("apifix01", "root", 1)[0];
+  s.updateNodeContent(child.id, "Child", "Child content.", "manual", "manual");
   s.close();
 
   const port = 3700 + Math.floor(Math.random() * 500);
   base = `http://localhost:${port}`;
   proc = Bun.spawn(["bun", SERVER], {
-    env: { ...process.env, HOME: home, LAIN_PORT: String(port), LAIN_CWD: work },
+    // Dummy key so makeAgent() constructs (resume with 0 pending never calls it).
+    env: { ...process.env, HOME: home, LAIN_PORT: String(port), LAIN_CWD: work, AWS_BEARER_TOKEN_BEDROCK: "test-dummy" },
     stdout: "ignore", stderr: "ignore",
   });
   const deadline = Date.now() + 20000;
@@ -95,6 +100,27 @@ test("GET /api/tools returns a catalog + selection", async () => {
   const t = await (await api("/api/tools")).json();
   expect(Array.isArray(t.catalog?.groups ?? t.catalog)).toBe(true);
   expect(t.selection).toBeTruthy();
+});
+
+test("POST /api/resume is a no-op when nothing is pending", async () => {
+  const res = await (await postJson("/api/resume", { dbFile: "fixture.db" })).json();
+  expect(res.ok).toBe(true);
+  expect(res.resumed).toBe(0);
+  expect(res.pending).toBe(0);
+});
+
+test("GET /api/mission returns null contract when none set", async () => {
+  const res = await (await api("/api/mission/fixture.db")).json();
+  expect(res.mission).toBeNull();
+  expect(res.report).toBeNull();
+});
+
+test("POST /api/export format=canvas writes a .canvas file", async () => {
+  const res = await (await postJson("/api/export", { dbFile: "fixture.db", format: "canvas" })).json();
+  expect(res.ok).toBe(true);
+  expect(typeof res.canvasPath).toBe("string");
+  expect(fs.existsSync(res.canvasPath)).toBe(true);
+  expect(res.canvasPath.endsWith(".canvas")).toBe(true);
 });
 
 test("POST/GET/DELETE /api/mcp manages servers", async () => {

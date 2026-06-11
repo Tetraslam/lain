@@ -3,7 +3,7 @@
  * Serves REST endpoints + SSE for streaming.
  * Run with: bun run src/server/index.ts
  */
-import { Storage, Graph, Orchestrator, Sync, Exporter, SynthesisEngine, Corpus, checkForUpdate, collectDbFiles, addRecentDb, getDiscoveryDirs, addDiscoveryDir, removeDiscoveryDir, interviewMission, buildToolCatalog, type InterviewTurn } from "@lain/core";
+import { Storage, Graph, Orchestrator, Sync, Exporter, CanvasExporter, SynthesisEngine, Corpus, checkForUpdate, collectDbFiles, addRecentDb, getDiscoveryDirs, addDiscoveryDir, removeDiscoveryDir, interviewMission, buildToolCatalog, type InterviewTurn } from "@lain/core";
 import { createProvider } from "@lain/agents";
 import { buildExtensionRegistry } from "@lain/extensions";
 import { generateId, loadConfig, loadCredentials, saveConfig, buildSettingsView, applySettings, configPaths, normalizeToolSelection, removeMcpServer, resolveDisabledToolIds, type Strategy, type PlanDetail, type Provider, type Credentials, type LainConfig, type Mission, type SettingUpdate, type ToolSelection, type McpServerConfig } from "@lain/shared";
@@ -484,6 +484,63 @@ async function handleRequest(req: Request): Promise<Response> {
       return json({ nodes: newNodes });
     }
 
+    // ---- Resume: finish any pending/incomplete nodes ----
+    if (p === "/api/resume" && req.method === "POST") {
+      const { dbFile } = await req.json() as { dbFile: string };
+      const dbPath = safeDbPath(dbFile); if (!dbPath) return json({ error: "Invalid database path" }, 400);
+      const config = loadConfig();
+      const agent = makeAgent(config, loadCredentials());
+      const extensions = buildExtensionRegistry();
+
+      const probe = new Storage(dbPath);
+      const pg = new Graph(probe);
+      const exp = pg.getAllExplorations()[0];
+      const pendingBefore = exp ? pg.getAllNodes(exp.id).filter((n) => n.status !== "complete" && n.status !== "pruned").length : 0;
+      const hasCorpus = exp ? new Corpus(probe).listSources(exp.id).length > 0 : false;
+      probe.close();
+      if (!exp) return json({ error: "No exploration" }, 404);
+
+      // Same tool wiring as generation: only enabled MCP servers + selection.
+      const selection = normalizeToolSelection(config.tools);
+      const enabledServers: Record<string, McpServerConfig> = {};
+      for (const [name, cfg] of Object.entries(config.mcpServers ?? {})) {
+        if (!cfg.disabled && !selection.disabledGroups.includes(`mcp:${name}`)) enabledServers[name] = cfg;
+      }
+      const built = await buildToolCatalog({
+        hasCorpus, extensionGroups: extensions.describeToolGroups([exp.extension]),
+        mcpServers: enabledServers, probeMcp: true,
+      });
+      const orchestrator = new Orchestrator({
+        dbPath, agent, extensions,
+        agentMaxTokens: config.maxTokens,
+        extraTools: built.mcpPool?.tools ?? [],
+        disabledTools: resolveDisabledToolIds(built.catalog, selection),
+      });
+      await orchestrator.resume(exp.id);
+      orchestrator.close();
+      if (built.mcpPool) await built.mcpPool.close();
+
+      const after = new Storage(dbPath);
+      const ag = new Graph(after);
+      const pendingAfter = ag.getAllNodes(exp.id).filter((n) => n.status !== "complete" && n.status !== "pruned").length;
+      after.close();
+      return json({ ok: true, resumed: pendingBefore - pendingAfter, pending: pendingAfter });
+    }
+
+    // ---- Mission: contract + latest validation report ----
+    if (p.match(/^\/api\/mission\/[^/]+$/) && req.method === "GET") {
+      const dbFile = decodeURIComponent(p.split("/").pop()!);
+      const dbPath = safeDbPath(dbFile); if (!dbPath) return json({ error: "Invalid database path" }, 400);
+      const s = new Storage(dbPath);
+      const g = new Graph(s);
+      const exp = g.getAllExplorations()[0];
+      if (!exp) { s.close(); return json({ error: "No exploration" }, 404); }
+      const mission = s.getMission(exp.id);
+      const report = s.getLatestMissionReport(exp.id);
+      s.close();
+      return json({ mission, report });
+    }
+
     // ---- Corpus: list ----
     if (p.match(/^\/api\/corpus\/[^/]+$/) && req.method === "GET") {
       const dbFile = decodeURIComponent(p.split("/").pop()!);
@@ -557,17 +614,24 @@ async function handleRequest(req: Request): Promise<Response> {
       return json({ ok: true });
     }
 
-    // ---- Export ----
+    // ---- Export (markdown, or Obsidian .canvas with format: "canvas") ----
     if (p === "/api/export" && req.method === "POST") {
-      const { dbFile } = await req.json() as { dbFile: string };
+      const { dbFile, format } = await req.json() as { dbFile: string; format?: "markdown" | "canvas" };
       const dbPath = safeDbPath(dbFile); if (!dbPath) return json({ error: "Invalid database path" }, 400);
       const s = new Storage(dbPath);
       const g = new Graph(s);
       const exp = g.getAllExplorations()[0];
       if (!exp) { s.close(); return json({ error: "No exploration" }, 404); }
 
-      const outputDir = path.join(CWD, path.basename(dbFile, ".db"));
-      new Exporter(s).export(exp.id, outputDir);
+      const baseName = path.basename(dbFile, ".db");
+      const outputDir = path.join(CWD, baseName);
+      new Exporter(s).export(exp.id, outputDir); // canvas references these md files
+      if (format === "canvas") {
+        const canvasPath = path.join(CWD, baseName + ".canvas");
+        new CanvasExporter(s).export(exp.id, canvasPath, baseName);
+        s.close();
+        return json({ ok: true, outputDir, canvasPath });
+      }
       s.close();
       return json({ ok: true, outputDir });
     }

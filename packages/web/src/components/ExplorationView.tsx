@@ -5,6 +5,7 @@ import Markdown from "react-markdown";
 import { GraphOverlay } from "./GraphOverlay";
 import { HelpOverlay } from "./HelpOverlay";
 import { CorpusPanel } from "./CorpusPanel";
+import { MissionPanel } from "./MissionPanel";
 
 interface ExplorationData { exploration: any; nodes: any[]; crosslinks: any[]; nodeAnnotations?: Record<string, any[]>; citations?: Record<string, any[]>; }
 
@@ -339,7 +340,8 @@ export function ExplorationView({ dbFile, onBack }: { dbFile: string; onBack: ()
     setConfirmAction(null);
     setActionLoading(action);
     try {
-      const body = JSON.stringify(action === "export" || action === "sync" ? { dbFile } : { dbFile, nodeId: target });
+      const wholeExp = action === "export" || action === "sync" || action === "resume";
+      const body = JSON.stringify(wholeExp ? { dbFile } : { dbFile, nodeId: target });
       const res = await fetch(`/api/${action}`, { method: "POST", headers: { "Content-Type": "application/json" }, body });
       if (!res.ok) {
         const err = await res.json().catch(() => ({ error: "Unknown error" }));
@@ -362,6 +364,18 @@ export function ExplorationView({ dbFile, onBack }: { dbFile: string; onBack: ()
       setActionLoading(null);
     }
   }, [dbFile, selectedId, fetchData, data, confirmAction]);
+
+  const handleCanvasExport = useCallback(async () => {
+    setActionLoading("canvas");
+    try {
+      const res = await fetch("/api/export", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ dbFile, format: "canvas" }),
+      });
+      if (!res.ok) { const e = await res.json().catch(() => ({ error: "Unknown error" })); setError(`canvas export failed: ${e.error}`); }
+    } catch (err: any) { setError(`canvas export failed: ${err.message}`); }
+    finally { setActionLoading(null); }
+  }, [dbFile]);
 
   const handleEdit = useCallback(async () => {
     if (!node) return;
@@ -388,6 +402,7 @@ export function ExplorationView({ dbFile, onBack }: { dbFile: string; onBack: ()
 
   const exp = data.exploration;
   const isNarrow = typeof window !== "undefined" && window.innerWidth < 1100;
+  const pendingCount = data.nodes.filter((n: any) => n.status !== "complete" && n.status !== "pruned").length;
 
   return (
     <div className="exploration">
@@ -402,8 +417,16 @@ export function ExplorationView({ dbFile, onBack }: { dbFile: string; onBack: ()
             {showSynthesis ? "Hide Synthesis" : "Synthesis"}
           </button>
           <button className="btn btn-sm" onClick={() => setShowGraph(true)} title="G">Graph</button>
-          <button className="btn btn-sm" onClick={() => handleAction("export")}>Export</button>
-          <button className="btn btn-sm" onClick={() => handleAction("sync")}>Sync</button>
+          {pendingCount > 0 && (
+            <button className="btn btn-sm" onClick={() => handleAction("resume")} disabled={!!actionLoading} title="Finish incomplete nodes">
+              {actionLoading === "resume" ? "Resuming…" : `Resume (${pendingCount})`}
+            </button>
+          )}
+          <button className="btn btn-sm" onClick={() => handleAction("export")} disabled={!!actionLoading}>Export</button>
+          <button className="btn btn-sm" onClick={handleCanvasExport} disabled={!!actionLoading} title="Export an Obsidian .canvas">
+            {actionLoading === "canvas" ? "…" : "Canvas"}
+          </button>
+          <button className="btn btn-sm" onClick={() => handleAction("sync")} disabled={!!actionLoading}>Sync</button>
         </div>
       </div>
 
@@ -577,6 +600,7 @@ export function ExplorationView({ dbFile, onBack }: { dbFile: string; onBack: ()
               <div className="context-item"><span className="cl">m</span> <span className="cv">{exp.m}</span></div>
               <div className="context-item"><span className="cl">strategy</span> <span className="cv">{exp.strategy}</span></div>
             </div>
+            <MissionPanel dbFile={dbFile} />
             <CorpusPanel dbFile={dbFile} />
           </aside>
         )}
