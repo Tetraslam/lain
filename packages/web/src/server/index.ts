@@ -3,7 +3,7 @@
  * Serves REST endpoints + SSE for streaming.
  * Run with: bun run src/server/index.ts
  */
-import { Storage, Graph, Orchestrator, Sync, Exporter, CanvasExporter, SynthesisEngine, Corpus, checkForUpdate, collectDbFiles, addRecentDb, getDiscoveryDirs, addDiscoveryDir, removeDiscoveryDir, interviewMission, buildToolCatalog, type InterviewTurn } from "@lain/core";
+import { Storage, Graph, Orchestrator, Sync, Exporter, CanvasExporter, SynthesisEngine, orderByMissionPriority, Corpus, checkForUpdate, collectDbFiles, addRecentDb, getDiscoveryDirs, addDiscoveryDir, removeDiscoveryDir, interviewMission, buildToolCatalog, type InterviewTurn } from "@lain/core";
 import { createProvider } from "@lain/agents";
 import { buildExtensionRegistry } from "@lain/extensions";
 import { generateId, loadConfig, loadCredentials, saveConfig, buildSettingsView, applySettings, configPaths, normalizeToolSelection, removeMcpServer, resolveDisabledToolIds, type Strategy, type PlanDetail, type Provider, type Credentials, type LainConfig, type Mission, type SettingUpdate, type ToolSelection, type McpServerConfig } from "@lain/shared";
@@ -674,13 +674,13 @@ async function handleRequest(req: Request): Promise<Response> {
       if (!exp) { s.close(); return json({ error: "No exploration" }, 404); }
 
       const engine = new SynthesisEngine({ storage: s, agent: null });
+      const report = s.getLatestMissionReport(exp.id);
       const syntheses = engine.getSyntheses(exp.id);
       const result = syntheses.map((synth) => {
         const data = engine.getSynthesis(synth.id);
-        return {
-          ...synth,
-          annotations: data?.annotations ?? [],
-        };
+        // Mission-driven: surface gap-closing annotations first.
+        const annotations = orderByMissionPriority(data?.annotations ?? [], report);
+        return { ...synth, annotations };
       });
       s.close();
       return json(result);

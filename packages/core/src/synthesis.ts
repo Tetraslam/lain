@@ -12,8 +12,34 @@ import type {
   SynthesisDiffChange,
   MergePreview,
   NodeAnnotation,
+  MissionReport,
 } from "@lain/shared";
 import { generateId, nowISO, buildMergeGenerationPrompt, parseMergeGenerationResponse } from "@lain/shared";
+
+/**
+ * Order annotations gap-closing-first: those advancing an UNMET assertion lead,
+ * then PARTIAL, then met/unrelated. Within a tier, the ones touching more
+ * assertions come first. Mission-driven surfaces use this so the most useful
+ * merges/links rise to the top. Stable for non-mission explorations (all rank
+ * equally → original order preserved).
+ */
+export function orderByMissionPriority(
+  annotations: SynthesisAnnotation[],
+  report: MissionReport | null
+): SynthesisAnnotation[] {
+  const status = new Map((report?.results ?? []).map((r) => [r.id, r.status] as const));
+  const rank = (a: SynthesisAnnotation): number => {
+    if (!a.relatedAssertions || a.relatedAssertions.length === 0) return 3;
+    const states = a.relatedAssertions.map((id) => status.get(id));
+    if (states.includes("unmet")) return 0;
+    if (states.includes("partial")) return 1;
+    return 2; // all met (or unknown)
+  };
+  return annotations
+    .map((a, i) => ({ a, i }))
+    .sort((x, y) => rank(x.a) - rank(y.a) || (y.a.relatedAssertions?.length ?? 0) - (x.a.relatedAssertions?.length ?? 0) || x.i - y.i)
+    .map((e) => e.a);
+}
 
 export interface SynthesisEngineOptions {
   storage: Storage;
@@ -92,12 +118,22 @@ export class SynthesisEngine {
       await this.extensions.runHook("before:synthesize", explorationId);
     }
 
+    // Mission-driven synthesis: when the exploration has a contract, pass it (and
+    // the latest verdicts) so synthesis targets the gaps. Each annotation stays
+    // scoped to a specific connection/assertion (enforced in the prompt) — we
+    // never ask one node to satisfy the whole mission.
+    const mission = this.storage.getMission(explorationId);
+    const missionReport = mission ? this.storage.getLatestMissionReport(explorationId) : null;
+    const validAssertionIds = new Set((mission?.assertions ?? []).map((a) => a.id));
+
     // Call the synthesis agent
     if (!this.agent) throw new Error("Agent is required for synthesis. Pass an agent to SynthesisEngine.");
     const response = await this.agent.synthesize({
       exploration,
       nodes: activeNodes,
       crosslinks,
+      mission,
+      missionReport,
     });
 
     // Run after:synthesize hook
@@ -141,6 +177,8 @@ export class SynthesisEngine {
         sourceNodeId: annotationData.sourceNodeId ?? null,
         targetNodeId: annotationData.targetNodeId ?? null,
         content: annotationData.content ?? null,
+        // Keep only assertion ids that actually exist in the contract.
+        relatedAssertions: (annotationData.relatedAssertions ?? []).filter((id) => validAssertionIds.has(id)),
         merged: false,
         createdAt: now,
       };

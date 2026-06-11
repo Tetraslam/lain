@@ -163,10 +163,24 @@ export function buildSynthesizePrompt(request: SynthesizeRequest): {
   system: string;
   user: string;
 } {
-  const { exploration, nodes, crosslinks } = request;
+  const { exploration, nodes, crosslinks, mission, missionReport } = request;
 
   const activeNodes = nodes.filter((n) => n.status !== "pruned");
   const root = activeNodes.find((n) => n.parentId === null);
+
+  // Mission-driven synthesis: surface the contract as a rubric + current verdicts
+  // so synthesis can target the gaps. The guardrail (in guidelines below) keeps
+  // each suggestion scoped to ONE assertion — never "satisfy the whole mission".
+  const statusById = new Map((missionReport?.results ?? []).map((r) => [r.id, r.status] as const));
+  const missionBlock = mission && mission.assertions.length > 0
+    ? [
+        "",
+        `## Mission rubric`,
+        `Intent: ${mission.intent}`,
+        `Assertions (target the unmet/partial ones):`,
+        ...mission.assertions.map((a) => `- ${a.id} [${statusById.get(a.id) ?? "unknown"}] ${a.text}`),
+      ].join("\n")
+    : "";
 
   const system = [
     "You are a synthesis agent. You analyze an exploration graph — a tree of ideas branching from a seed —",
@@ -208,6 +222,7 @@ export function buildSynthesizePrompt(request: SynthesizeRequest): {
     "",
     `## Existing cross-links`,
     existingCrosslinks,
+    missionBlock,
     "",
     `## Your task`,
     `Analyze this exploration graph and produce a JSON response with:`,
@@ -242,6 +257,16 @@ export function buildSynthesizePrompt(request: SynthesizeRequest): {
     `- Be specific in your annotations — cite what each node says and why the connection matters`,
     `- Don't suggest crosslinks that already exist`,
     `- Aim for quality over quantity — 5 excellent annotations beat 20 obvious ones`,
+    ...(missionBlock
+      ? [
+          "",
+          `Mission-driven priorities:`,
+          `- Prioritize observations that advance UNMET or PARTIAL assertions — those are the gaps worth closing.`,
+          `- For each annotation add "relatedAssertions": the assertion ids it advances (e.g. ["A2"]). Use [] if none.`,
+          `- Keep every suggestion SCOPED to its own specific connection/assertion. A merge_suggestion reconciles two`,
+          `  particular nodes toward ONE assertion — it must NOT try to satisfy the whole mission in a single node.`,
+        ]
+      : []),
   ].join("\n");
 
   return { system, user };
@@ -377,6 +402,9 @@ export function parseSynthesizeResponse(
         sourceNodeId: typeof a.sourceNodeId === "string" ? a.sourceNodeId : undefined,
         targetNodeId: typeof a.targetNodeId === "string" ? a.targetNodeId : undefined,
         content: typeof a.content === "string" ? a.content : "",
+        relatedAssertions: Array.isArray(a.relatedAssertions)
+          ? a.relatedAssertions.filter((x): x is string => typeof x === "string")
+          : [],
       });
     }
   }

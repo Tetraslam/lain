@@ -163,6 +163,8 @@ export interface SynthesisAnnotation {
   sourceNodeId: string | null;
   targetNodeId: string | null;
   content: string | null;
+  /** Mission assertion ids this annotation helps advance (mission-driven synthesis). */
+  relatedAssertions: string[];
   merged: boolean;
   createdAt: string;
 }
@@ -512,6 +514,10 @@ export interface SynthesizeRequest {
   nodes: LainNode[];
   crosslinks: Crosslink[];
   extensionSystemPrompt?: string;
+  /** When set, synthesis uses the contract as a rubric (mission-driven). */
+  mission?: Mission | null;
+  /** Latest validation verdicts, so synthesis can target unmet/partial gaps. */
+  missionReport?: MissionReport | null;
 }
 
 /** A single annotation produced by the synthesis agent. */
@@ -520,6 +526,8 @@ export interface SynthesisAnnotationData {
   sourceNodeId?: string;
   targetNodeId?: string;
   content: string;
+  /** Mission assertion ids this observation advances (mission-driven synthesis). */
+  relatedAssertions?: string[];
 }
 
 export interface SynthesizeResponse {

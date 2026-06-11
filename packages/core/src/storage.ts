@@ -75,6 +75,7 @@ CREATE TABLE IF NOT EXISTS synthesis_annotation (
   source_node_id TEXT REFERENCES node(id),
   target_node_id TEXT REFERENCES node(id),
   content TEXT,
+  related_assertions TEXT NOT NULL DEFAULT '[]',
   merged INTEGER DEFAULT 0,
   created_at TEXT NOT NULL
 );
@@ -190,7 +191,7 @@ CREATE TABLE IF NOT EXISTS meta (
  * lain transparently adds missing tables; the version + migrations runner
  * exists for future destructive/altering changes that IF NOT EXISTS can't cover.
  */
-export const CURRENT_SCHEMA_VERSION = 4;
+export const CURRENT_SCHEMA_VERSION = 5;
 
 /**
  * Ordered, idempotent migrations for changes that additive CREATE-IF-NOT-EXISTS
@@ -215,6 +216,13 @@ const MIGRATIONS: Record<number, (db: Database) => void> = {
     db.run(`INSERT INTO mission (exploration_id, intent, assertions, features, created_at)
             SELECT exploration_id, intent, ${a}, ${f}, created_at FROM mission_old`);
     db.run("DROP TABLE mission_old");
+  },
+  // 5: synthesis annotations gained related_assertions (mission-driven synthesis).
+  5: (db) => {
+    const cols = (db.prepare("PRAGMA table_info(synthesis_annotation)").all() as { name: string }[]).map((c) => c.name);
+    if (!cols.includes("related_assertions")) {
+      db.run("ALTER TABLE synthesis_annotation ADD COLUMN related_assertions TEXT NOT NULL DEFAULT '[]'");
+    }
   },
 };
 
@@ -712,8 +720,8 @@ export class Storage {
   createAnnotation(annotation: SynthesisAnnotation): void {
     this.db
       .prepare(
-        `INSERT INTO synthesis_annotation (id, synthesis_id, type, source_node_id, target_node_id, content, merged, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+        `INSERT INTO synthesis_annotation (id, synthesis_id, type, source_node_id, target_node_id, content, related_assertions, merged, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         annotation.id,
@@ -722,6 +730,7 @@ export class Storage {
         annotation.sourceNodeId,
         annotation.targetNodeId,
         annotation.content,
+        JSON.stringify(annotation.relatedAssertions ?? []),
         annotation.merged ? 1 : 0,
         annotation.createdAt
       );
@@ -772,6 +781,10 @@ export class Storage {
       sourceNodeId: (row.source_node_id as string) || null,
       targetNodeId: (row.target_node_id as string) || null,
       content: (row.content as string) || null,
+      relatedAssertions: ((): string[] => {
+        try { const v = JSON.parse((row.related_assertions as string) || "[]"); return Array.isArray(v) ? v : []; }
+        catch { return []; }
+      })(),
       merged: row.merged === 1,
       createdAt: row.created_at as string,
     };

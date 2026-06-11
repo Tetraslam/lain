@@ -633,6 +633,11 @@ export function ExplorationView({ dbFile, onBack }: { dbFile: string; onBack: ()
                         <div key={a.id} className={`annotation ${a.merged ? "annotation-merged" : ""}`}>
                           <div className="annotation-header">
                             <span className={`annotation-type type-${a.type}`}>{a.type}</span>
+                            {a.relatedAssertions?.length > 0 && (
+                              <span className="annotation-assertions" style={{ marginLeft: 6, fontSize: 10, color: "var(--accent)" }} title="Advances mission assertion(s)">
+                                {a.relatedAssertions.join(" ")}
+                              </span>
+                            )}
                             {!a.merged && !s.merged && (
                               <span className="annotation-actions">
                                 <button onClick={() => handleMerge(s.id, a.id)} title={

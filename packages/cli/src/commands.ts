@@ -964,7 +964,8 @@ async function runSynthesize(args: ParsedArgs): Promise<void> {
       console.log(`${type} (${items.length}):`);
       for (const a of items) {
         const nodes = [a.sourceNodeId, a.targetNodeId].filter(Boolean).join(" ↔ ");
-        console.log(`  ${a.id}: ${nodes} — ${a.content ?? ""}`);
+        const tags = a.relatedAssertions.length ? ` ${c.accent(`[${a.relatedAssertions.join(" ")}]`)}` : "";
+        console.log(`  ${a.id}: ${nodes}${tags} — ${a.content ?? ""}`);
       }
     }
 

@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { Storage } from "../src/storage.js";
 import { Graph } from "../src/graph.js";
-import { SynthesisEngine } from "../src/synthesis.js";
+import { SynthesisEngine, orderByMissionPriority } from "../src/synthesis.js";
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
@@ -537,5 +537,82 @@ describe("parseSynthesizeResponse", () => {
     expect(result!.annotations).toHaveLength(0);
 
     storage.close();
+  });
+});
+
+// ============================================================================
+// Mission-driven synthesis
+// ============================================================================
+
+describe("SynthesisEngine: mission-driven", () => {
+  it("passes the contract to the agent, tags annotations, and prioritizes gaps", async () => {
+    const storage = new Storage(dbPath);
+    const { explorationId } = createTestExploration(storage);
+
+    storage.upsertMission({
+      explorationId,
+      intent: "Understand tree communication.",
+      assertions: [
+        { id: "A1", text: "Covers the mechanism." },
+        { id: "A2", text: "Covers the ecological role." },
+      ],
+      features: [],
+      createdAt: new Date().toISOString(),
+    });
+    storage.addMissionReport({
+      explorationId,
+      round: 1,
+      satisfied: false,
+      results: [
+        { id: "A1", status: "unmet", evidence: "no node covers mechanism" },
+        { id: "A2", status: "met", evidence: "root-2 covers it" },
+      ],
+      summary: "1/2",
+      createdAt: new Date().toISOString(),
+    });
+
+    let received: any = null;
+    const agent = createMockAgent({
+      annotations: [
+        // tied to a MET assertion (lower priority)
+        { type: "note", sourceNodeId: "root-2", content: "supports A2", relatedAssertions: ["A2"] },
+        // unrelated (lowest priority) + an invalid id that must be filtered out
+        { type: "crosslink", sourceNodeId: "root-1", targetNodeId: "root-3", content: "loose link", relatedAssertions: ["A9"] },
+        // tied to the UNMET assertion (highest priority)
+        { type: "merge_suggestion", sourceNodeId: "root-1", targetNodeId: "root-2", content: "closes A1", relatedAssertions: ["A1"] },
+      ],
+    });
+    const origSynth = agent.synthesize;
+    agent.synthesize = async (req: any) => { received = req; return origSynth(req); };
+
+    const engine = new SynthesisEngine({ storage, agent });
+    const synthesisId = await engine.synthesize(explorationId);
+
+    // The agent saw the contract + the latest verdicts.
+    expect(received.mission?.assertions).toHaveLength(2);
+    expect(received.missionReport?.results.find((r: any) => r.id === "A1").status).toBe("unmet");
+
+    const { annotations } = engine.getSynthesis(synthesisId)!;
+    const byContent = (c: string) => annotations.find((a) => a.content === c)!;
+    expect(byContent("closes A1").relatedAssertions).toEqual(["A1"]);
+    expect(byContent("supports A2").relatedAssertions).toEqual(["A2"]);
+    // Invalid assertion id "A9" filtered out (not in the contract).
+    expect(byContent("loose link").relatedAssertions).toEqual([]);
+
+    // Gap-closing first: A1 (unmet) before A2 (met) before unrelated.
+    const report = storage.getLatestMissionReport(explorationId);
+    const ordered = orderByMissionPriority(annotations, report).map((a) => a.content);
+    expect(ordered[0]).toBe("closes A1");
+    expect(ordered.indexOf("supports A2")).toBeLessThan(ordered.indexOf("loose link"));
+
+    storage.close();
+  });
+
+  it("orderByMissionPriority is a stable no-op without a mission report", () => {
+    const anns: any[] = [
+      { id: "1", relatedAssertions: [], content: "a" },
+      { id: "2", relatedAssertions: [], content: "b" },
+    ];
+    expect(orderByMissionPriority(anns as any, null).map((a) => a.content)).toEqual(["a", "b"]);
   });
 });
