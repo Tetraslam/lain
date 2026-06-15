@@ -39,7 +39,7 @@ import {
   type McpServerConfig,
 } from "@lain/shared";
 import type { ParsedArgs } from "./args.js";
-import { getFlag, getBoolFlag, getNumFlag, getMultiFlag } from "./args.js";
+import { getFlag, getBoolFlag, getNumFlag, getMultiFlag, KNOWN_COMMANDS } from "./args.js";
 import {
   loadConfig,
   loadCredentials,
@@ -281,6 +281,48 @@ async function runInit(args: ParsedArgs): Promise<void> {
 // Explore
 // ============================================================================
 
+/** Subcommand/verb words that read like commands but aren't valid top-level ones. */
+const RESERVED_NONCOMMANDS = new Set([
+  "list", "ls", "add", "remove", "rm", "del", "delete", "get", "set", "unset",
+  "path", "test", "enable", "disable", "reset", "new", "create", "open", "start",
+]);
+
+function levenshtein(a: string, b: string): number {
+  const m = a.length, n = b.length;
+  if (!m) return n; if (!n) return m;
+  let prev = Array.from({ length: n + 1 }, (_, j) => j);
+  for (let i = 1; i <= m; i++) {
+    const cur = [i];
+    for (let j = 1; j <= n; j++) {
+      cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    }
+    prev = cur;
+  }
+  return prev[n];
+}
+
+/**
+ * If a single inferred-`explore` token looks like a mistyped or misremembered
+ * command, return a helpful hint (so we don't silently burn tokens). Real seeds
+ * are usually phrases, so this only fires on single short barewords. (issue #1)
+ */
+function mistypedCommandHint(token: string): string | null {
+  const t = token.trim().toLowerCase();
+  if (!t || /\s/.test(t) || t.length > 14) return null;
+  if (RESERVED_NONCOMMANDS.has(t)) {
+    return `"${token}" isn't a lain command — it's a subcommand of others. Did you mean ${c.fg("lain config list")}, ${c.fg("lain mcp list")}, or ${c.fg("lain tools list")}?`;
+  }
+  let best: { cmd: string; d: number } | null = null;
+  for (const cmd of KNOWN_COMMANDS) {
+    const d = levenshtein(t, cmd);
+    if (!best || d < best.d) best = { cmd, d };
+  }
+  if (best && best.d > 0 && best.d <= 2 && Math.abs(t.length - best.cmd.length) <= 2) {
+    return `Unknown command "${token}". Did you mean ${c.fg("lain " + best.cmd)}?`;
+  }
+  return null;
+}
+
 async function runExplore(args: ParsedArgs): Promise<void> {
   const config = loadConfig();
   const credentials = loadCredentials();
@@ -298,6 +340,18 @@ async function runExplore(args: ParsedArgs): Promise<void> {
     throw new Error(
       "No seed provided. Usage: lain \"your idea\" --n 3 --m 2"
     );
+  }
+
+  // Guard: an inferred `explore` (no explicit command) whose "seed" is a single
+  // bareword that looks like a mistyped command should NOT silently start an
+  // expensive exploration. Catch it and suggest the real command. (issue #1)
+  if (!args.explicit && !seedFile && args.positional.length === 1) {
+    const hint = mistypedCommandHint(seed);
+    if (hint) {
+      throw new Error(
+        `${hint}\nTo explore "${seed}" as a seed idea, run: ${c.fg(`lain explore "${seed}"`)}`
+      );
+    }
   }
 
   const n = getNumFlag(args.flags, "n", "branches") ?? config.defaultN;

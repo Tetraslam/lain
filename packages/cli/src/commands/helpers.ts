@@ -2,23 +2,63 @@
  * Shared helpers for CLI commands.
  */
 import * as fs from "fs";
+import * as path from "path";
 import { createProvider } from "@lain/agents";
+import { isLainDb } from "@lain/core";
 import type { LainConfig, Provider, Credentials } from "@lain/shared";
 
 /**
- * Find a .db file in the current directory.
+ * Find the lain exploration db to operate on, when --db wasn't given.
+ *
+ * - $LAIN_DB wins if set (explicit, unambiguous).
+ * - Otherwise scan `cwd` for *lain* explorations only: skip dotfiles and any
+ *   .db that isn't actually a lain db (so unrelated sqlite files like
+ *   `.claude-peers.db` are never offered). (issue #2)
+ * - One match → use it. Multiple → use the most recently modified and say so
+ *   (instead of erroring and forcing --db every time).
  */
-export function findDb(): string {
-  const files = fs.readdirSync(".").filter((f) => f.endsWith(".db"));
-  if (files.length === 0) {
-    throw new Error(
-      "No .db file found in current directory. Specify one with --db <file>."
-    );
+export function findDb(cwd = "."): string {
+  const envDb = process.env.LAIN_DB;
+  if (envDb) {
+    if (!fs.existsSync(envDb)) {
+      throw new Error(`LAIN_DB points to a missing file: ${envDb}`);
+    }
+    return envDb;
   }
-  if (files.length === 1) return files[0];
-  throw new Error(
-    `Multiple .db files found: ${files.join(", ")}. Specify one with --db <file>.`
+
+  let entries: string[];
+  try {
+    entries = fs.readdirSync(cwd);
+  } catch {
+    entries = [];
+  }
+
+  const dbFiles = entries.filter((f) => {
+    if (!f.endsWith(".db") || f.startsWith(".")) return false; // skip dotfiles
+    try { return fs.statSync(path.join(cwd, f)).isFile(); } catch { return false; }
+  });
+  const lainDbs = dbFiles.filter((f) => isLainDb(path.join(cwd, f)));
+
+  if (lainDbs.length === 0) {
+    if (dbFiles.length > 0) {
+      throw new Error(
+        `No lain exploration found here (ignored ${dbFiles.length} non-lain .db file(s)). ` +
+          `Create one with \`lain "your idea"\`, or specify one with --db <file>.`
+      );
+    }
+    throw new Error("No exploration found here. Create one with `lain \"your idea\"`, or specify --db <file>.");
+  }
+
+  if (lainDbs.length === 1) return path.join(cwd, lainDbs[0]);
+
+  // Multiple valid explorations: pick the most recently modified.
+  const picked = lainDbs
+    .map((f) => ({ f, mtime: fs.statSync(path.join(cwd, f)).mtimeMs }))
+    .sort((a, b) => b.mtime - a.mtime)[0].f;
+  process.stderr.write(
+    `Multiple explorations here; using the most recent: ${picked} (override with --db <file> or LAIN_DB)\n`
   );
+  return path.join(cwd, picked);
 }
 
 /**

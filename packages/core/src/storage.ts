@@ -226,6 +226,27 @@ const MIGRATIONS: Record<number, (db: Database) => void> = {
   },
 };
 
+/**
+ * Read-only probe: is `dbPath` actually a lain exploration db? Opens read-only
+ * (so it NEVER creates tables, a WAL, or otherwise mutates an unrelated sqlite
+ * file) and checks for the `exploration` table. Returns false for missing
+ * files, non-sqlite files, and other apps' databases.
+ */
+export function isLainDb(dbPath: string): boolean {
+  let db: Database | null = null;
+  try {
+    db = new Database(dbPath, { readonly: true });
+    const row = db
+      .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'exploration' LIMIT 1")
+      .get();
+    return !!row;
+  } catch {
+    return false;
+  } finally {
+    try { db?.close(); } catch { /* ignore */ }
+  }
+}
+
 export class Storage {
   private db: Database;
   private closed = false;

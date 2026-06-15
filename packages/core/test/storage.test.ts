@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { Storage } from "../src/storage.js";
+import { Storage, isLainDb } from "../src/storage.js";
 import { Graph } from "../src/graph.js";
 import * as fs from "fs";
 import * as path from "path";
@@ -406,5 +406,41 @@ describe("Graph", () => {
     expect(siblings.map((s) => s.id).sort()).toEqual(["root-1", "root-3"]);
 
     storage.close();
+  });
+});
+
+describe("isLainDb (read-only probe)", () => {
+  let dir: string;
+  beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), "lain-islain-")); });
+  afterEach(() => { fs.rmSync(dir, { recursive: true, force: true }); });
+
+  it("recognizes a lain exploration db", () => {
+    const p = path.join(dir, "real.db");
+    const s = new Storage(p);
+    new Graph(s).createExploration({ id: "x", name: "x", seed: "x", n: 1, m: 1, strategy: "bf", planDetail: "sentence", extension: "freeform" });
+    s.close();
+    expect(isLainDb(p)).toBe(true);
+  });
+
+  it("rejects a non-lain sqlite db and never mutates it", () => {
+    const p = path.join(dir, "other.db");
+    const { Database } = require("bun:sqlite");
+    const d = new Database(p, { create: true });
+    d.run("CREATE TABLE peers (id TEXT)");
+    d.close();
+    expect(isLainDb(p)).toBe(false);
+    // The read-only probe must not have added tables or a WAL/SHM sidecar.
+    const after = new Database(p, { readonly: true });
+    const tables = after.query("SELECT name FROM sqlite_master WHERE type='table'").all().map((r: any) => r.name);
+    after.close();
+    expect(tables).toEqual(["peers"]);
+    expect(fs.existsSync(p + "-wal")).toBe(false);
+  });
+
+  it("returns false for missing or non-sqlite files", () => {
+    expect(isLainDb(path.join(dir, "nope.db"))).toBe(false);
+    const txt = path.join(dir, "notadb.db");
+    fs.writeFileSync(txt, "this is not sqlite");
+    expect(isLainDb(txt)).toBe(false);
   });
 });

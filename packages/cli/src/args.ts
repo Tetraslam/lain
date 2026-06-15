@@ -4,7 +4,18 @@ export interface ParsedArgs {
   command: string;
   positional: string[];
   flags: Record<string, string | boolean | string[]>;
+  /** True when the user typed a real command token (vs. an inferred `explore`). */
+  explicit: boolean;
 }
+
+/** Every recognized top-level command. */
+export const KNOWN_COMMANDS = [
+  "explore", "interactive", "init", "status", "show", "tree", "prune",
+  "extend", "resume", "redirect", "link", "synthesize", "merge-synthesis",
+  "sync", "conflicts", "export", "config", "extensions", "corpus", "mcp",
+  "tools", "mission", "watch", "tui", "serve", "version", "doctor", "update",
+  "uninstall", "help",
+] as const;
 
 /**
  * Minimal arg parser. Supports:
@@ -18,39 +29,9 @@ export function parseArgs(argv: string[]): ParsedArgs {
   const positional: string[] = [];
   const flags: Record<string, string | boolean | string[]> = {};
   let command = "";
+  let explicit = false;
 
-  const commands = new Set([
-    "explore",
-    "interactive",
-    "init",
-    "status",
-    "show",
-    "tree",
-    "prune",
-    "extend",
-    "resume",
-    "redirect",
-    "link",
-    "synthesize",
-    "merge-synthesis",
-    "sync",
-    "conflicts",
-    "export",
-    "config",
-    "extensions",
-    "corpus",
-    "mcp",
-    "tools",
-    "mission",
-    "watch",
-    "tui",
-    "serve",
-    "version",
-    "doctor",
-    "update",
-    "uninstall",
-    "help",
-  ]);
+  const commands = new Set<string>(KNOWN_COMMANDS);
 
   let i = 0;
   while (i < argv.length) {
@@ -84,6 +65,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
     } else {
       if (!command && commands.has(arg)) {
         command = arg;
+        explicit = true;
       } else {
         positional.push(arg);
       }
@@ -101,7 +83,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
     command = "help";
   }
 
-  return { command, positional, flags };
+  return { command, positional, flags, explicit };
 }
 
 type FlagMap = Record<string, string | boolean | string[]>;
