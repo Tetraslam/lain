@@ -9,6 +9,8 @@ itself — until something extraordinary emerges.
 
 [![CI](https://github.com/Tetraslam/lain/actions/workflows/ci.yml/badge.svg)](https://github.com/Tetraslam/lain/actions/workflows/ci.yml)
 
+![lain demo — tree, node view, and the TUI's radial graph](docs/demo.gif)
+
 </div>
 
 ---
